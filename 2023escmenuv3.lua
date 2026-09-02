@@ -17,7 +17,7 @@ pcall(function()
 	VirtualInputManager = game:GetService("VirtualInputManager")
 end)
 
-local maxSteps = 21
+local maxSteps = 10
 local LocalPlayer = Players.LocalPlayer
 local GameSettings = UserSettings().GameSettings
 local RenderingSettings = settings().Rendering
