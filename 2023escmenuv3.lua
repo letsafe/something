@@ -17,7 +17,7 @@ pcall(function()
 	VirtualInputManager = game:GetService("VirtualInputManager")
 end)
 
-local maxSteps = 10
+local maxSteps = 21
 local LocalPlayer = Players.LocalPlayer
 local GameSettings = UserSettings().GameSettings
 local RenderingSettings = settings().Rendering
@@ -144,7 +144,7 @@ HOME_WIDTH = 64
 HUBBAR_HEIGHT = 60
 
 -- Custom SystemMenuButton offsets.
-SYSTEM_MENU_OFFSET_X = 15
+SYSTEM_MENU_OFFSET_X = 17.5
 SYSTEM_MENU_OFFSET_Y = 4
 
 -- Recorder overlay position relative to SystemMenuButton.
@@ -9892,7 +9892,10 @@ SetVisibility =
 			if HomeButton then
 				HomeButton.Visible = HomeButtonEnabled and not IsMobile and not Hub.InInviteMenu and not Hub.InConfirmation
 			end
-			if SystemMenuButton then SystemMenuButton.Visible = true end
+			if SystemMenuButton then
+				SystemMenuButton.Visible = true
+				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+			end
 
 			if NoAnimation then
 				Hub.Shield.Position = SETTINGS_ACTIVE_POSITION
@@ -9910,7 +9913,13 @@ SetVisibility =
 			Hub.BottomButtonFrame.Visible = false
 			Hub.PageClipper.Visible = false
 			if HomeButton then HomeButton.Visible = false end
-			if SystemMenuButton then SystemMenuButton.Visible = false end
+			if SystemMenuButton then
+				SystemMenuButton.Visible = true
+				SystemMenuButton.Size = UDim2.fromOffset(40, 40)
+				pcall(function()
+					SystemMenuButton.ImageTransparency = 1
+				end)
+			end
 			if NoAnimation then
 				Hub.Shield.Position = SETTINGS_INACTIVE_POSITION
 				Hub.Shield.Visible = false
@@ -9981,7 +9990,6 @@ SystemMenuButton.SelectionImageObject = SystemMenuSelection
 
 local HideNativeSystemMenuButtons =
 	function()
-		if not IsMobile then return end
 		for _, Object in next, CoreGui:GetDescendants() do
 			if Object ~= SystemMenuButton and Object.Name == "SystemMenuButton" and Object:IsA("GuiObject") then
 				pcall(function() Object.Visible = false end)
@@ -9995,25 +10003,39 @@ local AlignSystemMenuButton =
 	function()
 		if not SystemMenuButton then return end
 
-		SystemMenuButton.Position =
-			UDim2.fromOffset(
-				SYSTEM_MENU_OFFSET_X,
-				SYSTEM_MENU_OFFSET_Y
-			)
+		SystemMenuButton.Visible = true
 
-		SystemMenuButton.Size =
-			UDim2.fromOffset(
-				30,
-				30
-			)
-
-		if IsMobile then
-			HideNativeSystemMenuButtons()
+		if Hub.Visible then
+			SystemMenuButton.Position =
+				UDim2.fromOffset(
+					SYSTEM_MENU_OFFSET_X,
+					SYSTEM_MENU_OFFSET_Y
+				)
+			SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+			pcall(function()
+				SystemMenuButton.ImageTransparency = 0
+			end)
+		else
+			-- Closed state: keep the larger 40x40 clickable hitbox 4px left and 4px up,
+			-- but make the image itself invisible.
+			SystemMenuButton.Position =
+				UDim2.fromOffset(
+					SYSTEM_MENU_OFFSET_X - 4,
+					SYSTEM_MENU_OFFSET_Y - 4
+				)
+			SystemMenuButton.Size = UDim2.fromOffset(40, 40)
+			pcall(function()
+				SystemMenuButton.ImageTransparency = 1
+			end)
 		end
+
+		-- Keep the real/native button hidden on every platform.
+		HideNativeSystemMenuButtons()
 	end
 
 Connect(SystemMenuButton.MouseButton1Click, function()
-	if Hub.Visible then SetVisibility(false) end
+	SetVisibility(not Hub.Visible)
+	AlignSystemMenuButton()
 end)
 AlignSystemMenuButton()
 Connect(CoreGui.ChildAdded, function()
@@ -10024,7 +10046,7 @@ Connect(CoreGui.ChildAdded, function()
 	end)
 end)
 Connect(CoreGui.DescendantAdded, function(Descendant)
-	if IsMobile and Descendant.Name == "SystemMenuButton" and Descendant ~= SystemMenuButton then
+	if Descendant.Name == "SystemMenuButton" and Descendant ~= SystemMenuButton then
 		task.defer(function()
 			pcall(function() Descendant.Visible = false end)
 			pcall(function() Descendant.Active = false end)
@@ -10074,7 +10096,7 @@ local EscapeAction =
 		if Now - LastEscapeAction < 0.15 then return Enum.ContextActionResult.Sink end
 		LastEscapeAction = Now
 		HideNativeSettingsMenu()
-		if IsMobile then HideNativeSystemMenuButtons() end
+		HideNativeSystemMenuButtons()
 
 		if Hub.Visible and Hub.InInviteMenu then
 			CloseInvitePage()
@@ -10096,11 +10118,11 @@ local EscapeAction =
 
 		if Hub.Visible then Hub.SuppressNativeOpenUntil = Now + 0.8 end
 		SetVisibility(not Hub.Visible)
-		if SystemMenuButton then SystemMenuButton.Visible = Hub.Visible end
+		AlignSystemMenuButton()
 		Spawn(function()
 			Wait()
 			HideNativeSettingsMenu()
-			if IsMobile then HideNativeSystemMenuButtons() end
+			HideNativeSystemMenuButtons()
 		end)
 		return Enum.ContextActionResult.Sink
 	end
@@ -10148,7 +10170,7 @@ local HookNativeMenu =
 		end
 		local NativeMenuOpened = function()
 			HideNativeSettingsMenu()
-			if IsMobile then HideNativeSystemMenuButtons() end
+			HideNativeSystemMenuButtons()
 			if tick() < Hub.SuppressNativeOpenUntil then return end
 			SetVisibility(GetNativeMenuTarget())
 			Hub.NativeMenuTarget = nil
@@ -10210,7 +10232,7 @@ if not IsMobile then
 	FindRecorderControls()
 	PositionRecorderGui()
 end
-if IsMobile then HideNativeSystemMenuButtons() end
+HideNativeSystemMenuButtons()
 Spawn(HookNativeMenu)
 
 -- ============================================================
@@ -10221,11 +10243,11 @@ Api = {}
 
 function Api:SetVisibility(Visible, NoAnimation, CustomPage)
 	SetVisibility(Visible, NoAnimation, CustomPage)
-	if SystemMenuButton then SystemMenuButton.Visible = Hub.Visible end
+	AlignSystemMenuButton()
 	if HomeButton then
 		HomeButton.Visible = Hub.Visible and HomeButtonEnabled and not IsMobile and not Hub.InInviteMenu and not Hub.InConfirmation
 	end
-	if IsMobile then HideNativeSystemMenuButtons() end
+	HideNativeSystemMenuButtons()
 end
 
 function Api:ToggleVisibility()
