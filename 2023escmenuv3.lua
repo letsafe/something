@@ -136,15 +136,15 @@ InviteFriends = true
 TOTAL_HUB_WIDTH = 800
 
 -- Home button is exactly the same height as the hub bar.
-HOME_HEIGHT = 68
+HOME_HEIGHT = 67
 
 -- Slightly wider than its height.
-HOME_WIDTH = 64
+HOME_WIDTH = 65
 
 HUBBAR_HEIGHT = 60
 
 -- Custom SystemMenuButton offsets.
-SYSTEM_MENU_OFFSET_X = 17.5
+SYSTEM_MENU_OFFSET_X = 16
 SYSTEM_MENU_OFFSET_Y = 4
 
 -- Recorder overlay position relative to SystemMenuButton.
@@ -1407,7 +1407,7 @@ local PositionHomeButton = function()
 			HubPosition.X.Scale,
 			HubPosition.X.Offset - HOME_WIDTH,
 			HubPosition.Y.Scale,
-			HubPosition.Y.Offset
+			HubPosition.Y.Offset - 3
 		)
 
 end
@@ -6961,6 +6961,20 @@ local BuildInviteRow =
 			end
 		)
 
+		local AvatarBackground =
+			Create(
+				"Frame",
+				{
+					Name = "AvatarBackground",
+					Parent = Row,
+					BackgroundColor3 = Color3.new(1, 1, 1),
+					BackgroundTransparency = 0,
+					BorderSizePixel = 0,
+					Size = UDim2.new(0, 36, 0, 36),
+					Position = UDim2.new(0, 12, 0.5, -18),
+					ZIndex = SETTINGS_BASE_ZINDEX + 2,
+				})
+
 		local Avatar =
 			Create(
 				"ImageLabel",
@@ -9903,7 +9917,7 @@ SetVisibility =
 			end
 			if SystemMenuButton then
 				SystemMenuButton.Visible = true
-				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+				SystemMenuButton.Size = UDim2.fromOffset(32, 32)
 			end
 
 			if NoAnimation then
@@ -9953,12 +9967,12 @@ SystemMenuButton =
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
 			Image =
-				"rbxasset://LuaPackages/Packages/_Index/FoundationImages/FoundationImages/SpriteSheets/img_set_1x_4.png",
+				"rbxasset://LuaPackages/Packages/_Index/FoundationImages/FoundationImages/SpriteSheets/img_set_1x_6.png",
 
 			ImageRectOffset =
 				Vector2.new(
-					157,
-					378
+					474,
+					38
 				),
 
 			ImageRectSize =
@@ -10020,7 +10034,7 @@ local AlignSystemMenuButton =
 					SYSTEM_MENU_OFFSET_X,
 					SYSTEM_MENU_OFFSET_Y
 				)
-			SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+			SystemMenuButton.Size = UDim2.fromOffset(32, 32)
 			pcall(function()
 				SystemMenuButton.ImageTransparency = 0
 			end)
@@ -10040,6 +10054,9 @@ local AlignSystemMenuButton =
 
 		-- Keep the real/native button hidden on every platform.
 		HideNativeSystemMenuButtons()
+		if PositionRecorderGui then
+			PositionRecorderGui()
+		end
 	end
 
 Connect(SystemMenuButton.MouseButton1Click, function()
