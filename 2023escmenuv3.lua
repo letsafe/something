@@ -136,7 +136,7 @@ InviteFriends = true
 TOTAL_HUB_WIDTH = 800
 
 -- Home button is exactly the same height as the hub bar.
-HOME_HEIGHT = 64
+HOME_HEIGHT = 68
 
 -- Slightly wider than its height.
 HOME_WIDTH = 64
@@ -6969,7 +6969,7 @@ local BuildInviteRow =
 					Parent = Row,
 					BackgroundTransparency = 1,
 					Image =
-						"rbxthumb://type=Avatar&id="
+						"rbxthumb://type=AvatarBust&id="
 						.. tostring(tonumber(Friend.Id) or 1)
 						.. "&w=100&h=100",
 					Size = UDim2.new(0, 36, 0, 36),
@@ -8962,6 +8962,15 @@ PositionRecorderGui =
 		local TargetY =
 			SystemPosition.Y
 			+ RECORDER_OFFSET_Y
+
+		-- When the custom ESC menu is closed, the 40x40
+		-- SystemMenuButton itself moves 4 px left/up.
+		-- Compensate the recorder by 4 px right/down so
+		-- the recorder stays in the same screen position.
+		if not Hub.Visible then
+			TargetX = TargetX + 4
+			TargetY = TargetY + 4
+		end
 
 		Button.Position =
 			UDim2.fromOffset(
