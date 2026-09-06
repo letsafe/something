@@ -12,14 +12,6 @@ SoundService = game:GetService("SoundService")
 Players = game:GetService("Players")
 SocialService = game:GetService("SocialService")
 VoiceChatService = game:GetService("VoiceChatService")
--- The real microphone peak meter requires Roblox's Audio API. When the
--- executor has sufficient script authority, enable it so AudioDeviceInput
--- exists even if the place is using the older internal voice path.
-pcall(function()
-	if VoiceChatService.UseAudioApi ~= Enum.AudioApiRollout.Enabled then
-		VoiceChatService.UseAudioApi = Enum.AudioApiRollout.Enabled
-	end
-end)
 VirtualInputManager = nil
 RunService = game:GetService("RunService")
 
@@ -8668,44 +8660,91 @@ MakeSlider(
 	end
 )
 
-VoiceChatSelector = MakeSelector(GamePage, "Voice Chat", {"On", "Off"}, VoiceChatEnabled and 1 or 2, function(Index)
-	SetVoiceChatPreference(Index == 1)
-end)
-
-GetMicDeviceOptions = function()
-	local Names = {"Default"}
-	MicDeviceMap = {Default = {Name = "", Guid = ""}}
-	if VoiceChatInternal then
-		Protect(function()
-			local Devices = {VoiceChatInternal:GetMicDevices()}
-			if type(Devices[1]) == "table" and #Devices == 1 then
-				Devices = Devices[1]
-			end
-			for _, Device in next, (Devices or {}) do
-				local Name = Device.Name or Device.name or Device.DisplayName or Device.displayName
-				local Guid = Device.Guid or Device.guid or Device.Id or Device.id
-				if Name and tostring(Name) ~= "" then
-					Name = tostring(Name)
-					Guid = tostring(Guid or "")
-					Insert(Names, Name)
-					MicDeviceMap[Name] = {Name = Name, Guid = Guid}
-				end
-			end
-		end)
-	end
-	return Names
+-- Voice Chat is a real setting only when BOTH conditions are true:
+--   1) this experience has VoiceChatService.EnableDefaultVoice enabled
+--   2) the local account has Voice Chat enabled/eligible
+-- This intentionally fails closed if either check cannot be read.
+GetGameVoiceSupport = function()
+	local Supported = false
+	local Success = false
+	Success = Protect(function()
+		Supported = VoiceChatService.EnableDefaultVoice == true
+		return true
+	end)
+	return Success and Supported
 end
 
-MicDeviceNames = GetMicDeviceOptions()
-AudioInputSelector = MakeSelector(GamePage, "Audio Input Device", MicDeviceNames, 1, function(Index, Value)
-	local Info = MicDeviceMap[Value]
-	if not Info or not VoiceChatInternal then return end
-	if Value == "Default" then
-		Protect(function() VoiceChatInternal:SetMicDevice("", "") end)
-		return
+GetAccountVoiceAllowed = function()
+	local Allowed = false
+	local Success = false
+	Success = Protect(function()
+		Allowed = VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
+		return true
+	end)
+	return Success and Allowed
+end
+
+VoiceGameSupported = GetGameVoiceSupport()
+VoiceAccountAllowed = GetAccountVoiceAllowed()
+VoiceOptionAvailable = VoiceGameSupported and VoiceAccountAllowed
+
+if VoiceOptionAvailable then
+	Protect(function()
+		VoiceChatService.UseAudioApi = Enum.AudioApiRollout.Enabled
+	end)
+
+	VoiceChatSelector = MakeSelector(GamePage, "Voice Chat", {"On", "Off"}, VoiceChatEnabled and 1 or 2, function(Index)
+		SetVoiceChatPreference(Index == 1)
+	end)
+
+	-- GetMicDevices/SetMicDevice are deprecated legacy APIs, so accept
+	-- several return shapes instead of assuming one particular tuple layout.
+	GetMicDeviceOptions = function()
+		local Names = {"Default"}
+		MicDeviceMap = {Default = {Name = "", Guid = ""}}
+		local Seen = {Default = true}
+
+		local AddDevice = function(Name, Guid)
+			if not Name then return end
+			Name = tostring(Name)
+			if Name == "" or Seen[Name] then return end
+			Guid = tostring(Guid or "")
+			Seen[Name] = true
+			Insert(Names, Name)
+			MicDeviceMap[Name] = {Name = Name, Guid = Guid}
+		end
+
+		local ParseDevice = function(Device)
+			if type(Device) ~= "table" then return end
+			local Name = Device.Name or Device.name or Device.DisplayName or Device.displayName or Device.DeviceName or Device.deviceName
+			local Guid = Device.Guid or Device.guid or Device.Id or Device.id or Device.DeviceGuid or Device.deviceGuid
+			if Name then
+				AddDevice(Name, Guid)
+			end
+			for _, Child in next, Device do
+				if type(Child) == "table" then ParseDevice(Child) end
+			end
+		end
+
+		if VoiceChatInternal then
+			Protect(function()
+				local Returned = {VoiceChatInternal:GetMicDevices()}
+				for _, Value in next, Returned do
+					ParseDevice(Value)
+				end
+			end)
+		end
+
+		return Names
 	end
-	Protect(function() VoiceChatInternal:SetMicDevice(Info.Name, Info.Guid) end)
-end)
+
+	MicDeviceNames = GetMicDeviceOptions()
+	AudioInputSelector = MakeSelector(GamePage, "Audio Input Device", MicDeviceNames, 1, function(Index, Value)
+		local Info = MicDeviceMap[Value]
+		if not Info or not VoiceChatInternal then return end
+		Protect(function() VoiceChatInternal:SetMicDevice(Info.Name, Info.Guid) end)
+	end)
+end
 
 MakeSectionHeader(GamePage, "Chat & Language")
 
@@ -10213,9 +10252,16 @@ ResetCharacter =
 
 LeaveGame =
 	function()
-		local Success = Protect(function() LocalPlayer:Kick() end)
-		if not Success then
-			Protect(function() game:Shutdown() end)
+		-- Prefer the internal shutdown path when it is actually usable.
+		-- If it is blocked/unavailable, fall back to the normal player kick.
+		local ShutdownSuccess = Protect(function()
+			game:Shutdown()
+		end)
+
+		if not ShutdownSuccess then
+			Protect(function()
+				LocalPlayer:Kick()
+			end)
 		end
 	end
 
