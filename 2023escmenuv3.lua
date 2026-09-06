@@ -10252,17 +10252,7 @@ ResetCharacter =
 
 LeaveGame =
 	function()
-		-- Prefer the internal shutdown path when it is actually usable.
-		-- If it is blocked/unavailable, fall back to the normal player kick.
-		local ShutdownSuccess = Protect(function()
-			game:Shutdown()
-		end)
-
-		if not ShutdownSuccess then
-			Protect(function()
-				LocalPlayer:Kick()
-			end)
-		end
+		game:shutdown()
 	end
 
 ResetButton, ResetButtonLabel =
