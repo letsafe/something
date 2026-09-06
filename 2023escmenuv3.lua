@@ -1818,7 +1818,7 @@ ResizeHub = function()
 						0,
 						0,
 						0,
-						ActionHeight
+						72
 						+ MOBILE_LAYOUT_GAP
 					)
 
@@ -6544,7 +6544,7 @@ RebuildPlayersPage = function()
 
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
 
-		local RowY = IsMobile and (MobileActionOffset + PLAYER_LIST_OFFSET) or 0
+		local RowY = IsMobile and (72 + MOBILE_LAYOUT_GAP) or 0
 		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
 		InviteRow.Position = UDim2.new(0,0,0,RowY)
 		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
@@ -10531,14 +10531,25 @@ ConfigureMobileActionButtons = function()
 			MobileActionButtons.Leave.Position = UDim2.new(1/3, 3, 0, 0)
 			MobileActionButtons.Resume.Position = UDim2.new(2/3, 3, 0, 0)
 		end
+		-- Mobile action buttons are text-only. Keep the PC icon objects for PC,
+		-- but hide those icon ImageLabels whenever these buttons are used on mobile.
 		for _, Button in next, {MobileActionButtons.Reset, MobileActionButtons.Leave, MobileActionButtons.Resume} do
+			for _, Child in next, Button:GetChildren() do
+				if Child:IsA("ImageLabel") then
+					Child.Visible = false
+				end
+			end
 			local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
 			if Label then
 				Label.TextSize = 20
 				Label.Position = Button == MobileActionButtons.Reset and UDim2.new(0, -20, 0, 0) or UDim2.new(0, 0, 0, 0)
 				Label.Size = UDim2.new(1, Button == MobileActionButtons.Reset and 20 or 0, 1, 0)
+				Label.TextXAlignment = Enum.TextXAlignment.Center
+				Label.TextYAlignment = Enum.TextYAlignment.Center
 			end
 		end
+		-- Voice Chat remains functional on mobile, but there is no bottom Voice Chat icon/button.
+		VoiceChatButton.Visible = false
 	end
 end
 
