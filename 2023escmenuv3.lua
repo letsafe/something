@@ -39,6 +39,44 @@ Clamp = math.clamp
 Floor = math.floor
 
 -- ============================================================
+-- MOBILE UI SCALE
+-- ============================================================
+GetMobileUiScale = function()
+	if not IsMobile then
+		return 1
+	end
+
+	local Viewport = Vector2.new(720, 1280)
+	Protect = Protect or function(Callback)
+		local Success = pcall(Callback)
+		return Success
+	end
+
+	pcall(function()
+		local Camera = workspace.CurrentCamera
+		if Camera and Camera.ViewportSize.X > 0 and Camera.ViewportSize.Y > 0 then
+			Viewport = Camera.ViewportSize
+		end
+	end)
+
+	local ShortSide = math.min(Viewport.X, Viewport.Y)
+	local Scale = Clamp(ShortSide / 720, 0.90, 1.35)
+
+	pcall(function()
+		local Preferred = GuiService.PreferredTextSize
+		if Preferred == Enum.PreferredTextSize.Large then
+			Scale *= 1.08
+		elseif Preferred == Enum.PreferredTextSize.Larger then
+			Scale *= 1.16
+		elseif Preferred == Enum.PreferredTextSize.Largest then
+			Scale *= 1.25
+		end
+	end)
+
+	return Clamp(Scale, 0.90, 1.55)
+end
+
+-- ============================================================
 -- CONSTANTS
 -- ============================================================
 
@@ -1800,8 +1838,9 @@ ResizeHub = function()
 
 			end
 
-			local ActionHeight = 72
-			local ActionListGap = MOBILE_LAYOUT_GAP
+			local UiScale = GetMobileUiScale()
+			local ActionHeight = math.floor(72 * UiScale + 0.5)
+			local ActionListGap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
 			local InviteOffset = InviteFriends and 80 or 0
 
 			local InviteRow =
@@ -6514,9 +6553,10 @@ RebuildPlayersPage = function()
 		Players:GetPlayers()
 
 	-- Mobile-only offset. PC keeps the original player-row positions.
+	local MobileUiScale = GetMobileUiScale()
 	local MobileActionOffset =
 		IsMobile
-		and (72 + MOBILE_LAYOUT_GAP)
+		and (math.floor(72 * MobileUiScale + 0.5) + math.max(4, math.floor(MOBILE_LAYOUT_GAP * MobileUiScale + 0.5)))
 		or 0
 
 	table.sort(
@@ -6544,7 +6584,7 @@ RebuildPlayersPage = function()
 
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
 
-		local RowY = IsMobile and (72 + MOBILE_LAYOUT_GAP) or 0
+		local RowY = IsMobile and MobileActionOffset or 0
 		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
 		InviteRow.Position = UDim2.new(0,0,0,RowY)
 		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
@@ -10487,69 +10527,72 @@ end
 
 ConfigureMobileActionButtons = function()
 	local VoiceActive = LocalVoiceEnabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport
-	local ActionWidth = VoiceActive and 235 or 260
-	local ActionHeight = 72
-	local PositionReset = UDim2.new(0, 4, 0.5, -(ActionHeight / 2))
-	local PositionLeave = UDim2.new(0, VoiceActive and 242 or 270, 0.5, -(ActionHeight / 2))
-	local PositionResume = UDim2.new(0, VoiceActive and 480 or 536, 0.5, -(ActionHeight / 2))
+	local UiScale = GetMobileUiScale()
+	local ActionHeight = math.floor(72 * UiScale + 0.5)
+	local Gap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
 
-	MobileActionButtons.Reset.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-	MobileActionButtons.Leave.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-	MobileActionButtons.Resume.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-	MobileActionButtons.Reset.Position = PositionReset
-	MobileActionButtons.Leave.Position = PositionLeave
-	MobileActionButtons.Resume.Position = PositionResume
-	VoiceChatButton.Visible = VoiceActive
-	VoiceChatButton.Position = UDim2.new(0, 716, 0.5, -32)
-
-	local VoiceLabel = VoiceChatButton:FindFirstChild("VoiceChatButtonTextLabel")
-	if VoiceLabel then
-		VoiceLabel.Text = ""
-		VoiceLabel.Visible = false
-		VoiceLabel.TextTransparency = 1
-	end
+	-- On mobile there is deliberately no bottom Voice Chat button, so the
+	-- action row is ALWAYS three buttons. Voice Chat can remain enabled
+	-- internally without changing the Reset/Leave/Resume layout.
+	local UseFourColumnLayout = VoiceActive and not IsMobile
 
 	if IsMobile and PlayersPage and PlayersPage.Frame then
 		MobileActionButtons.Reset.Parent = PlayersPage.Frame
 		MobileActionButtons.Leave.Parent = PlayersPage.Frame
 		MobileActionButtons.Resume.Parent = PlayersPage.Frame
 		VoiceChatButton.Parent = PlayersPage.Frame
-		if VoiceActive then
-			MobileActionButtons.Reset.Size = UDim2.new(1/4, -6, 0, 72)
-			MobileActionButtons.Leave.Size = UDim2.new(1/4, -6, 0, 72)
-			MobileActionButtons.Resume.Size = UDim2.new(1/4, -6, 0, 72)
-			MobileActionButtons.Reset.Position = UDim2.new(0, 3, 0, 0)
-			MobileActionButtons.Leave.Position = UDim2.new(1/4, 3, 0, 0)
-			MobileActionButtons.Resume.Position = UDim2.new(1/2, 3, 0, 0)
-			VoiceChatButton.Size = UDim2.fromOffset(72, 72)
-			VoiceChatButton.Position = UDim2.new(3/4, 3, 0, 0)
-		else
-			MobileActionButtons.Reset.Size = UDim2.new(1/3, -6, 0, 72)
-			MobileActionButtons.Leave.Size = UDim2.new(1/3, -6, 0, 72)
-			MobileActionButtons.Resume.Size = UDim2.new(1/3, -6, 0, 72)
-			MobileActionButtons.Reset.Position = UDim2.new(0, 3, 0, 0)
-			MobileActionButtons.Leave.Position = UDim2.new(1/3, 3, 0, 0)
-			MobileActionButtons.Resume.Position = UDim2.new(2/3, 3, 0, 0)
-		end
-		-- Mobile action buttons are text-only. Keep the PC icon objects for PC,
-		-- but hide those icon ImageLabels whenever these buttons are used on mobile.
+	end
+
+	if IsMobile then
+		local ButtonCount = UseFourColumnLayout and 4 or 3
+		local Fraction = 1 / ButtonCount
+		local ButtonWidthOffset = -Gap
+
+		MobileActionButtons.Reset.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+		MobileActionButtons.Leave.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+		MobileActionButtons.Resume.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+
+		MobileActionButtons.Reset.Position = UDim2.new(0, 3, 0, 0)
+		MobileActionButtons.Leave.Position = UDim2.new(Fraction, 3, 0, 0)
+		MobileActionButtons.Resume.Position = UDim2.new(Fraction * 2, 3, 0, 0)
+
 		for _, Button in next, {MobileActionButtons.Reset, MobileActionButtons.Leave, MobileActionButtons.Resume} do
+			Button.Visible = true
+			Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
 			for _, Child in next, Button:GetChildren() do
 				if Child:IsA("ImageLabel") then
 					Child.Visible = false
 				end
 			end
+
 			local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
 			if Label then
-				Label.TextSize = 20
-				Label.Position = Button == MobileActionButtons.Reset and UDim2.new(0, -20, 0, 0) or UDim2.new(0, 0, 0, 0)
-				Label.Size = UDim2.new(1, Button == MobileActionButtons.Reset and 20 or 0, 1, 0)
+				Label.TextSize = math.max(18, math.floor(20 * UiScale + 0.5))
+				Label.TextWrapped = false
+				Label.TextScaled = false
 				Label.TextXAlignment = Enum.TextXAlignment.Center
 				Label.TextYAlignment = Enum.TextYAlignment.Center
+				Label.Position = UDim2.new(0, 0, 0, 0)
+				Label.Size = UDim2.new(1, 0, 1, 0)
 			end
 		end
-		-- Voice Chat remains functional on mobile, but there is no bottom Voice Chat icon/button.
+
+		-- Mobile never displays the desktop-style VC icon.
 		VoiceChatButton.Visible = false
+	else
+		local ActionWidth = VoiceActive and 235 or 260
+		local PositionReset = UDim2.new(0, 4, 0.5, -(ActionHeight / 2))
+		local PositionLeave = UDim2.new(0, VoiceActive and 242 or 270, 0.5, -(ActionHeight / 2))
+		local PositionResume = UDim2.new(0, VoiceActive and 480 or 536, 0.5, -(ActionHeight / 2))
+
+		MobileActionButtons.Reset.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
+		MobileActionButtons.Leave.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
+		MobileActionButtons.Resume.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
+		MobileActionButtons.Reset.Position = PositionReset
+		MobileActionButtons.Leave.Position = PositionLeave
+		MobileActionButtons.Resume.Position = PositionResume
+		VoiceChatButton.Visible = VoiceActive
+		VoiceChatButton.Position = UDim2.new(0, 716, 0.5, -32)
 	end
 end
 
@@ -10864,6 +10907,16 @@ SetVisibility =
 			SwitchToPage(CustomPage or PlayersPage, true)
 			ConfigureMobileActionButtons()
 			ResizeHub()
+			if IsMobile then
+				task.defer(function()
+					if not Hub.Visible or not PlayersPage or not PlayersPage.Frame then return end
+					MobileActionButtons.Reset.Parent = PlayersPage.Frame
+					MobileActionButtons.Leave.Parent = PlayersPage.Frame
+					MobileActionButtons.Resume.Parent = PlayersPage.Frame
+					ConfigureMobileActionButtons()
+					ResizeHub()
+				end)
+			end
 		else
 			SetTopbarCoreGuiEnabled(true)
 			Hub.HubBar.Visible = false
