@@ -52,7 +52,23 @@ GetMobileUiScale = function()
 	end)
 
 	local ShortSide = math.min(Viewport.X, Viewport.Y)
-	local Scale = Clamp(ShortSide / 720, 0.90, 1.35)
+	local DisplayScale = 1
+
+	-- Roblox's ViewportDisplaySize is a device/display-class signal, not a
+	-- raw pixel-density value. Combine it with viewport size so high-density
+	-- tablets such as iPads get larger legacy-style UI instead of looking tiny.
+	pcall(function()
+		if GuiService.ViewportDisplaySize == Enum.DisplaySize.Large then
+			DisplayScale = 1.22
+		elseif GuiService.ViewportDisplaySize == Enum.DisplaySize.Medium then
+			DisplayScale = 1.10
+		else
+			DisplayScale = 1
+		end
+	end)
+
+	local ViewportScale = ShortSide / 720
+	local Scale = Clamp(ViewportScale * DisplayScale, 0.95, 1.55)
 
 	pcall(function()
 		local Preferred = GuiService.PreferredTextSize
@@ -65,7 +81,7 @@ GetMobileUiScale = function()
 		end
 	end)
 
-	return Clamp(Scale, 0.90, 1.55)
+	return Clamp(Scale, 0.95, 1.65)
 end
 
 -- ============================================================
@@ -1776,7 +1792,8 @@ ResizeHub = function()
 		-- so they scroll with the player list.
 		if PlayersPage and PlayersPage.Frame then
 
-			local ActionHeight = 72
+			local UiScale = GetMobileUiScale()
+			local ActionHeight = math.floor(72 * UiScale + 0.5)
 			local ActionWidth = 1 / 3
 
 			for Index, Button in ipairs({
@@ -2658,6 +2675,11 @@ SwitchToPage = function(
 			Page
 		)
 
+	end
+
+	if IsMobile then
+		if BuildMobileHelpPage then BuildMobileHelpPage() end
+		if ApplyMobileReportLayout then ApplyMobileReportLayout() end
 	end
 
 end
@@ -9150,6 +9172,32 @@ GraphicsSlider =
 	)
 
 -- ============================================================
+-- GRAPHICS QUALITY MINUS / PLUS CONTROLS
+-- ============================================================
+
+ApplyGraphicsMinusPlus = function()
+	if not GraphicsSlider or not GraphicsSlider.SliderFrame then return end
+	local Holder = GraphicsSlider.SliderFrame
+	for _, Button in ipairs(Holder:GetChildren()) do
+		if Button:IsA("ImageButton") then
+			local Icon = Button:FindFirstChildWhichIsA("ImageLabel")
+			local Text = nil
+			if Icon and Icon.Image == "rbxasset://textures/ui/Settings/Slider/Left.png" then
+				Text = "−"
+			elseif Icon and Icon.Image == "rbxasset://textures/ui/Settings/Slider/Right.png" then
+				Text = "+"
+			end
+			if Text and not Button:FindFirstChild("MinusPlusLabel") then
+				if Icon then Icon.Visible = false end
+				Create("TextLabel", {Name = "MinusPlusLabel", Parent = Button, BackgroundTransparency = 1, Text = Text, Font = Enum.Font.SourceSansBold, TextSize = 30, TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, Size = UDim2.new(1, 0, 1, 0), Position = UDim2.new(0, 0, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 5})
+			end
+		end
+	end
+end
+
+ApplyGraphicsMinusPlus()
+
+-- ============================================================
 -- 21-BAR COMPRESSION
 -- ============================================================
 
@@ -9690,6 +9738,97 @@ MenuFrame = CreateHelpGroup("Menu Items", {
 }, UDim2.new(1 / 3, 4, 0, CharMoveFrame.Size.Y.Offset + 50))
 
 HelpPage.Frame.Size = UDim2.new(1, 0, 0, MenuFrame.Position.Y.Offset + MenuFrame.Size.Y.Offset)
+
+-- ============================================================
+-- MOBILE HELP / REPORT LAYOUT
+-- ============================================================
+
+ApplyMobileReportLayout = function()
+	if not IsMobile or not ReportPage then return end
+	ReportPage.Frame.Size = UDim2.new(1, 0, 0, 269)
+	local Layout = ReportPage.Frame:FindFirstChild("RowListLayout")
+	if Layout then Layout.Enabled = false end
+	local Rows = {
+		{ReportMode and ReportMode.RowFrame, 0},
+		{WhichPlayer and WhichPlayer.RowFrame, 50},
+		{TypeOfAbuse and TypeOfAbuse.RowFrame, 100},
+		{DescriptionRow, 155},
+	}
+	for _, Info in ipairs(Rows) do
+		local Row = Info[1]
+		if Row then
+			Row.Position = UDim2.new(0, 0, 0, Info[2])
+			Row.Size = UDim2.new(1, 0, 0, 50)
+			Row.LayoutOrder = Info[2]
+		end
+	end
+	for _, Selector in ipairs({ReportMode, WhichPlayer, TypeOfAbuse}) do
+		if Selector and Selector.SelectorFrame then
+			Selector.SelectorFrame.Size = UDim2.new(0.6, 0, 0, 50)
+			Selector.SelectorFrame.Position = UDim2.new(1, 0, 0.5, 0)
+			Selector.SelectorFrame.AnchorPoint = Vector2.new(1, 0.5)
+		end
+	end
+	if DescriptionRow and Description then
+		DescriptionRow.Position = UDim2.new(0, 0, 0, 155)
+		DescriptionRow.Size = UDim2.new(1, 0, 0, 50)
+		Description.Position = UDim2.new(1, 0, 0.5, 5)
+		Description.Size = UDim2.new(0.6, 0, 1, 0)
+		Description.AnchorPoint = Vector2.new(1, 0.5)
+		Description.TextSize = 24
+	end
+	if Submit then
+		Submit.Position = UDim2.new(0.5, 0, 0, 214)
+		Submit.Size = UDim2.new(0, 198, 0, 50)
+		Submit.AnchorPoint = Vector2.new(0.5, 0)
+	end
+end
+
+BuildMobileHelpPage = function()
+	if not IsMobile or not HelpPage or HelpPage.Frame:FindFirstChild("HelpFrameTouch") then return end
+	for _, Child in ipairs(HelpPage.Frame:GetChildren()) do
+		if Child.Name:sub(1, 12) == "PCGroupFrame" then Child.Visible = false end
+	end
+	local HelpFrame = Create("Frame", {
+		Name = "HelpFrameTouch", Parent = HelpPage.Frame, BackgroundTransparency = 1, BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 238), Position = UDim2.new(0, 0, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 1,
+	})
+	local function MakeTouchHint(Name, Text, Position, Size, Image, ImagePosition, ImageSize)
+		local Frame = Create("TextLabel", {
+			Name = Name .. "Frame", Parent = HelpFrame, BackgroundTransparency = 1, BorderSizePixel = 0,
+			Text = "Label", TextSize = 8, TextColor3 = Color3.fromRGB(27, 42, 53), Font = Enum.Font.Legacy,
+			Size = Size, Position = Position, ZIndex = SETTINGS_BASE_ZINDEX + 1,
+		})
+		Create("ImageLabel", {
+			Name = Name .. "BackgroundImage", Parent = Frame, BackgroundTransparency = 1,
+			Image = "rbxasset://textures/ui/Settings/Radial/RadialLabel.png", Size = UDim2.new(1.25, 0, 1.25, 0),
+			Position = UDim2.new(-0.125, 0, -0.065, 0), ScaleType = Enum.ScaleType.Slice,
+			SliceCenter = Rect.new(12, 2, 65, 21), ZIndex = SETTINGS_BASE_ZINDEX + 2,
+		})
+		if Image then
+			Create("ImageLabel", {Name = Name .. "Image", Parent = Frame, BackgroundTransparency = 1, Image = Image,
+				Size = ImageSize or UDim2.fromOffset(38, 52), Position = ImagePosition or UDim2.new(0.5, -19, 1, 3),
+				ScaleType = Enum.ScaleType.Stretch, ZIndex = SETTINGS_BASE_ZINDEX + 2})
+		end
+		local Label = Create("TextLabel", {Name = Name .. "Label", Parent = Frame, BackgroundTransparency = 1, Text = Text,
+			Font = Enum.Font.SourceSansBold, TextSize = 14, TextColor3 = Color3.new(1, 1, 1), TextWrapped = true, TextScaled = true,
+			TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, Size = UDim2.new(1, 0, 1, 0),
+			Position = UDim2.new(0, 0, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 3})
+		Create("UITextSizeConstraint", {Parent = Label, MinTextSize = 10, MaxTextSize = 18})
+	end
+	MakeTouchHint("Zoom In/Out", "Zoom In/Out", UDim2.new(0.15, -60, 0.02, 0), UDim2.fromOffset(120, 25),
+		"rbxasset://textures/ui/Settings/Help/ZoomGesture.png", UDim2.new(0.5, -26, 1, 3), UDim2.fromOffset(53, 59))
+	MakeTouchHint("Rotate Camera", "Rotate Camera", UDim2.new(0.85, -60, 0.02, 0), UDim2.fromOffset(120, 25),
+		"rbxasset://textures/ui/Settings/Help/RotateCameraGesture.png", UDim2.new(0.5, -32, 1, 3), UDim2.fromOffset(65, 48))
+	MakeTouchHint("Use Tool", "Use Tool", UDim2.new(0.5, -60, 0.5, -60), UDim2.fromOffset(120, 25),
+		"rbxasset://textures/ui/Settings/Help/UseToolGesture.png")
+	MakeTouchHint("Move", "Move", UDim2.new(0.15, -38, 0.85, -25), UDim2.fromOffset(77, 25),
+		"rbxasset://textures/ui/Settings/Help/RotateCameraGesture.png", UDim2.new(0.5, -32, 1, 3), UDim2.fromOffset(65, 48))
+	MakeTouchHint("Jump", "Jump", UDim2.new(0.85, -60, 0.85, -25), UDim2.fromOffset(77, 25),
+		"rbxasset://textures/ui/Settings/Help/UseToolGesture.png")
+	MakeTouchHint("Equip/Unequip Tools", "Equip/Unequip Tools", UDim2.new(0.5, -60, 0.64, 0), UDim2.fromOffset(120, 25), nil)
+	HelpPage.Frame.Size = UDim2.new(1, 0, 0, 238)
+end
 
 -- ============================================================
 -- RBXM SUITE CUSTOM RECORDER OVERLAY (PC ONLY)
@@ -11268,6 +11407,12 @@ HookNativeMenu =
 			end)
 		end
 	end
+
+if IsMobile then
+	BuildMobileHelpPage()
+	ApplyMobileReportLayout()
+end
+ApplyGraphicsMinusPlus()
 
 -- ============================================================
 -- INITIAL STATE
