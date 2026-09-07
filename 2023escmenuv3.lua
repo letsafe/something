@@ -1552,8 +1552,12 @@ ResizeHub = function()
 	local Height
 	local TabletScale = ApplyTabletResponsiveScale(Viewport)
 	local LayoutViewport = Viewport
+	local TabletXOffset = 0
 	if IsMobile and TabletScale > 1 then
 		LayoutViewport = Vector2.new(Viewport.X / TabletScale, Viewport.Y / TabletScale)
+		-- The tablet menu is intentionally biased slightly left. Keep the
+		-- phone layout centered and move only the tablet-sized menu.
+		TabletXOffset = -72 / TabletScale
 	end
 
 	-- ========================================================
@@ -1610,7 +1614,7 @@ ResizeHub = function()
 			Hub.PageClipper.Position =
 				UDim2.new(
 					0.5,
-					-Width / 2,
+					-Width / 2 + TabletXOffset,
 					0,
 					PageTop
 				)
@@ -1747,7 +1751,7 @@ ResizeHub = function()
 		Hub.PageClipper.Size = UDim2.new(0, Width, 0, ConfirmationHeight)
 		Hub.PageClipper.Position =
 			IsMobile
-			and UDim2.new(0.5, -Width / 2, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
+			and UDim2.new(0.5, -Width / 2 + TabletXOffset, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
 			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2 - 18)
 
 		Hub.PageView.Size = UDim2.new(1, 0, 0, ConfirmationHeight)
@@ -1821,7 +1825,7 @@ ResizeHub = function()
 		Hub.HubBar.Position =
 			UDim2.new(
 				0.5,
-				-Width / 2,
+				-Width / 2 + TabletXOffset,
 				0,
 				GroupTop
 			)
@@ -1837,7 +1841,7 @@ ResizeHub = function()
 		Hub.PageClipper.Position =
 			UDim2.new(
 				0.5,
-				-Width / 2,
+				-Width / 2 + TabletXOffset,
 				0,
 				PageTop
 			)
