@@ -1557,7 +1557,7 @@ ResizeHub = function()
 		LayoutViewport = Vector2.new(Viewport.X / TabletScale, Viewport.Y / TabletScale)
 		-- The tablet menu is intentionally biased slightly left. Keep the
 		-- phone layout centered and move only the tablet-sized menu.
-		TabletXOffset = -72 / TabletScale
+		TabletXOffset = -155 / TabletScale
 	end
 
 	-- ========================================================
