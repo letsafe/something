@@ -52,6 +52,17 @@ GetMobileUiScale = function()
 	end)
 
 	local ShortSide = math.min(Viewport.X, Viewport.Y)
+	local LongSide = math.max(Viewport.X, Viewport.Y)
+	local IsTabletViewport =
+		ShortSide >= 760
+		and LongSide > 0
+		and (LongSide / ShortSide) <= 1.85
+
+	if IsTabletViewport then
+		-- Tablets are scaled once by the menu-wide UIScale below.
+		return 1
+	end
+
 	local DisplayScale = 1
 
 	-- Roblox's ViewportDisplaySize is a device/display-class signal, not a
@@ -1073,6 +1084,47 @@ Hub.Shield =
 		}
 	)
 
+
+-- ============================================================
+-- TABLET-WIDE RESPONSIVE SCALE
+-- ============================================================
+TabletUiScale = nil
+TabletUiScaleObject = nil
+
+GetTabletResponsiveScale = function(Viewport)
+	if not IsMobile then return 1 end
+	Viewport = Viewport or Vector2.new(720, 1280)
+	local ShortSide = math.min(Viewport.X, Viewport.Y)
+	local LongSide = math.max(Viewport.X, Viewport.Y)
+	if ShortSide >= 760 and LongSide > 0 and (LongSide / ShortSide) <= 1.85 then
+		return Clamp(ShortSide / 640, 1, 1.45)
+	end
+	return 1
+end
+
+ApplyTabletResponsiveScale = function(Viewport)
+	local Scale = GetTabletResponsiveScale(Viewport)
+	if not Hub or not Hub.Shield then return Scale end
+	if IsMobile and Scale > 1 then
+		if not TabletUiScaleObject or not TabletUiScaleObject.Parent then
+			TabletUiScaleObject = Create("UIScale", {
+				Name = "TabletResponsiveScale",
+				Parent = Hub.Shield,
+				Scale = Scale,
+			})
+		else
+			TabletUiScaleObject.Scale = Scale
+		end
+	else
+		if TabletUiScaleObject then
+			Protect(function() TabletUiScaleObject:Destroy() end)
+			TabletUiScaleObject = nil
+		end
+	end
+	TabletUiScale = Scale
+	return Scale
+end
+
 Hub.Modal =
 	Create(
 		"TextButton",
@@ -1498,6 +1550,11 @@ ResizeHub = function()
 	end
 
 	local Height
+	local TabletScale = ApplyTabletResponsiveScale(Viewport)
+	local LayoutViewport = Viewport
+	if IsMobile and TabletScale > 1 then
+		LayoutViewport = Vector2.new(Viewport.X / TabletScale, Viewport.Y / TabletScale)
+	end
 
 	-- ========================================================
 	-- INVITE PAGE
@@ -1524,7 +1581,7 @@ ResizeHub = function()
 			Width =
 				math.max(
 					280,
-					Viewport.X - 8
+					LayoutViewport.X - 8
 				)
 
 			local PageTop =
@@ -1533,7 +1590,7 @@ ResizeHub = function()
 			PageHeight =
 				math.max(
 					220,
-					Viewport.Y - PageTop - 8
+					LayoutViewport.Y - PageTop - 8
 				)
 
 			Hub.PageClipper.AnchorPoint =
@@ -1675,7 +1732,7 @@ ResizeHub = function()
 		local Width =
 			math.max(
 				280,
-				Viewport.X - 16
+				LayoutViewport.X - 16
 			)
 
 		local ConfirmationHeight =
@@ -1690,7 +1747,7 @@ ResizeHub = function()
 		Hub.PageClipper.Size = UDim2.new(0, Width, 0, ConfirmationHeight)
 		Hub.PageClipper.Position =
 			IsMobile
-			and UDim2.new(0.5, -Width / 2, 0, math.max(70, math.floor((Viewport.Y - ConfirmationHeight) * 0.58)))
+			and UDim2.new(0.5, -Width / 2, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
 			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2 - 18)
 
 		Hub.PageView.Size = UDim2.new(1, 0, 0, ConfirmationHeight)
@@ -1730,7 +1787,7 @@ ResizeHub = function()
 		local Width =
 			math.max(
 				240,
-				Viewport.X - 16
+				LayoutViewport.X - 16
 			)
 
 		local GroupTop =
@@ -1745,7 +1802,7 @@ ResizeHub = function()
 		local PageHeight =
 			math.max(
 				100,
-				Viewport.Y
+				LayoutViewport.Y
 				- PageTop
 				- MOBILE_LAYOUT_GAP
 			)
@@ -1839,7 +1896,7 @@ ResizeHub = function()
 
 					for _, Child in ipairs(Button:GetChildren()) do
 						if Child:IsA("ImageLabel") then
-							Child.Visible = Entry.Button == VoiceChatButton
+							Child.Visible = false
 						end
 					end
 
@@ -2090,6 +2147,10 @@ ResizeHub = function()
 
 	if LayoutTabs then
 		LayoutTabs()
+	end
+
+	if IsMobile then
+		ApplyTabletResponsiveScale(Viewport)
 	end
 
 end
@@ -4116,7 +4177,7 @@ MakePlayerRow = function(
 	end
 
 
-	if CanTargetPlayer and InviteFriends and DisplayNameSupport and VoiceChatEnabled then
+	if CanTargetPlayer and VoiceChatEnabled then
 		local ExistingVoice = VoiceEnabledCache[UserId]
 		if ExistingVoice == true then
 			VoiceButton = MakeStyledButton(
@@ -6705,7 +6766,7 @@ Connect(
 		Spawn(function()
 			Wait(0.5)
 			CheckVoiceForPlayer(Player, function(Enabled)
-				if Enabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport then
+				if Enabled and VoiceChatEnabled then
 					RebuildPlayersPage()
 				end
 			end)
@@ -10812,7 +10873,7 @@ Spawn(function()
 			end
 		end
 
-		if VoiceChatEnabled and InviteFriends and DisplayNameSupport then
+		if VoiceChatEnabled then
 			for _, Player in next, Players:GetPlayers() do
 				if Player ~= LocalPlayer then
 					local UserId = tonumber(Player.UserId or Player.userId) or 0
@@ -11421,6 +11482,7 @@ ApplyGraphicsMinusPlus()
 SwitchToPage(GamePage, true, true)
 ConfigureMobileActionButtons()
 ResizeHub()
+ConfigureMobileActionButtons()
 AlignSystemMenuButton()
 if not IsMobile then
 	FindRecorderControls()
