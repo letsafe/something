@@ -202,9 +202,11 @@ InviteFriends = true
 VoiceChatEnabled = false
 
 TOTAL_HUB_WIDTH = 800
+PC_SCROLLBAR_RESERVE = 6
+PC_RIGHT_EXTENSION = 8
 
 -- Home button is exactly the same height as the hub bar.
-HOME_HEIGHT = 67
+HOME_HEIGHT = 64
 
 -- Slightly wider than its height.
 HOME_WIDTH = 65
@@ -220,6 +222,11 @@ SYSTEM_MENU_OFFSET_Y = 4
 -- Y: vertical offset from the SystemMenuButton top.
 RECORDER_OFFSET_X = 165
 RECORDER_OFFSET_Y = -17
+
+SYSTEM_MENU_ICON = "rbxassetid://136616213304711"
+SYSTEM_MENU_ICON_RECT_OFFSET = Vector2.new(135, 86)
+SYSTEM_MENU_ICON_RECT_SIZE = Vector2.new(36, 36)
+SYSTEM_MENU_SIZE = Vector2.new(32, 32)
 
 -- Mobile ESC menu:
 -- 32px SystemMenuButton + 8px gap = Y 40.
@@ -1516,7 +1523,7 @@ PositionHomeButton = function()
 			HubPosition.X.Scale,
 			HubPosition.X.Offset - HOME_WIDTH,
 			HubPosition.Y.Scale,
-			HubPosition.Y.Offset - 4
+			HubPosition.Y.Offset - 2
 		)
 
 end
@@ -1626,6 +1633,7 @@ ResizeHub = function()
 
 			Width =
 				TOTAL_HUB_WIDTH
+				+ PC_RIGHT_EXTENSION
 
 			local ExtraSpace =
 				(BufferSize * 2)
@@ -1734,15 +1742,9 @@ ResizeHub = function()
 		-- ====================================================
 
 		local Width =
-			math.max(
-				280,
-				LayoutViewport.X - 16
-			)
+			math.min(800, math.max(280, LayoutViewport.X - 16))
 
-		local ConfirmationHeight =
-			IsMobile
-			and 240
-			or math.min(240, math.max(210, Viewport.Y - 40))
+		local ConfirmationHeight = 240
 
 		Hub.HubBar.Visible = false
 		Hub.BottomButtonFrame.Visible = false
@@ -1752,7 +1754,7 @@ ResizeHub = function()
 		Hub.PageClipper.Position =
 			IsMobile
 			and UDim2.new(0.5, -Width / 2 + TabletXOffset, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
-			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2 - 18)
+			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2)
 
 		Hub.PageView.Size = UDim2.new(1, 0, 0, ConfirmationHeight)
 		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
@@ -1763,9 +1765,43 @@ ResizeHub = function()
 			PositionMobileConfirmationButtons()
 		else
 			PositionDesktopConfirmationButtons()
+			local Page = Hub.CurrentPage
+			if Page == ResetPage then
+				ApplyResetButtonAvailability()
+			end
+			if Page == ResetPage or Page == LeavePage then
+				Page.Frame.Parent = Hub.PageView
+				Page.Frame.Position = UDim2.fromOffset(0, 0)
+				Page.Frame.Size = UDim2.fromOffset(Width, ConfirmationHeight)
+				Page.Frame.Visible = true
+				local First = Page == ResetPage and ResetButton or LeaveButton
+				local Second = Page == ResetPage and DontResetButton or DontLeaveButton
+				First.Parent = Page.Frame
+				Second.Parent = Page.Frame
+				First.Visible = true
+				Second.Visible = true
+				local ResetAllowed = Page ~= ResetPage or GetResetButtonAllowed()
+				First.Active = ResetAllowed
+				First.Selectable = ResetAllowed
+				if Page == ResetPage then
+					First.ImageColor3 = ResetAllowed and Color3.new(1, 1, 1) or Color3.fromRGB(135, 135, 135)
+					if ResetButtonLabel then
+						ResetButtonLabel.TextColor3 = ResetAllowed and Color3.new(1, 1, 1) or Color3.fromRGB(150, 150, 150)
+					end
+				end
+				Second.Active = true
+				First.Position = UDim2.fromOffset(155, 132)
+				Second.Position = UDim2.fromOffset(420, 132)
+				First.ZIndex = SETTINGS_BASE_ZINDEX + 10
+				Second.ZIndex = SETTINGS_BASE_ZINDEX + 10
+			end
 		end
 
 	elseif IsMobile then
+
+		if Hub.InInviteMenu and ConfigureInviteMobileHeader then
+			ConfigureInviteMobileHeader()
+		end
 
 		-- ====================================================
 		-- NORMAL MOBILE ESC MENU
@@ -2032,6 +2068,7 @@ ResizeHub = function()
 
 		local Width =
 			TOTAL_HUB_WIDTH
+			+ PC_RIGHT_EXTENSION
 
 		local ExtraSpace =
 			(BufferSize * 2)
@@ -2044,15 +2081,15 @@ ResizeHub = function()
 				600
 			)
 
-		Hub.HubBar.Size =
+				Hub.HubBar.Size =
 			UDim2.new(
 				0,
 				HomeButtonEnabled
 					and (
-						TOTAL_HUB_WIDTH
+						Width
 						- HOME_WIDTH
 					)
-					or TOTAL_HUB_WIDTH,
+					or Width,
 				0,
 				HUBBAR_HEIGHT
 			)
@@ -2060,9 +2097,7 @@ ResizeHub = function()
 		Hub.HubBar.Position =
 			UDim2.new(
 				0.5,
-				-(
-					TOTAL_HUB_WIDTH / 2
-				)
+				-(TOTAL_HUB_WIDTH / 2)
 				+ (
 					HomeButtonEnabled
 					and HOME_WIDTH
@@ -2084,7 +2119,7 @@ ResizeHub = function()
 		Hub.PageClipper.Position =
 			UDim2.new(
 				0.5,
-				-Width / 2,
+				-(TOTAL_HUB_WIDTH / 2),
 				0.5,
 				-Height / 2
 			)
@@ -2100,9 +2135,9 @@ ResizeHub = function()
 		Hub.BottomButtonFrame.Position =
 			UDim2.new(
 				0.5,
-				-Width / 2,
+				-(TOTAL_HUB_WIDTH / 2),
 				0.5,
-				Height / 2
+				Height / 2 + 21
 			)
 
 		Hub.PageView.CanvasPosition =
@@ -2249,9 +2284,9 @@ MakeTab = function(
 				Size =
 					UDim2.new(
 						0,
-						44,
+						36,
 						0,
-						44
+						36
 					),
 
 				Position =
@@ -2259,7 +2294,7 @@ MakeTab = function(
 						0,
 						12,
 						0.5,
-						-22
+						-18
 					),
 
 				ZIndex =
@@ -2284,7 +2319,7 @@ MakeTab = function(
 				Enum.Font.SourceSansBold,
 
 			TextSize =
-				24,
+				20,
 
 			TextColor3 =
 				Color3.new(
@@ -2489,7 +2524,7 @@ LayoutTabs = function()
 		else
 
 			local TabWidth =
-				TOTAL_HUB_WIDTH / Count
+				Hub.HubBar.Size.X.Offset / Count
 
 			Tab.Size =
 				UDim2.new(
@@ -3578,6 +3613,7 @@ SetVoiceChatPreference = function(Enabled)
 	if VoiceChatInternal and GroupId ~= "" then
 		Protect(function()
 			VoiceChatInternal:JoinByGroupId(GroupId, false)
+			VoiceChatInternal:PublishPause(false)
 		end)
 		SavedVoiceGroupId = GroupId
 	end
@@ -3586,6 +3622,11 @@ SetVoiceChatPreference = function(Enabled)
 		for _ = 1, 20 do
 			if not VoiceChatEnabled then return end
 			RefreshLocalVoiceState()
+			if LocalVoiceEnabled then
+				local Input = GetAudioDeviceInput(LocalPlayer)
+				if Input then Protect(function() Input.Muted = false end) end
+				if VoiceChatInternal then Protect(function() VoiceChatInternal:PublishPause(false) end) end
+			end
 			RefreshVoiceParticipants()
 			if LocalVoiceEnabled then break end
 			Wait(0.5)
@@ -3901,7 +3942,7 @@ MakePlayerRow = function(
 					Enum.Font.SourceSans,
 
 				TextSize =
-					17,
+					19,
 
 				TextColor3 =
 					Color3.fromRGB(
@@ -4014,6 +4055,7 @@ MakePlayerRow = function(
 	local BUTTON_HEIGHT = 40
 	local GAP = 8
 	local FRIEND_WIDTH = 156
+	local ACTION_RIGHT_PAD = 14
 
 	local VoiceButton
 	local ViewButton
@@ -4028,13 +4070,13 @@ MakePlayerRow = function(
 		local Step = BUTTON_WIDTH + GAP
 		if FriendButton then
 			FriendButton.Size = UDim2.fromOffset(FRIEND_WIDTH, BUTTON_HEIGHT)
-			FriendButton.Position = UDim2.new(1, -FRIEND_WIDTH, 0.5, -BUTTON_HEIGHT / 2)
+			FriendButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD), 0.5, -BUTTON_HEIGHT / 2)
 			Right = FRIEND_WIDTH + GAP
 		end
 		local function Place(Button)
 			if not Button then return end
 			Button.Size = UDim2.fromOffset(BUTTON_WIDTH, BUTTON_HEIGHT)
-			Button.Position = UDim2.new(1, -(Right + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
+			Button.Position = UDim2.new(1, -(Right + BUTTON_WIDTH + ACTION_RIGHT_PAD), 0.5, -BUTTON_HEIGHT / 2)
 			Right += Step
 		end
 		Place(BlockButton)
@@ -4111,7 +4153,7 @@ MakePlayerRow = function(
 			ViewButton.Position =
 				UDim2.new(
 					1,
-					-BUTTON_WIDTH - GAP,
+					-(BUTTON_WIDTH + GAP + ACTION_RIGHT_PAD),
 					0.5,
 					-BUTTON_HEIGHT / 2
 				)
@@ -4123,6 +4165,7 @@ MakePlayerRow = function(
 					1,
 					-(
 						FRIEND_WIDTH
+						+ ACTION_RIGHT_PAD
 						+ GAP
 						+ BUTTON_WIDTH
 						+ GAP
@@ -4196,7 +4239,7 @@ MakePlayerRow = function(
 				end
 			)
 			VoiceButton.Parent = Row
-			VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
+			VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
 			local VoiceIcon = Create("ImageLabel", {
 				Name = "VoiceIcon",
 				Parent = VoiceButton,
@@ -4227,7 +4270,7 @@ MakePlayerRow = function(
 						end
 					)
 					VoiceButton.Parent = Row
-					VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
+					VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
 					local VoiceIcon = Create("ImageLabel", {
 						Name = "VoiceIcon",
 						Parent = VoiceButton,
@@ -4281,6 +4324,7 @@ MakePlayerRow = function(
 				1,
 				-(
 					FRIEND_WIDTH
+					+ ACTION_RIGHT_PAD
 					+ GAP
 					+ BUTTON_WIDTH
 					+ GAP
@@ -4371,6 +4415,7 @@ MakePlayerRow = function(
 				1,
 				-(
 					FRIEND_WIDTH
+					+ ACTION_RIGHT_PAD
 					+ GAP
 					+ BUTTON_WIDTH
 				),
@@ -6552,9 +6597,9 @@ if PlayersPage.Icon then
 	PlayersPage.Icon.Size =
 		UDim2.new(
 			0,
-			44,
+			36,
 			0,
-			37
+			36
 		)
 
 	PlayersPage.Icon.Position =
@@ -6572,10 +6617,15 @@ end
 -- ============================================================
 
 INVITE_BUTTON_WIDTH =
-	45
+	70
 
 INVITE_BUTTON_HEIGHT =
-	42
+	46
+
+INVITE_MOBILE_SEARCH_EXPANDED = false
+INVITE_MOBILE_SEARCH_WIDTH = 260
+INVITE_MOBILE_SEARCH_COLLAPSED = 38
+INVITE_MOBILE_HEADER_DIVIDER = nil
 
 MakeInviteFriendsRow = function(Page)
 	local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
@@ -7195,11 +7245,10 @@ Connect(
 	SearchBox.FocusLost,
 	function()
 
-		SearchIcon.Visible =
-			SearchBox.Text == ""
+		SearchIcon.Visible = IsMobile or SearchBox.Text == ""
 
 		SearchPlaceholder.Visible =
-			SearchBox.Text == ""
+			(not IsMobile) and SearchBox.Text == ""
 
 	end
 )
@@ -7214,7 +7263,11 @@ Connect(
 			RebuildInviteList()
 		end
 
-		if
+		if IsMobile then
+			SearchIcon.Visible = true
+			SearchPlaceholder.Visible = false
+
+		elseif
 			SearchBox.Text ~= ""
 			or SearchBox:IsFocused()
 		then
@@ -7237,6 +7290,71 @@ Connect(
 
 	end
 )
+
+-- ============================================================
+-- MOBILE INVITE SEARCH / HEADER BEHAVIOR
+-- ============================================================
+ConfigureInviteMobileHeader = function()
+	if not InviteHeader or not SearchFrame or not SearchBox or not SearchIcon then return end
+	if not IsMobile then
+		InviteBackLabel.Text = "Back"
+		InviteBackLabel.TextSize = 24
+		SearchFrame.Size = UDim2.new(0, 220, 0, 34)
+		SearchFrame.Position = UDim2.new(1, -228, 0, 15)
+		SearchBox.Visible = true
+		SearchPlaceholder.Visible = SearchBox.Text == ""
+		SearchIcon.Visible = SearchBox.Text == "" or SearchBox:IsFocused()
+		return
+	end
+
+	InviteBackLabel.Text = "←"
+	InviteBackLabel.TextSize = 36
+	InviteBackLabel.TextXAlignment = Enum.TextXAlignment.Center
+	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
+	InviteBackButton.Size = UDim2.fromOffset(42, 42)
+	InviteBackButton.Position = UDim2.fromOffset(4, 7)
+
+	local Expanded = INVITE_MOBILE_SEARCH_EXPANDED
+	local Width = Expanded and INVITE_MOBILE_SEARCH_WIDTH or INVITE_MOBILE_SEARCH_COLLAPSED
+	SearchFrame.Size = UDim2.fromOffset(Width, 36)
+	SearchFrame.Position = UDim2.new(1, -(Width + 6), 0, 10)
+	SearchFrame.BackgroundTransparency = 1
+	SearchBox.Visible = Expanded
+	SearchPlaceholder.Visible = false
+	SearchIcon.Visible = true
+	SearchIcon.Position = UDim2.fromOffset(8, 8)
+	SearchIcon.Size = UDim2.fromOffset(20, 20)
+	SearchBox.Position = UDim2.new(0, 34, 0, 0)
+	SearchBox.Size = UDim2.new(1, -42, 1, 0)
+end
+
+Connect(SearchFrame.InputBegan, function(Input)
+	if not IsMobile or not InviteList.Visible then return end
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+		INVITE_MOBILE_SEARCH_EXPANDED = true
+		ConfigureInviteMobileHeader()
+		Protect(function() SearchBox:CaptureFocus() end)
+	end
+end)
+
+Connect(UserInputService.InputBegan, function(Input, Processed)
+	if not IsMobile or not Hub.InInviteMenu or not InviteList.Visible or Processed then return end
+	if SearchBox and SearchBox:IsFocused() then return end
+	local Delta = 0
+	if Input.KeyCode == Enum.KeyCode.W or Input.KeyCode == Enum.KeyCode.Up then
+		Delta = -70
+	elseif Input.KeyCode == Enum.KeyCode.S or Input.KeyCode == Enum.KeyCode.Down then
+		Delta = 70
+	elseif Input.KeyCode == Enum.KeyCode.Left then
+		INVITE_MOBILE_SEARCH_EXPANDED = false
+		ConfigureInviteMobileHeader()
+		return
+	end
+	if Delta ~= 0 then
+		local MaxY = math.max(0, InviteList.AbsoluteCanvasSize.Y - InviteList.AbsoluteWindowSize.Y)
+		InviteList.CanvasPosition = Vector2.new(0, math.clamp(InviteList.CanvasPosition.Y + Delta, 0, MaxY))
+	end
+end)
 
 -- ============================================================
 -- INVITE LIST
@@ -7290,6 +7408,23 @@ InviteList =
 				+ 5,
 		}
 	)
+
+INVITE_MOBILE_HEADER_DIVIDER = Create("Frame", {
+	Name = "InviteHeaderDivider",
+	Parent = InvitePage.Frame,
+	BackgroundColor3 = Color3.fromRGB(120, 120, 120),
+	BackgroundTransparency = 0,
+	BorderSizePixel = 0,
+	Size = UDim2.new(1, -20, 0, 1),
+	Position = UDim2.new(0, 10, 0, 62),
+	ZIndex = SETTINGS_BASE_ZINDEX + 14,
+})
+
+Connect(InviteList:GetPropertyChangedSignal("CanvasPosition"), function()
+	if INVITE_MOBILE_HEADER_DIVIDER and InviteList.Parent then
+		INVITE_MOBILE_HEADER_DIVIDER.Visible = InviteList.CanvasPosition.Y <= 0
+	end
+end)
 
 InviteHeader.Visible =
 	false
@@ -7564,36 +7699,26 @@ FetchFriends =
 
 		table.sort(
 			Result,
-			function(
-				A,
-				B
-			)
+			function(A, B)
+				local function StatusRank(Friend)
+					local Status = GetInviteStatus(Friend)
+					if Status == "Online" or Status == "In Experience" then
+						return 1
+					elseif Status == "In Studio" then
+						return 2
+					end
+					return 3
+				end
 
-				local AName =
-					DisplayNameSupport
-					and (
-						A.DisplayName
-						or A.Username
-					)
-					or A.Username
+				local ARank = StatusRank(A)
+				local BRank = StatusRank(B)
+				if ARank ~= BRank then
+					return ARank < BRank
+				end
 
-				local BName =
-					DisplayNameSupport
-					and (
-						B.DisplayName
-						or B.Username
-					)
-					or B.Username
-
-				return
-					string.lower(
-						AName
-					)
-					<
-					string.lower(
-						BName
-					)
-
+				local AName = DisplayNameSupport and (A.DisplayName or A.Username) or A.Username
+				local BName = DisplayNameSupport and (B.DisplayName or B.Username) or B.Username
+				return string.lower(AName or "") < string.lower(BName or "")
 			end
 		)
 
@@ -7688,6 +7813,18 @@ InviteFriend =
 			ActiveInviteOptions = nil
 		end
 
+		local FriendKey = tostring(FriendId)
+		PendingInviteFriendIds[FriendKey] = true
+		if Button then
+			Button.Active = false
+			Button.Selectable = false
+		end
+		if Label then
+			Label.Text = "Sending..."
+			Label.TextColor3 = Color3.new(1, 1, 1)
+			Label.TextTransparency = 0
+		end
+
 		local Options = nil
 
 		pcall(function()
@@ -7740,6 +7877,7 @@ InviteFriend =
 				end
 			end)
 
+			PendingInviteFriendIds[FriendKey] = nil
 			if Button then
 				Button.ImageTransparency = 0
 				Button.BackgroundTransparency = 1
@@ -7763,14 +7901,16 @@ InviteFriend =
 		-- from GameInvitePromptClosed, because some clients return nil
 		-- or an empty recipient list even after the targeted prompt was used.
 
-		local FriendKey =
-			tostring(FriendId)
-
-		InvitedFriendIds[FriendKey] = true
-		InviteState.InvitedFriendIds = InvitedFriendIds
-		Friend.Invited = true
-
-		PendingInviteFriendIds[FriendKey] = nil
+		Spawn(function()
+			Wait(0.4 + math.random() * 1.5)
+			InvitedFriendIds[FriendKey] = true
+			InviteState.InvitedFriendIds = InvitedFriendIds
+			Friend.Invited = true
+			PendingInviteFriendIds[FriendKey] = nil
+			if RebuildInviteList then
+				RebuildInviteList()
+			end
+		end)
 
 		if Button then
 			Button.ImageTransparency = 1
@@ -7781,8 +7921,8 @@ InviteFriend =
 		end
 
 		if Label then
-			Label.Text = "Invited..."
-			Label.TextColor3 = INVITED_COLOR
+			Label.Text = "Sending..."
+			Label.TextColor3 = Color3.new(1, 1, 1)
 			Label.TextTransparency = 0
 		end
 
@@ -7876,7 +8016,7 @@ BuildInviteRow =
 							0,
 							0,
 							PLAYER_LIST_OFFSET
-							+ ((Index - 1) * 80)
+							+ ((Index - 1) * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP))
 						),
 
 					ZIndex =
@@ -8113,11 +8253,8 @@ RebuildInviteList =
 				0,
 				math.max(
 					0,
-					Count
-					* (
-						INVITE_ROW_HEIGHT
-						+ INVITE_ROW_GAP
-					)
+					Count * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP)
+					- INVITE_ROW_GAP
 				)
 			)
 
@@ -8166,8 +8303,13 @@ OpenInviteFriends =
 		InviteList.Visible =
 			true
 
+		if INVITE_MOBILE_HEADER_DIVIDER then INVITE_MOBILE_HEADER_DIVIDER.Visible = true end
+
 		SearchBox.Text =
 			""
+
+		INVITE_MOBILE_SEARCH_EXPANDED = false
+		if ConfigureInviteMobileHeader then ConfigureInviteMobileHeader() end
 
 		SearchIcon.Visible =
 			true
@@ -8187,6 +8329,7 @@ OpenInviteFriends =
 		RefreshInviteFriends()
 
 		ResizeHub()
+		if ConfigureInviteMobileHeader then ConfigureInviteMobileHeader() end
 
 	end
 
@@ -10444,8 +10587,55 @@ ResetMessage.TextSize = 36
 
 LeaveMessage = nil
 
+GetResetButtonAllowed = function()
+	local Allowed = true
+	Protect(function()
+		if StarterGui:GetCore("ResetButtonCallback") == false then
+			Allowed = false
+		end
+	end)
+	return Allowed
+end
+
+ApplyResetButtonAvailability = function()
+	local Allowed = GetResetButtonAllowed()
+	local NormalColor = Color3.new(1, 1, 1)
+	local DisabledColor = Color3.fromRGB(135, 135, 135)
+
+	if ResetButton then
+		ResetButton.Active = Allowed
+		ResetButton.Selectable = Allowed
+		ResetButton.AutoButtonColor = false
+		ResetButton.ImageColor3 = Allowed and NormalColor or DisabledColor
+		if ResetButtonLabel then
+			ResetButtonLabel.TextColor3 = Allowed and NormalColor or DisabledColor
+		end
+	end
+
+	if MobileActionButtons and MobileActionButtons.Reset then
+		local Button = MobileActionButtons.Reset
+		Button.Active = Allowed
+		Button.Selectable = Allowed
+		Button.AutoButtonColor = false
+		Button.ImageColor3 = Allowed and NormalColor or DisabledColor
+		for _, Child in next, Button:GetDescendants() do
+			if Child:IsA("ImageLabel") or Child:IsA("ImageButton") then
+				Child.ImageColor3 = Allowed and NormalColor or DisabledColor
+			elseif Child:IsA("TextLabel") or Child:IsA("TextButton") then
+				Child.TextColor3 = Allowed and NormalColor or DisabledColor
+			end
+		end
+	end
+
+	return Allowed
+end
+
 ResetCharacter =
 	function()
+		if not GetResetButtonAllowed() then
+			ApplyResetButtonAvailability()
+			return
+		end
 		local Character = LocalPlayer.Character
 		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
 		if Humanoid then
@@ -10468,6 +10658,7 @@ ResetButton, ResetButtonLabel =
 		true
 	)
 ResetButton.Parent = ResetPage.Frame
+ApplyResetButtonAvailability()
 
 DontResetButton =
 	MakeStyledButton(
@@ -10555,10 +10746,10 @@ PositionDesktopConfirmationButtons =
 			RightButton.ZIndex = SETTINGS_BASE_ZINDEX + 3
 
 			LeftButton.Position =
-				UDim2.new(0.5, -206, 0, 132)
+				UDim2.fromOffset(155, 132)
 
 			RightButton.Position =
-				UDim2.new(0.5, 6, 0, 132)
+				UDim2.fromOffset(420, 132)
 
 		end
 
@@ -10719,7 +10910,13 @@ MobileActionButtons.Reset = MakeBottomButton(
 	"    Reset Character",
 	"rbxasset://textures/ui/Settings/Help/ResetIcon.png",
 	UDim2.new(0, 4, 0.5, -32),
-	function() PushPage(ResetPage) end,
+	function()
+			if GetResetButtonAllowed() then
+				PushPage(ResetPage)
+			else
+				ApplyResetButtonAvailability()
+			end
+		end,
 	BottomButtonSize
 )
 
@@ -10820,21 +11017,39 @@ ConfigureMobileActionButtons = function()
 		-- Mobile never displays the desktop-style VC icon.
 		VoiceChatButton.Visible = false
 	else
-		local ActionWidth = VoiceActive and 235 or 260
-		local PositionReset = UDim2.new(0, 4, 0.5, -(ActionHeight / 2))
-		local PositionLeave = UDim2.new(0, VoiceActive and 242 or 270, 0.5, -(ActionHeight / 2))
-		local PositionResume = UDim2.new(0, VoiceActive and 480 or 536, 0.5, -(ActionHeight / 2))
+		local FrameWidth =
+			Hub.BottomButtonFrame
+			and Hub.BottomButtonFrame.AbsoluteSize.X
+			or (TOTAL_HUB_WIDTH + PC_RIGHT_EXTENSION)
+		local EdgeGap = 4
+		local Gap = 6
+		local VoiceWidth = VoiceActive and 64 or 0
+		local VoiceGap = VoiceActive and Gap or 0
+		local ActionWidth = math.floor((FrameWidth - (EdgeGap * 2) - (Gap * 2) - VoiceWidth - VoiceGap) / 3 + 0.5)
+		local ActionY = -(ActionHeight / 2)
 
 		MobileActionButtons.Reset.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
 		MobileActionButtons.Leave.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
 		MobileActionButtons.Resume.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-		MobileActionButtons.Reset.Position = PositionReset
-		MobileActionButtons.Leave.Position = PositionLeave
-		MobileActionButtons.Resume.Position = PositionResume
+		MobileActionButtons.Reset.Position = UDim2.new(0, EdgeGap, 0.5, ActionY)
+		MobileActionButtons.Leave.Position = UDim2.new(0, EdgeGap + ActionWidth + Gap, 0.5, ActionY)
+		MobileActionButtons.Resume.Position = UDim2.new(0, EdgeGap + (ActionWidth + Gap) * 2, 0.5, ActionY)
 		VoiceChatButton.Visible = VoiceActive
-		VoiceChatButton.Position = UDim2.new(0, 716, 0.5, -32)
+		if VoiceActive then
+			VoiceChatButton.Position = UDim2.new(0, FrameWidth - EdgeGap - VoiceWidth, 0.5, -32)
+		end
 	end
 end
+
+-- ============================================================
+-- RESET BUTTON AVAILABILITY WATCH
+-- ============================================================
+Spawn(function()
+	while ScreenGui and ScreenGui.Parent do
+		ApplyResetButtonAvailability()
+		Wait(0.25)
+	end
+end)
 
 -- ============================================================
 -- VOICE CHAT UI UPDATES
@@ -10883,8 +11098,10 @@ Spawn(function()
 					local UserId = tonumber(Player.UserId or Player.userId) or 0
 					local Row = PlayersPage.Frame:FindFirstChild("PlayerLabel" .. Player.Name)
 					local VoiceButton = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
+					local BeforeVoice = VoiceEnabledCache[UserId] == true
+					CheckVoiceForPlayer(Player)
 					local HasVoice = VoiceEnabledCache[UserId] == true
-					if HasVoice ~= (VoiceButton ~= nil) then
+					if BeforeVoice ~= HasVoice or HasVoice ~= (VoiceButton ~= nil) then
 						if RebuildPlayersPage then RebuildPlayersPage() end
 						break
 					elseif VoiceButton then
@@ -11193,24 +11410,13 @@ SystemMenuButton =
 			Parent = ScreenGui,
 			BackgroundTransparency = 1,
 			BorderSizePixel = 0,
-			Image =
-				"rbxasset://LuaPackages/Packages/_Index/FoundationImages/FoundationImages/SpriteSheets/img_set_1x_6.png",
-
-			ImageRectOffset =
-				Vector2.new(
-					474,
-					38
-				),
-
-			ImageRectSize =
-				Vector2.new(
-					36,
-					36
-				),
+			Image = SYSTEM_MENU_ICON,
 
 			ImageTransparency = 0,
 			ScaleType = Enum.ScaleType.Fit,
-			Size = UDim2.fromOffset(30, 30),
+			ImageRectOffset = SYSTEM_MENU_ICON_RECT_OFFSET,
+			ImageRectSize = SYSTEM_MENU_ICON_RECT_SIZE,
+			Size = UDim2.fromOffset(SYSTEM_MENU_SIZE.X, SYSTEM_MENU_SIZE.Y),
 			Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X, SYSTEM_MENU_OFFSET_Y),
 			AutoButtonColor = false,
 			Visible = false,
@@ -11398,7 +11604,11 @@ Connect(UserInputService.InputBegan, function(Input, Processed)
 			ToggleCustomRecording()
 		end
 	elseif Hub.Visible and Input.KeyCode == Enum.KeyCode.R and not Hub.InInviteMenu and not Hub.InConfirmation then
-		PushPage(ResetPage)
+		if GetResetButtonAllowed() then
+			PushPage(ResetPage)
+		else
+			ApplyResetButtonAvailability()
+		end
 	elseif Hub.Visible and Input.KeyCode == Enum.KeyCode.L and not Hub.InInviteMenu and not Hub.InConfirmation then
 		PushPage(LeavePage)
 	elseif Hub.Visible and (Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter) then
