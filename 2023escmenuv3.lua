@@ -108,6 +108,7 @@ SETTINGS_SHIELD_COLOR =
 
 SETTINGS_SHIELD_TRANSPARENCY = 0.2
 SETTINGS_BASE_ZINDEX = 200
+HIDE_SELECTOR_ARROWS = false
 
 SETTINGS_INACTIVE_POSITION =
 	UDim2.new(
@@ -147,9 +148,15 @@ SLIDER_SELECTED_RIGHT_IMAGE =
 	"rbxasset://textures/ui/Settings/Slider/SelectedBarRight.png"
 
 SLIDER_LEFT_IMAGE =
-	"rbxasset://textures/ui/Settings/Slider/BarLeft.png"
+	"rbxasset://textures/ui/Settings/Slider/Less.png"
 
 SLIDER_RIGHT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/More.png"
+
+SLIDER_BAR_LEFT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/BarLeft.png"
+
+SLIDER_BAR_RIGHT_IMAGE =
 	"rbxasset://textures/ui/Settings/Slider/BarRight.png"
 
 PLAYER_LIST_OFFSET = 20
@@ -183,6 +190,7 @@ ABUSE_TYPES_GAME = {
 
 IsTouchClient = UserInputService.TouchEnabled
 IsMobile = false
+IsTablet = false
 
 pcall(function()
 	local Platform = UserInputService:GetPlatform()
@@ -191,6 +199,18 @@ pcall(function()
 		Platform == Enum.Platform.Android
 		or Platform == Enum.Platform.IOS
 end)
+
+UpdateTabletPlatform = function(Viewport)
+	if not IsMobile then
+		IsTablet = false
+		return false
+	end
+	Viewport = Viewport or (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(720, 1280)
+	local ShortSide = math.min(Viewport.X, Viewport.Y)
+	local LongSide = math.max(Viewport.X, Viewport.Y)
+	IsTablet = ShortSide >= 760 and LongSide > 0 and (LongSide / ShortSide) <= 1.85
+	return IsTablet
+end
 
 -- ============================================================
 -- CONFIGURATION
@@ -204,14 +224,18 @@ VoiceChatEnabled = false
 TOTAL_HUB_WIDTH = 800
 PC_SCROLLBAR_RESERVE = 6
 PC_RIGHT_EXTENSION = 8
+PC_HUBBAR_LEFT_REDUCTION = 0
+PC_HOME_EXTRA_GAP = 0
+PC_SCROLLBAR_THICKNESS = 12
 
--- Home button is exactly the same height as the hub bar.
-HOME_HEIGHT = 64
+-- Home button uses the live HubBar height so its geometry cannot drift.
+HOME_HEIGHT = 60
 
 -- Slightly wider than its height.
-HOME_WIDTH = 65
+HOME_WIDTH = 60
 
 HUBBAR_HEIGHT = 60
+MOBILE_HUBBAR_HEIGHT = 40
 
 -- Custom SystemMenuButton offsets.
 SYSTEM_MENU_OFFSET_X = 16
@@ -731,7 +755,7 @@ MakeText = function(
 				Enum.Font.SourceSansBold,
 
 			TextSize =
-				24,
+				20,
 
 			TextColor3 =
 				Color3.new(
@@ -1178,6 +1202,14 @@ Hub.Modal =
 		}
 	)
 
+Hub.MenuContainer = Create("Frame", {
+	Name="MenuContainer", Parent=Hub.Shield, BackgroundTransparency=1,
+	Position=UDim2.new(0.5,0,0.5,0), Size=UDim2.new(0.95,0,0.95,0),
+	AnchorPoint=Vector2.new(0.5,0.5), ZIndex=SETTINGS_BASE_ZINDEX,
+})
+Hub.MenuAspectRatio = Create("UIAspectRatioConstraint", {Name="MenuAspectRatio", AspectRatio=800/600, AspectType=Enum.AspectType.ScaleWithParentSize, DominantAxis=Enum.DominantAxis.Width, Parent=Hub.MenuContainer})
+Hub.MenuListLayout = Create("UIListLayout", {Name="MenuListLayout", FillDirection=Enum.FillDirection.Vertical, VerticalAlignment=Enum.VerticalAlignment.Center, HorizontalAlignment=Enum.HorizontalAlignment.Center, SortOrder=Enum.SortOrder.LayoutOrder, Parent=nil})
+
 Hub.HubBar =
 	Create(
 		"ImageLabel",
@@ -1186,7 +1218,7 @@ Hub.HubBar =
 				"HubBar",
 
 			Parent =
-				Hub.Shield,
+				Hub.MenuContainer,
 
 			Image =
 				TAB_BAR_IMAGE,
@@ -1230,6 +1262,9 @@ Hub.HubBar =
 		}
 	)
 
+Hub.HubBarContainer = Create("ImageLabel", {Name="HubBarContainer", Parent=Hub.HubBar, BackgroundTransparency=1, Image=TAB_BAR_IMAGE, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(4,4,6,6), Size=UDim2.new(1,-70,1,0), Position=UDim2.new(0,70,0,0), ZIndex=SETTINGS_BASE_ZINDEX+2})
+Hub.HubBarContainerLayout = Create("UIListLayout", {Name="UIListLayout", FillDirection=Enum.FillDirection.Horizontal, HorizontalAlignment=Enum.HorizontalAlignment.Center, VerticalAlignment=Enum.VerticalAlignment.Center, SortOrder=Enum.SortOrder.LayoutOrder, Wraps=false, Padding=UDim.new(0,0), Parent=Hub.HubBarContainer})
+
 Hub.PageClipper =
 	Create(
 		"Frame",
@@ -1238,7 +1273,7 @@ Hub.PageClipper =
 				"PageViewClipper",
 
 			Parent =
-				Hub.Shield,
+				Hub.MenuContainer,
 
 			BackgroundTransparency =
 				1,
@@ -1320,7 +1355,7 @@ Hub.BottomButtonFrame =
 				"BottomButtonFrame",
 
 			Parent =
-				Hub.Shield,
+				Hub.MenuContainer,
 
 			BackgroundTransparency =
 				1,
@@ -1355,177 +1390,22 @@ Hub.BottomButtonFrame =
 -- ============================================================
 
 CreateHomeButton = function()
-
-	if
-		not HomeButtonEnabled
-		or HomeButton
-	then
-		return
-	end
-
-	HomeButton =
-		Create(
-			"ImageButton",
-			{
-				Name =
-					"HomeButton",
-
-				BackgroundTransparency =
-					1,
-
-				Image =
-					BUTTON_IMAGE,
-
-				ScaleType =
-					Enum.ScaleType.Slice,
-
-				SliceCenter =
-					Rect.new(
-						8,
-						6,
-						46,
-						44
-					),
-
-				AutoButtonColor =
-					false,
-
-				Size =
-					UDim2.new(
-						0,
-						HOME_WIDTH,
-						0,
-						HOME_HEIGHT
-					),
-
-				AnchorPoint =
-					Vector2.new(
-						0,
-						0
-					),
-
-				ZIndex =
-					SETTINGS_BASE_ZINDEX
-					+ 4,
-			}
-		)
-
-	Create(
-		"ImageLabel",
-		{
-			Name =
-				"Icon",
-
-			Parent =
-				HomeButton,
-
-			BackgroundTransparency =
-				1,
-
-			Image =
-				"rbxasset://textures/ui/Settings/MenuBarIcons/HomeTab.png",
-
-			ScaleType =
-				Enum.ScaleType.Fit,
-
-			Size =
-				UDim2.new(
-					0,
-					44,
-					0,
-					44
-				),
-
-			Position =
-				UDim2.new(
-					0.5,
-					-22,
-					0.5,
-					-22
-				),
-
-			ZIndex =
-				SETTINGS_BASE_ZINDEX
-				+ 5,
-		}
-	)
-
-	Connect(
-		HomeButton.MouseEnter,
-		function()
-			HomeButton.Image =
-				BUTTON_SELECTED_IMAGE
-		end
-	)
-
-	Connect(
-		HomeButton.MouseLeave,
-		function()
-			HomeButton.Image =
-				BUTTON_IMAGE
-		end
-	)
-
-	Connect(
-		HomeButton.MouseButton1Click,
-		function()
-
-			if
-				HomeButtonEnabled
-				and LeavePage
-				and Hub.Visible
-			then
-
-				PushPage(
-					LeavePage
-				)
-
-			end
-
-		end
-	)
-
+	if not HomeButtonEnabled or HomeButton then return end
+	HomeButton = Create("ImageButton", {Name="HubBarHomeButton", Parent=Hub.HubBar, BackgroundTransparency=1, Image=TAB_BAR_IMAGE, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(4,4,6,6), AutoButtonColor=true, Size=UDim2.new(0,60,0,60), Position=UDim2.new(0,0,0,0), ZIndex=SETTINGS_BASE_ZINDEX+4})
+	Create("UIAspectRatioConstraint", {Parent=HomeButton, AspectRatio=1, AspectType=Enum.AspectType.FitWithinMaxSize, DominantAxis=Enum.DominantAxis.Height})
+	Create("ImageLabel", {Name="HubBarHomeButtonIcon", Parent=HomeButton, BackgroundTransparency=1, Image="rbxasset://textures/ui/Settings/MenuBarIcons/HomeTab.png", ScaleType=Enum.ScaleType.Stretch, Size=UDim2.new(0.7,0,0.7,0), Position=UDim2.new(0.16,0,0.18,0), ZIndex=SETTINGS_BASE_ZINDEX+5})
+	Connect(HomeButton.MouseEnter, function() HomeButton.Image="rbxasset://textures/ui/Settings/MenuBarAssets/MenuSelection@2x.png" end)
+	Connect(HomeButton.MouseLeave, function() HomeButton.Image=TAB_BAR_IMAGE end)
+	Connect(HomeButton.MouseButton1Click, function() if HomeButtonEnabled and LeavePage and Hub.Visible then PushPage(LeavePage) end end)
 end
 
 CreateHomeButton()
 
 PositionHomeButton = function()
-
-	if
-		not HomeButtonEnabled
-		or not HomeButton
-	then
-		return
-	end
-
-	HomeButton.Parent =
-		Hub.HubBar.Parent
-
-	HomeButton.Size =
-		UDim2.new(
-			0,
-			HOME_WIDTH,
-			0,
-			HOME_HEIGHT
-		)
-
-	HomeButton.AnchorPoint =
-		Vector2.new(
-			0,
-			0
-		)
-
-	local HubPosition =
-		Hub.HubBar.Position
-
-	HomeButton.Position =
-		UDim2.new(
-			HubPosition.X.Scale,
-			HubPosition.X.Offset - HOME_WIDTH,
-			HubPosition.Y.Scale,
-			HubPosition.Y.Offset - 2
-		)
-
+	if not HomeButtonEnabled or not HomeButton then return end
+	HomeButton.Parent=Hub.HubBar
+	HomeButton.Size=UDim2.new(0,Hub.HubBar.Size.Y.Offset,0,Hub.HubBar.Size.Y.Offset)
+	HomeButton.Position=UDim2.new(0,0,0,0)
 end
 
 -- ============================================================
@@ -1557,6 +1437,7 @@ ResizeHub = function()
 	end
 
 	local Height
+	UpdateTabletPlatform(Viewport)
 	local TabletScale = ApplyTabletResponsiveScale(Viewport)
 	local LayoutViewport = Viewport
 	local TabletXOffset = 0
@@ -1633,7 +1514,6 @@ ResizeHub = function()
 
 			Width =
 				TOTAL_HUB_WIDTH
-				+ PC_RIGHT_EXTENSION
 
 			local ExtraSpace =
 				(BufferSize * 2)
@@ -1742,20 +1622,25 @@ ResizeHub = function()
 		-- ====================================================
 
 		local Width =
-			math.min(800, math.max(280, LayoutViewport.X - 16))
+			IsMobile
+			and math.min(800, math.max(280, LayoutViewport.X - 16))
+			or TOTAL_HUB_WIDTH
 
-		local ConfirmationHeight = 240
+		local ConfirmationHeight = 280
 
 		Hub.HubBar.Visible = false
 		Hub.BottomButtonFrame.Visible = false
 		if HomeButton then HomeButton.Visible = false end
 
+		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
 		Hub.PageClipper.Size = UDim2.new(0, Width, 0, ConfirmationHeight)
 		Hub.PageClipper.Position =
 			IsMobile
 			and UDim2.new(0.5, -Width / 2 + TabletXOffset, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
-			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2)
+			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2 + 75)
 
+		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.Position = UDim2.new(0, 0, 0, 0)
 		Hub.PageView.Size = UDim2.new(1, 0, 0, ConfirmationHeight)
 		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
 		Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, ConfirmationHeight)
@@ -1771,7 +1656,7 @@ ResizeHub = function()
 			end
 			if Page == ResetPage or Page == LeavePage then
 				Page.Frame.Parent = Hub.PageView
-				Page.Frame.Position = UDim2.fromOffset(0, 0)
+				Page.Frame.Position = UDim2.new(0, 0, 0, 0)
 				Page.Frame.Size = UDim2.fromOffset(Width, ConfirmationHeight)
 				Page.Frame.Visible = true
 				local First = Page == ResetPage and ResetButton or LeaveButton
@@ -1790,11 +1675,62 @@ ResizeHub = function()
 					end
 				end
 				Second.Active = true
-				First.Position = UDim2.fromOffset(155, 132)
-				Second.Position = UDim2.fromOffset(420, 132)
+				PositionDesktopConfirmationButtons()
 				First.ZIndex = SETTINGS_BASE_ZINDEX + 10
 				Second.ZIndex = SETTINGS_BASE_ZINDEX + 10
 			end
+		end
+
+	elseif IsMobile and IsTablet then
+
+		-- ====================================================
+		-- TABLET LAYOUT
+		-- PC-LIKE PAGE, MOBILE-STYLE HUBBAR/BOTTOM BUTTONS
+		-- ====================================================
+
+		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.Position = UDim2.new(0, 0, 0, 0)
+		Hub.PageView.Size = UDim2.new(1, 0, 1, -20)
+		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
+		Hub.PageView.ScrollBarThickness = 12
+		Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
+
+		local Width = math.max(720, math.floor(LayoutViewport.X - 20 + 0.5))
+		local HubHeight = MOBILE_HUBBAR_HEIGHT
+		local BottomHeight = 62
+		local Top = 3
+		local BottomGap = 6
+		local PageHeight = math.max(300, math.floor(LayoutViewport.Y - HubHeight - BottomHeight - Top - BottomGap - 10 + 0.5))
+
+		Hub.MenuContainer.Size = UDim2.new(0, Width, 0, math.min(LayoutViewport.Y - 10, HubHeight + PageHeight + BottomHeight + Top + BottomGap))
+		Hub.MenuContainer.Position = UDim2.new(0.5, TabletXOffset, 0.5, 0)
+		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+
+		Hub.HubBar.Visible = true
+		Hub.HubBar.Size = UDim2.new(1, 0, 0, HubHeight)
+		Hub.HubBar.Position = UDim2.new(0, 0, 0, 0)
+		Hub.HubBar.Image = TAB_BAR_IMAGE
+		Hub.HubBar.ImageTransparency = 0
+		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
+		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
+
+		if HomeButton then
+			HomeButton.Visible = false
+		end
+
+		Hub.PageClipper.Parent = Hub.MenuContainer
+		Hub.PageClipper.Size = UDim2.new(1, 0, 0, PageHeight)
+		Hub.PageClipper.Position = UDim2.new(0, 0, 0, HubHeight)
+
+		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
+		Hub.BottomButtonFrame.Visible = true
+		Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, BottomHeight)
+		Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -BottomHeight)
+
+		if PlayersPage and PlayersPage.Frame then
+			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, PlayersPage.Frame.Size.Y.Offset))
 		end
 
 	elseif IsMobile then
@@ -1824,28 +1760,25 @@ ResizeHub = function()
 
 		Hub.PageView.ScrollBarThickness = 0
 
+		-- Match the captured native mobile hierarchy: the menu is 95% of the
+		-- viewport, with a 10px outer reduction for the HubBar/PageClipper.
 		local Width =
 			math.max(
-				240,
-				LayoutViewport.X - 16
+				280,
+				math.floor((LayoutViewport.X * 0.95) - 10 + 0.5)
 			)
 
-		local GroupTop =
-			32
-			+ MOBILE_MENU_GAP
-
-		local PageTop =
-			GroupTop
-			+ HUBBAR_HEIGHT
-			+ MOBILE_LAYOUT_GAP
+		local GroupTop = 3
+		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
 
 		local PageHeight =
 			math.max(
 				100,
-				LayoutViewport.Y
-				- PageTop
-				- MOBILE_LAYOUT_GAP
+				math.floor((LayoutViewport.Y * 0.95) - 45 + 0.5)
 			)
+
+		local PageCenterYOffset =
+			(-PageHeight / 2) + 22.5
 
 		Height =
 			PageHeight
@@ -1855,7 +1788,7 @@ ResizeHub = function()
 				0,
 				Width,
 				0,
-				HUBBAR_HEIGHT
+				MobileBarHeight
 			)
 
 		Hub.HubBar.Position =
@@ -1865,6 +1798,9 @@ ResizeHub = function()
 				0,
 				GroupTop
 			)
+
+		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
+		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
 
 		Hub.PageClipper.Size =
 			UDim2.new(
@@ -1878,20 +1814,35 @@ ResizeHub = function()
 			UDim2.new(
 				0.5,
 				-Width / 2 + TabletXOffset,
-				0,
-				PageTop
+				0.5,
+				PageCenterYOffset
 			)
 
 		-- The fixed PC button frame is NEVER used on mobile.
 		Hub.BottomButtonFrame.Visible = false
+		Hub.BottomButtonFrame.Size = UDim2.new(1, -10, 0, MOBILE_HUBBAR_HEIGHT)
+		Hub.BottomButtonFrame.Position = UDim2.new(0.5, 5, 1, -43)
 
-		-- The mobile action buttons belong to PlayersPage.Frame,
-		-- so they scroll with the player list.
+		-- The mobile action buttons belong to a ButtonsContainer inside Players.
 		if PlayersPage and PlayersPage.Frame then
 
 			local UiScale = GetMobileUiScale()
-			local ActionHeight = math.floor(72 * UiScale + 0.5)
+			local ActionHeight = 62
 			local ActionWidth = 1 / 3
+
+			if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
+				MobileButtonsContainer = Create("Frame", {
+					Name = "ButtonsContainer",
+					Parent = PlayersPage.Frame,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Size = UDim2.new(1, 0, 0, 62),
+					Position = UDim2.new(0, 0, 0, 0),
+					ZIndex = SETTINGS_BASE_ZINDEX + 1,
+				})
+			end
+			MobileButtonsContainer.Size = UDim2.new(1, 0, 0, 62)
+			MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
 
 			for Index, Button in ipairs({
 				MobileActionButtons.Leave,
@@ -1901,24 +1852,19 @@ ResizeHub = function()
 
 				if Button then
 
-					Button.Parent =
-						PlayersPage.Frame
+					Button.Parent = MobileButtonsContainer
 
-					Button.Size =
-						UDim2.new(
-							ActionWidth,
-							-6,
-							0,
-							ActionHeight
-						)
-
-					Button.Position =
-						UDim2.new(
-							(Index - 1) * ActionWidth,
-							3,
-							0,
-							0
-						)
+					Button.AnchorPoint = Vector2.new(
+						Index == 2 and 0.5 or (Index == 3 and 1 or 0),
+						0
+					)
+					Button.Size = UDim2.new(ActionWidth, -5, 0, ActionHeight)
+					Button.Position = UDim2.new(
+						Index == 2 and 0.5 or (Index == 3 and 1 or 0),
+						Index == 2 and 0 or (Index == 3 and 0 or 0),
+						0,
+						0
+					)
 
 					Button.Visible = true
 					Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
@@ -1945,7 +1891,7 @@ ResizeHub = function()
 			end
 
 			local UiScale = GetMobileUiScale()
-			local ActionHeight = math.floor(72 * UiScale + 0.5)
+			local ActionHeight = 62
 			local ActionListGap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
 			local InviteOffset = InviteFriends and 80 or 0
 
@@ -2019,10 +1965,7 @@ ResizeHub = function()
 					1,
 					0,
 					0,
-					math.max(
-						ContentHeight,
-						PageHeight
-					)
+					math.max(240, ContentHeight, PageHeight)
 				)
 
 			Hub.PageView.CanvasSize =
@@ -2048,138 +1991,61 @@ ResizeHub = function()
 		end
 
 	else
-
 		-- ====================================================
-		-- PC
+		-- PC / 2023 DESKTOP LAYOUT
 		-- ====================================================
-
-		-- Reset every viewport property changed by Invite/Confirmation.
-		-- This is important when returning with Back without closing the menu.
-		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
-		Hub.PageClipper.ClipsDescendants = true
-		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
-		Hub.PageView.Position = UDim2.new(0, 0, 0, 0)
-		Hub.PageView.Size = UDim2.new(1, 0, 1, 0)
-		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
-		Hub.PageView.ScrollBarThickness = 6
-
-		local BufferSize =
-			0.05 * Viewport.Y
-
-		local Width =
-			TOTAL_HUB_WIDTH
-			+ PC_RIGHT_EXTENSION
-
-		local ExtraSpace =
-			(BufferSize * 2)
-			+ (HUBBAR_HEIGHT * 2)
-
-		Height =
-			Clamp(
-				Viewport.Y - ExtraSpace,
-				150,
-				600
-			)
-
-				Hub.HubBar.Size =
-			UDim2.new(
-				0,
-				HomeButtonEnabled
-					and (
-						Width
-						- HOME_WIDTH
-					)
-					or Width,
-				0,
-				HUBBAR_HEIGHT
-			)
-
-		Hub.HubBar.Position =
-			UDim2.new(
-				0.5,
-				-(TOTAL_HUB_WIDTH / 2)
-				+ (
-					HomeButtonEnabled
-					and HOME_WIDTH
-					or 0
-				),
-				0.5,
-				-Height / 2
-				- HUBBAR_HEIGHT
-			)
-
-		Hub.PageClipper.Size =
-			UDim2.new(
-				0,
-				Width,
-				0,
-				Height
-			)
-
-		Hub.PageClipper.Position =
-			UDim2.new(
-				0.5,
-				-(TOTAL_HUB_WIDTH / 2),
-				0.5,
-				-Height / 2
-			)
-
-		Hub.BottomButtonFrame.Size =
-			UDim2.new(
-				0,
-				Width,
-				0,
-				HUBBAR_HEIGHT
-			)
-
-		Hub.BottomButtonFrame.Position =
-			UDim2.new(
-				0.5,
-				-(TOTAL_HUB_WIDTH / 2),
-				0.5,
-				Height / 2 + 21
-			)
-
-		Hub.PageView.CanvasPosition =
-			Vector2.new(0, 0)
-
-		Hub.PageView.ScrollBarThickness =
-			6
-
-		if Hub.CurrentPage and Hub.CurrentPage.Frame then
-			Hub.CurrentPage.Frame.Position =
-				UDim2.new(0, 0, 0, PAGE_TOP_PADDING)
-
-			Hub.PageView.CanvasSize =
-				UDim2.new(
-					0,
-					0,
-					0,
-					math.max(
-						Hub.CurrentPage.Frame.Size.Y.Offset
-						+ PAGE_TOP_PADDING,
-						Height
-					)
-				)
+		Hub.MenuContainer.Size=UDim2.new(0.95,0,0.95,0)
+		Hub.MenuContainer.Position=UDim2.new(0.5,0,0.5,0)
+		Hub.MenuContainer.AnchorPoint=Vector2.new(0.5,0.5)
+		local FullScreenHeight=Viewport.Y
+		local BufferSize=(1-0.95)*FullScreenHeight
+		local BarSize=60
+		local ExtraSpace=BufferSize*2+BarSize*2
+		local UsableScreenHeight=FullScreenHeight-ExtraSpace
+		local LargestPageSize=600
+		local MinimumPageSize=150
+		local UsePageSize
+		Hub.HubBar.Parent=Hub.MenuContainer
+		Hub.HubBar.AnchorPoint=Vector2.new(0.5,0)
+		Hub.HubBar.Size=UDim2.new(0,800,0,60)
+		if LargestPageSize < UsableScreenHeight then
+			UsePageSize=LargestPageSize
+			Hub.HubBar.Position=UDim2.new(0.5,0,0.5,-LargestPageSize/2-BarSize)
+			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,0.5,LargestPageSize/2)
+		elseif UsableScreenHeight < MinimumPageSize then
+			UsePageSize=MinimumPageSize
+			Hub.HubBar.Position=UDim2.new(0.5,0,0.5,-MinimumPageSize/2-BarSize)
+			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,0.5,MinimumPageSize/2)
+		else
+			UsePageSize=UsableScreenHeight
+			Hub.HubBar.Position=UDim2.new(0.5,0,0,BufferSize)
+			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,1,-(BufferSize+BarSize))
 		end
-
+		Hub.HubBar.Image=TAB_BAR_IMAGE
+		Hub.HubBar.ImageTransparency=HomeButtonEnabled and 1 or 0
+		Hub.HubBarContainer.Size=UDim2.new(1,HomeButtonEnabled and -70 or 0,1,0)
+		Hub.HubBarContainer.Position=UDim2.new(0,HomeButtonEnabled and 70 or 0,0,0)
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
 		if HomeButton then
-
-			HomeButton.Visible =
-				HomeButtonEnabled
-
-			HomeButton.Size =
-				UDim2.new(
-					0,
-					HOME_WIDTH,
-					0,
-					HOME_HEIGHT
-				)
-
-			if HomeButtonEnabled then
-				PositionHomeButton()
-			end
-
+			HomeButton.Visible=HomeButtonEnabled
+			HomeButton.Size=UDim2.new(0,60,0,60)
+			HomeButton.Position=UDim2.new(0,0,0,0)
+		end
+		Hub.PageClipper.Parent=Hub.MenuContainer
+		Hub.PageClipper.AnchorPoint=Vector2.new(0.5,0)
+		Hub.PageClipper.Size=UDim2.new(0,800,0,UsePageSize)
+		Hub.PageClipper.Position=UDim2.new(0.5,0,0.5,-UsePageSize/2)
+		Hub.PageView.AnchorPoint=Vector2.new(0.5,0.5)
+		Hub.PageView.Position=UDim2.new(0.5,0,0.5,0)
+		Hub.PageView.Size=UDim2.new(1,0,1,-20)
+		Hub.PageView.CanvasPosition=Vector2.new(0,0)
+		Hub.PageView.ScrollBarThickness=12
+		Hub.PageView.VerticalScrollBarInset=Enum.ScrollBarInset.ScrollBar
+		Hub.BottomButtonFrame.Parent=Hub.MenuContainer
+		Hub.BottomButtonFrame.Size=UDim2.new(0,800,0,60)
+		if Hub.CurrentPage and Hub.CurrentPage.Frame then
+			Hub.CurrentPage.Frame.Position=UDim2.new(0,0,0,PAGE_TOP_PADDING)
+			Hub.PageView.CanvasSize=UDim2.new(0,0,0,math.max(Hub.CurrentPage.Frame.Size.Y.Offset+PAGE_TOP_PADDING,UsePageSize))
 		end
 
 	end
@@ -2239,7 +2105,7 @@ MakeTab = function(
 					.. "Tab",
 
 				Parent =
-					Hub.HubBar,
+					Hub.HubBarContainer,
 
 				BackgroundTransparency =
 					1,
@@ -2281,36 +2147,34 @@ MakeTab = function(
 				ImageTransparency =
 					0.5,
 
-				Size =
-					UDim2.new(
-						0,
-						36,
-						0,
-						36
-					),
+				Size = UDim2.new(0,36,0,36),
 
-				Position =
-					UDim2.new(
-						0,
-						12,
-						0.5,
-						-18
-					),
+				Position = UDim2.new(0,12,0.5,-18),
 
 				ZIndex =
 					SETTINGS_BASE_ZINDEX
 					+ 3,
 			}
 		)
-
 	Create(
-		"TextLabel",
+		"UIAspectRatioConstraint",
 		{
-			Name =
-				"Title",
+			Parent = IconLabel,
+			AspectRatio = 1,
+			AspectType = Enum.AspectType.FitWithinMaxSize,
+			DominantAxis = Enum.DominantAxis.Width,
+		}
+	)
 
-			Parent =
-				IconLabel,
+	local TitleLabel =
+		Create(
+			"TextLabel",
+			{
+				Name =
+					"Title",
+
+				Parent =
+				Tab,
 
 			BackgroundTransparency =
 				1,
@@ -2339,19 +2203,13 @@ MakeTab = function(
 
 			Size =
 				UDim2.new(
-					1.05,
-					0,
+					1,
+					-60,
 					1,
 					0
 				),
 
-			Position =
-				UDim2.new(
-					1.2,
-					0,
-					0,
-					0
-				),
+			Position = UDim2.new(0,54,0,0),
 
 			ZIndex =
 				SETTINGS_BASE_ZINDEX
@@ -2432,120 +2290,63 @@ MakeTab = function(
 end
 
 LayoutTabs = function()
+	local Order = IsMobile
+		and { PlayersPage, GamePage, ReportPage, HelpPage }
+		or { PlayersPage, GamePage, ReportPage, HelpPage, RecordPage }
 
-	local VisiblePages =
-		{}
+	local Wanted = {}
+	for _, Page in ipairs(Order) do
+		if Page then
+			Wanted[Page] = true
+		end
+	end
 
-	for _, Page in next,
-		Hub.Pages
-	do
+	-- Hide tabs that do not exist on the current platform. In particular,
+	-- Captures/Record is not present on phone or tablet.
+	for _, Page in ipairs(Hub.Pages) do
+		if Page and Page.Tab then
+			Page.Tab.Visible = Wanted[Page] == true
+			if not Wanted[Page] and Page.Selection then
+				Page.Selection.Visible = false
+			end
+		end
+	end
 
-		if Page.Tab then
+	local Count = #Order
+	if Count == 0 then return end
 
-			local Show =
-				true
+	for Index, Page in ipairs(Order) do
+		if Page and Page.Tab then
+			local Tab = Page.Tab
+			local Fraction = 1 / Count
+			Tab.Size = UDim2.new(Fraction, 0, 1, 0)
+			Tab.Position = UDim2.new((Index - 1) * Fraction, 0, 0, 0)
+			Tab.LayoutOrder = Index
 
-			if IsMobile then
-
-				Show =
-					(
-						PlayersPage
-						and Page == PlayersPage
-					)
-
-					or (
-						GamePage
-						and Page == GamePage
-					)
-
-					or (
-						ReportPage
-						and Page == ReportPage
-					)
-
-					or (
-						HelpPage
-						and Page == HelpPage
-					)
-
-					or (
-						RecordPage
-						and Page == RecordPage
-					)
-
+			local Selected = Hub.CurrentPage == Page
+			if Page.Selection then
+				Page.Selection.Visible = Selected
 			end
 
-			Page.Tab.Visible =
-				Show
-
-			if Show then
-				Insert(
-					VisiblePages,
-					Page
-				)
+			if Page.Icon then
+				Page.Icon.ImageTransparency = Selected and 0 or 0.5
+				if IsMobile then
+					Page.Icon.Size = UDim2.new(0, 34, 0, 28)
+					Page.Icon.Position = UDim2.new(0, 10, 0.5, -14)
+				end
+				local Title = Page.Tab:FindFirstChild("Title")
+				if Title then
+					Title.TextColor3 = Color3.new(1, 1, 1)
+					Title.TextTransparency = Selected and 0 or 0.5
+					if IsMobile then
+						Title.TextSize = 18
+						Title.Size = UDim2.new(1.05, 0, 1, 0)
+						Title.Position = UDim2.new(1.2, 0, 0, 0)
+					end
+				end
 			end
-
 		end
-
 	end
-
-	local Count =
-		#VisiblePages
-
-	if Count == 0 then
-		return
-	end
-
-	for Index, Page in next,
-		VisiblePages
-	do
-
-		local Tab =
-			Page.Tab
-
-		if IsMobile then
-
-			Tab.Size =
-				UDim2.new(
-					1 / Count,
-					0,
-					1,
-					0
-				)
-
-			Tab.Position =
-				UDim2.new(
-					(Index - 1) / Count,
-					0,
-					0,
-					0
-				)
-
-		else
-
-			local TabWidth =
-				Hub.HubBar.Size.X.Offset / Count
-
-			Tab.Size =
-				UDim2.new(
-					0,
-					TabWidth,
-					1,
-					0
-				)
-
-			Tab.Position =
-				UDim2.new(
-					(Index - 1) / Count,
-					0,
-					0,
-					0
-				)
-
-		end
-
-	end
-
 end
 
 -- ============================================================
@@ -2584,6 +2385,12 @@ SwitchToPage = function(
 		OldPage
 		and OldPage.Frame
 
+	local IsConfirmationPage =
+		Page == ResetPage
+		or Page == LeavePage
+		or OldPage == ResetPage
+		or OldPage == LeavePage
+
 	local Direction =
 		(
 			GetPageIndex(Page)
@@ -2611,7 +2418,7 @@ SwitchToPage = function(
 
 			local Title =
 				Other.Icon
-				and Other.Icon:FindFirstChild(
+				and Other.Tab:FindFirstChild(
 					"Title"
 				)
 
@@ -2636,12 +2443,20 @@ SwitchToPage = function(
 	Page.Frame.Visible =
 		true
 
+	if IsConfirmationPage then
+		Page.Frame.Position = UDim2.new(0, 0, 0, 0)
+		if OldFrame and OldFrame ~= Page.Frame then
+			OldFrame.Visible = false
+		end
+	end
+
 	if
 		OldFrame
 		and OldFrame ~= Page.Frame
 		and OldFrame.Parent == Hub.PageView
 		and OldFrame.Visible
 		and not NoAnimation
+		and not IsConfirmationPage
 	then
 
 		local PageWidth =
@@ -2743,6 +2558,10 @@ SwitchToPage = function(
 
 	Hub.CurrentPage =
 		Page
+
+	if LayoutTabs then
+		LayoutTabs()
+	end
 
 	if Page.Selection then
 
@@ -3787,12 +3606,7 @@ MakePlayerRow = function(
 					),
 
 				Size =
-					UDim2.new(
-						1,
-						0,
-						0,
-						60
-					),
+					UDim2.new(1, 0, 0, 62),
 
 				Position =
 					UDim2.new(
@@ -3876,7 +3690,7 @@ MakePlayerRow = function(
 			"TextLabel",
 			{
 				Name =
-					"NameLabel",
+					"DisplayNameLabel",
 
 				Parent =
 					Row,
@@ -3888,7 +3702,7 @@ MakePlayerRow = function(
 					Enum.Font.SourceSans,
 
 				TextSize =
-					24,
+					36,
 
 				TextColor3 =
 					Color3.new(
@@ -3905,20 +3719,10 @@ MakePlayerRow = function(
 					or Player.Name,
 
 				Size =
-					UDim2.new(
-						1,
-						-330,
-						0,
-						30
-					),
+					UDim2.new(0, 0, 0, 0),
 
-				Position =
-					UDim2.new(
-						0,
-						60,
-						0,
-						5
-					),
+Position =
+					UDim2.new(0, 60, 0.5, -10),
 
 				ZIndex =
 					SETTINGS_BASE_ZINDEX
@@ -3930,7 +3734,7 @@ MakePlayerRow = function(
 			"TextLabel",
 			{
 				Name =
-					"UsernameLabel",
+					"NameLabel",
 
 				Parent =
 					Row,
@@ -3942,14 +3746,9 @@ MakePlayerRow = function(
 					Enum.Font.SourceSans,
 
 				TextSize =
-					19,
+					24,
 
-				TextColor3 =
-					Color3.fromRGB(
-						190,
-						190,
-						190
-					),
+				TextColor3 = Color3.fromRGB(162, 162, 162),
 
 				TextXAlignment =
 					Enum.TextXAlignment.Left,
@@ -3959,20 +3758,10 @@ MakePlayerRow = function(
 					.. Player.Name,
 
 				Size =
-					UDim2.new(
-						1,
-						-330,
-						0,
-						22
-					),
+					UDim2.new(0, 0, 0, 0),
 
-				Position =
-					UDim2.new(
-						0,
-						60,
-						0,
-						34
-					),
+Position =
+					UDim2.new(0, 60, 0.5, 12),
 
 				ZIndex =
 					SETTINGS_BASE_ZINDEX
@@ -4051,9 +3840,9 @@ MakePlayerRow = function(
 		(not IsSelf)
 		and UserId > 1
 
-	local BUTTON_WIDTH = 44
-	local BUTTON_HEIGHT = 40
-	local GAP = 8
+	local BUTTON_WIDTH = 46
+	local BUTTON_HEIGHT = 46
+	local GAP = 12
 	local FRIEND_WIDTH = 156
 	local ACTION_RIGHT_PAD = 14
 
@@ -4199,17 +3988,17 @@ MakePlayerRow = function(
 				Size =
 					UDim2.new(
 						0,
-						24,
+						28,
 						0,
-						25
+						28
 					),
 
 				Position =
 					UDim2.new(
 						0.5,
-						-12,
+						-14,
 						0.5,
-						-12.5
+						-14
 					),
 
 				ScaleType =
@@ -4352,17 +4141,17 @@ MakePlayerRow = function(
 				Size =
 					UDim2.new(
 						0,
-						24,
+						28,
 						0,
-						24
+						28
 					),
 
 				Position =
 					UDim2.new(
 						0.5,
-						-12,
+						-14,
 						0.5,
-						-12
+						-14
 					),
 
 				ScaleType =
@@ -4441,17 +4230,17 @@ MakePlayerRow = function(
 				Size =
 					UDim2.new(
 						0,
-						24,
+						28,
 						0,
-						24
+						28
 					),
 
 				Position =
 					UDim2.new(
 						0.5,
-						-12,
+						-14,
 						0.5,
-						-12
+						-14
 					),
 
 				ScaleType =
@@ -4640,6 +4429,10 @@ MakePlayerRow = function(
 
 			FriendButton.Name =
 				"FriendStatus"
+
+			if FriendLabel then
+				FriendLabel.TextSize = 22
+			end
 
 			FriendButton.Parent =
 				Row
@@ -4840,18 +4633,21 @@ MakeSelector = function(
 			Image =
 				"rbxasset://textures/ui/Settings/Slider/Left.png",
 
+			ScaleType =
+				Enum.ScaleType.Fit,
+
 			Size =
 				UDim2.new(
 					0,
-					18,
+					30,
 					0,
 					30
 				),
 
 			Position =
 				UDim2.new(
-					1,
-					-24,
+					0.5,
+					-15,
 					0.5,
 					-15
 				),
@@ -4890,8 +4686,8 @@ MakeSelector = function(
 					UDim2.new(
 						1,
 						-50,
-						0.5,
-						-25
+						0,
+						0
 					),
 
 				ZIndex =
@@ -4912,18 +4708,21 @@ MakeSelector = function(
 			Image =
 				"rbxasset://textures/ui/Settings/Slider/Right.png",
 
+			ScaleType =
+				Enum.ScaleType.Fit,
+
 			Size =
 				UDim2.new(
 					0,
-					18,
+					30,
 					0,
 					30
 				),
 
 			Position =
 				UDim2.new(
-					0,
-					6,
+					0.5,
+					-15,
 					0.5,
 					-15
 				),
@@ -4933,6 +4732,16 @@ MakeSelector = function(
 				+ 4,
 		}
 	)
+
+	if HIDE_SELECTOR_ARROWS then
+		for _, ArrowObject in next, {Left, Right} do
+			for _, Descendant in next, ArrowObject:GetDescendants() do
+				if Descendant:IsA("ImageLabel") then
+					Descendant.Visible = false
+				end
+			end
+		end
+	end
 
 	local Label =
 		Create(
@@ -5297,7 +5106,7 @@ MakeSlider = function(
 				Size =
 					UDim2.new(
 						0,
-						60,
+						50,
 						0,
 						50
 					),
@@ -5305,9 +5114,9 @@ MakeSlider = function(
 				Position =
 					UDim2.new(
 						0,
-						-10,
-						0.5,
-						-25
+						0,
+						0,
+						0
 					),
 
 				ZIndex =
@@ -5326,20 +5135,23 @@ MakeSlider = function(
 				1,
 
 			Image =
-				"rbxasset://textures/ui/Settings/Slider/Left.png",
+				SLIDER_LEFT_IMAGE,
+
+			ScaleType =
+				Enum.ScaleType.Fit,
 
 			Size =
 				UDim2.new(
 					0,
-					18,
+					30,
 					0,
 					30
 				),
 
 			Position =
 				UDim2.new(
-					1,
-					-24,
+					0.5,
+					-15,
 					0.5,
 					-15
 				),
@@ -5395,20 +5207,23 @@ MakeSlider = function(
 				1,
 
 			Image =
-				"rbxasset://textures/ui/Settings/Slider/Right.png",
+				SLIDER_RIGHT_IMAGE,
+
+			ScaleType =
+				Enum.ScaleType.Fit,
 
 			Size =
 				UDim2.new(
 					0,
-					18,
+					30,
 					0,
 					30
 				),
 
 			Position =
 				UDim2.new(
-					0,
-					6,
+					0.5,
+					-15,
 					0.5,
 					-15
 				),
@@ -5490,12 +5305,12 @@ MakeSlider = function(
 					if Index2 == 1 then
 
 						Segment.Image =
-							SLIDER_LEFT_IMAGE
+							SLIDER_BAR_LEFT_IMAGE
 
 					else
 
 						Segment.Image =
-							SLIDER_RIGHT_IMAGE
+							SLIDER_BAR_RIGHT_IMAGE
 
 					end
 
@@ -6685,7 +6500,7 @@ RebuildPlayersPage = function()
 	local MobileUiScale = GetMobileUiScale()
 	local MobileActionOffset =
 		IsMobile
-		and (math.floor(72 * MobileUiScale + 0.5) + math.max(4, math.floor(MOBILE_LAYOUT_GAP * MobileUiScale + 0.5)))
+		and (62 + math.max(4, math.floor(MOBILE_LAYOUT_GAP * MobileUiScale + 0.5)))
 		or 0
 
 	table.sort(
@@ -6829,14 +6644,12 @@ Connect(
 	end
 )
 
+PendingPlayerListRefresh = false
+
 Connect(
 	Players.PlayerRemoving,
 	function()
-
-		task.defer(
-			RebuildPlayersPage
-		)
-
+		PendingPlayerListRefresh = true
 	end
 )
 
@@ -6948,7 +6761,7 @@ InviteBackButton, InviteBackLabel =
 				false
 
 			Hub.PageView.ScrollBarThickness =
-				IsMobile and 0 or 6
+				IsMobile and 0 or 12
 
 
 			Hub.HubBar.Visible =
@@ -7702,12 +7515,14 @@ FetchFriends =
 			function(A, B)
 				local function StatusRank(Friend)
 					local Status = GetInviteStatus(Friend)
-					if Status == "Online" or Status == "In Experience" then
+					if Status == "In Experience" then
 						return 1
-					elseif Status == "In Studio" then
+					elseif Status == "Online" then
 						return 2
+					elseif Status == "In Studio" then
+						return 3
 					end
-					return 3
+					return 4
 				end
 
 				local ARank = StatusRank(A)
@@ -8053,6 +7868,13 @@ BuildInviteRow =
 					Position = UDim2.new(0, 12, 0.5, -18),
 					ZIndex = SETTINGS_BASE_ZINDEX + 2,
 				})
+
+		Create("UIStroke", {
+			Parent = AvatarBackground,
+			Color = Color3.fromRGB(145, 145, 145),
+			Thickness = 1,
+			Transparency = 0,
+		})
 
 		local Avatar =
 			Create(
@@ -9380,32 +9202,6 @@ GraphicsSlider =
 	)
 
 -- ============================================================
--- GRAPHICS QUALITY MINUS / PLUS CONTROLS
--- ============================================================
-
-ApplyGraphicsMinusPlus = function()
-	if not GraphicsSlider or not GraphicsSlider.SliderFrame then return end
-	local Holder = GraphicsSlider.SliderFrame
-	for _, Button in ipairs(Holder:GetChildren()) do
-		if Button:IsA("ImageButton") then
-			local Icon = Button:FindFirstChildWhichIsA("ImageLabel")
-			local Text = nil
-			if Icon and Icon.Image == "rbxasset://textures/ui/Settings/Slider/Left.png" then
-				Text = "−"
-			elseif Icon and Icon.Image == "rbxasset://textures/ui/Settings/Slider/Right.png" then
-				Text = "+"
-			end
-			if Text and not Button:FindFirstChild("MinusPlusLabel") then
-				if Icon then Icon.Visible = false end
-				Create("TextLabel", {Name = "MinusPlusLabel", Parent = Button, BackgroundTransparency = 1, Text = Text, Font = Enum.Font.SourceSansBold, TextSize = 30, TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, Size = UDim2.new(1, 0, 1, 0), Position = UDim2.new(0, 0, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 5})
-			end
-		end
-	end
-end
-
-ApplyGraphicsMinusPlus()
-
--- ============================================================
 -- 21-BAR COMPRESSION
 -- ============================================================
 
@@ -9434,9 +9230,9 @@ then
 
 				if SubChild:IsA("ImageLabel") then
 
-					if SubChild.Image == "rbxasset://textures/ui/Settings/Slider/Left.png" then
+					if SubChild.Image == SLIDER_LEFT_IMAGE then
 						HasLeftImage = true
-					elseif SubChild.Image == "rbxasset://textures/ui/Settings/Slider/Right.png" then
+					elseif SubChild.Image == SLIDER_RIGHT_IMAGE then
 						HasRightImage = true
 					end
 
@@ -9955,7 +9751,7 @@ ApplyMobileReportLayout = function()
 	if not IsMobile or not ReportPage then return end
 	ReportPage.Frame.Size = UDim2.new(1, 0, 0, 269)
 	local Layout = ReportPage.Frame:FindFirstChild("RowListLayout")
-	if Layout then Layout.Enabled = false end
+	if Layout then Layout.Parent = nil end
 	local Rows = {
 		{ReportMode and ReportMode.RowFrame, 0},
 		{WhichPlayer and WhichPlayer.RowFrame, 50},
@@ -10581,7 +10377,7 @@ ResetMessage = MakeText(
 	ResetPage.Frame,
 	"Are you sure you want to reset your character?",
 	UDim2.new(1, -20, 0, 100),
-	UDim2.new(0, 10, 0, 20)
+	UDim2.new(0, 10, 0, 78)
 )
 ResetMessage.TextSize = 36
 
@@ -10678,7 +10474,7 @@ DontResetButton =
 		end
 	)
 DontResetButton.Parent = ResetPage.Frame
-ResetPage.Frame.Size = UDim2.new(1, 0, 0, 240)
+ResetPage.Frame.Size = UDim2.new(1, 0, 0, 280)
 
 LeavePage = MakePage("LeaveGame")
 AddPage(LeavePage)
@@ -10686,7 +10482,7 @@ LeaveMessage = MakeText(
 	LeavePage.Frame,
 	"Are you sure you want to leave the game?",
 	UDim2.new(1, -20, 0, 100),
-	UDim2.new(0, 10, 0, 20)
+	UDim2.new(0, 10, 0, 78)
 )
 LeaveMessage.TextSize = 36
 
@@ -10708,7 +10504,7 @@ DontLeaveButton = MakeStyledButton(
 	end
 )
 DontLeaveButton.Parent = LeavePage.Frame
-LeavePage.Frame.Size = UDim2.new(1, 0, 0, 240)
+LeavePage.Frame.Size = UDim2.new(1, 0, 0, 280)
 
 PositionDesktopConfirmationButtons =
 	function()
@@ -10734,8 +10530,10 @@ PositionDesktopConfirmationButtons =
 			local LeftButton = Info[2]
 			local RightButton = Info[3]
 
-			LeftButton.Size = UDim2.new(0, 200, 0, 50)
-			RightButton.Size = UDim2.new(0, 200, 0, 50)
+			local ButtonWidth = 200
+
+			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
+			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
 			LeftButton.Visible = true
 			RightButton.Visible = true
 			LeftButton.Active = true
@@ -10745,11 +10543,9 @@ PositionDesktopConfirmationButtons =
 			LeftButton.ZIndex = SETTINGS_BASE_ZINDEX + 3
 			RightButton.ZIndex = SETTINGS_BASE_ZINDEX + 3
 
-			LeftButton.Position =
-				UDim2.fromOffset(155, 132)
+			LeftButton.Position = UDim2.new(0.5, -206, 0, 268)
 
-			RightButton.Position =
-				UDim2.fromOffset(420, 132)
+			RightButton.Position = UDim2.new(0.5, 6, 0, 268)
 
 		end
 
@@ -10872,8 +10668,11 @@ PushPage =
 		Hub.PageView.ScrollBarThickness = 0
 		SwitchToPage(Page, true, true)
 		if Hub.InConfirmation then
-			PositionMobileConfirmationButtons()
-			ResizeHub()
+			if IsMobile then
+				PositionMobileConfirmationButtons()
+			else
+				PositionDesktopConfirmationButtons()
+			end
 		end
 	end
 
@@ -10883,27 +10682,29 @@ PushPage =
 
 MakeBottomButton =
 	function(Name, Text, Icon, Position, Clicked, Size)
-		local Button = MakeStyledButton(Name .. "Button", Text, Size or UDim2.new(0, 260, 0, 70), Clicked)
-		Button.Parent = Hub.BottomButtonFrame
-		Button.Position = Position
-		Create("ImageLabel", {
-			Parent = Button,
-			BackgroundTransparency = 1,
-			Image = Icon,
-			Size = UDim2.new(0, 48, 0, 48),
-			Position = UDim2.new(0, 10, 0, 8),
-			ZIndex = SETTINGS_BASE_ZINDEX + 4,
-		})
-		local Label = Button:FindFirstChild(Name .. "ButtonTextLabel")
+		local Button=MakeStyledButton(Name.."Button",Text,Size or UDim2.new(0,260,0,70),Clicked)
+		Button.Parent=Hub.BottomButtonFrame
+		Button.Position=Position
+		local Hint=Create("ImageLabel",{Name=Name.."Hint",ZIndex=SETTINGS_BASE_ZINDEX+2,BackgroundTransparency=1,Image=Icon,Parent=Button})
+		Hint.AnchorPoint=Vector2.new(0.5,0.5)
+		Hint.Size=UDim2.new(0,50,0,50)
+		Hint.Position=UDim2.new(0.15,0,0.475,0)
+		local Label=Button:FindFirstChild(Name.."ButtonTextLabel")
 		if Label then
-			Label.Position = UDim2.new(0, 10, 0, -4)
-			Label.Size = UDim2.new(1, 0, 1, 0)
+			Label.TextSize=24
+			Label.TextWrapped=false
+			Label.TextScaled=false
+			Label.TextXAlignment=Enum.TextXAlignment.Center
+			Label.TextYAlignment=Enum.TextYAlignment.Center
+			Label.Size=UDim2.new(0.75,0,0.9,0)
+			Label.Position=UDim2.new(0.25,0,0,0)
 		end
 		return Button
 	end
 
+MobileButtonsContainer = nil
 MobileActionButtons = {}
-BottomButtonSize = UDim2.new(0, 260, 0, 72)
+BottomButtonSize = UDim2.new(0,260,0,70)
 
 MobileActionButtons.Reset = MakeBottomButton(
 	"ResetCharacter",
@@ -10965,46 +10766,60 @@ end
 ConfigureMobileActionButtons = function()
 	local VoiceActive = LocalVoiceEnabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport
 	local UiScale = GetMobileUiScale()
-	local ActionHeight = math.floor(72 * UiScale + 0.5)
+	local ActionHeight = 62
 	local Gap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
 
-	-- On mobile there is deliberately no bottom Voice Chat button, so the
-	-- action row is ALWAYS three buttons. Voice Chat can remain enabled
-	-- internally without changing the Reset/Leave/Resume layout.
 	local UseFourColumnLayout = VoiceActive and not IsMobile
 
-	if IsMobile and PlayersPage and PlayersPage.Frame then
-		MobileActionButtons.Reset.Parent = PlayersPage.Frame
-		MobileActionButtons.Leave.Parent = PlayersPage.Frame
-		MobileActionButtons.Resume.Parent = PlayersPage.Frame
-		VoiceChatButton.Parent = PlayersPage.Frame
+	if IsMobile then
+		if IsTablet then
+			MobileActionButtons.Reset.Parent = Hub.BottomButtonFrame
+			MobileActionButtons.Leave.Parent = Hub.BottomButtonFrame
+			MobileActionButtons.Resume.Parent = Hub.BottomButtonFrame
+			VoiceChatButton.Parent = Hub.BottomButtonFrame
+		elseif PlayersPage and PlayersPage.Frame then
+			if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
+				MobileButtonsContainer = Create("Frame", {
+					Name = "ButtonsContainer", Parent = PlayersPage.Frame,
+					BackgroundTransparency = 1, BorderSizePixel = 0,
+					Size = UDim2.new(1, 0, 0, 62), Position = UDim2.new(0, 0, 0, 0),
+					ZIndex = SETTINGS_BASE_ZINDEX + 1,
+				})
+			end
+			MobileButtonsContainer.Size = UDim2.new(1, 0, 0, 62)
+			MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
+			MobileActionButtons.Reset.Parent = MobileButtonsContainer
+			MobileActionButtons.Leave.Parent = MobileButtonsContainer
+			MobileActionButtons.Resume.Parent = MobileButtonsContainer
+			VoiceChatButton.Parent = PlayersPage.Frame
+		end
 	end
 
 	if IsMobile then
 		local ButtonCount = UseFourColumnLayout and 4 or 3
 		local Fraction = 1 / ButtonCount
 		local ButtonWidthOffset = -Gap
-
 		MobileActionButtons.Reset.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
 		MobileActionButtons.Leave.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
 		MobileActionButtons.Resume.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
-
 		MobileActionButtons.Reset.Position = UDim2.new(0, 3, 0, 0)
 		MobileActionButtons.Leave.Position = UDim2.new(Fraction, 3, 0, 0)
 		MobileActionButtons.Resume.Position = UDim2.new(Fraction * 2, 3, 0, 0)
+		if IsTablet then
+			Hub.BottomButtonFrame.Visible = true
+			Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, ActionHeight)
+			Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -ActionHeight)
+		end
 
 		for _, Button in next, {MobileActionButtons.Reset, MobileActionButtons.Leave, MobileActionButtons.Resume} do
 			Button.Visible = true
 			Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
 			for _, Child in next, Button:GetChildren() do
-				if Child:IsA("ImageLabel") then
-					Child.Visible = false
-				end
+				if Child:IsA("ImageLabel") then Child.Visible = false end
 			end
-
 			local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
 			if Label then
-				Label.TextSize = math.max(18, math.floor(20 * UiScale + 0.5))
+				Label.TextSize = 24
 				Label.TextWrapped = false
 				Label.TextScaled = false
 				Label.TextXAlignment = Enum.TextXAlignment.Center
@@ -11013,31 +10828,19 @@ ConfigureMobileActionButtons = function()
 				Label.Size = UDim2.new(1, 0, 1, 0)
 			end
 		end
-
-		-- Mobile never displays the desktop-style VC icon.
 		VoiceChatButton.Visible = false
 	else
-		local FrameWidth =
-			Hub.BottomButtonFrame
-			and Hub.BottomButtonFrame.AbsoluteSize.X
-			or (TOTAL_HUB_WIDTH + PC_RIGHT_EXTENSION)
-		local EdgeGap = 4
-		local Gap = 6
-		local VoiceWidth = VoiceActive and 64 or 0
-		local VoiceGap = VoiceActive and Gap or 0
-		local ActionWidth = math.floor((FrameWidth - (EdgeGap * 2) - (Gap * 2) - VoiceWidth - VoiceGap) / 3 + 0.5)
-		local ActionY = -(ActionHeight / 2)
-
-		MobileActionButtons.Reset.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-		MobileActionButtons.Leave.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-		MobileActionButtons.Resume.Size = UDim2.new(0, ActionWidth, 0, ActionHeight)
-		MobileActionButtons.Reset.Position = UDim2.new(0, EdgeGap, 0.5, ActionY)
-		MobileActionButtons.Leave.Position = UDim2.new(0, EdgeGap + ActionWidth + Gap, 0.5, ActionY)
-		MobileActionButtons.Resume.Position = UDim2.new(0, EdgeGap + (ActionWidth + Gap) * 2, 0.5, ActionY)
-		VoiceChatButton.Visible = VoiceActive
-		if VoiceActive then
-			VoiceChatButton.Position = UDim2.new(0, FrameWidth - EdgeGap - VoiceWidth, 0.5, -32)
-		end
+		-- PC desktop: the three fixed 260x70 buttons live in BottomButtonFrame.
+		MobileActionButtons.Reset.Size = UDim2.new(0,260,0,70)
+		MobileActionButtons.Leave.Size = UDim2.new(0,260,0,70)
+		MobileActionButtons.Resume.Size = UDim2.new(0,260,0,70)
+		MobileActionButtons.Reset.Position = UDim2.new(0,0,0.5,-35)
+		MobileActionButtons.Leave.Position = UDim2.new(0,270,0.5,-35)
+		MobileActionButtons.Resume.Position = UDim2.new(0,540,0.5,-35)
+		MobileActionButtons.Reset.Visible = true
+		MobileActionButtons.Leave.Visible = true
+		MobileActionButtons.Resume.Visible = true
+		VoiceChatButton.Visible = false
 	end
 end
 
@@ -11362,6 +11165,11 @@ SetVisibility =
 
 			RefreshNativeVoiceMirrorCache(true)
 			SwitchToPage(CustomPage or PlayersPage, true)
+			if PendingPlayerListRefresh and PlayersPage then
+				RebuildPlayersPage()
+				LayoutTabs()
+				PendingPlayerListRefresh = false
+			end
 			ConfigureMobileActionButtons()
 			ResizeHub()
 			if IsMobile then
@@ -11542,7 +11350,7 @@ CloseInvitePage =
 		Hub.HubBar.Visible = true
 		Hub.PageClipper.Visible = true
 		Hub.BottomButtonFrame.Visible = not IsMobile
-		Hub.PageView.ScrollBarThickness = IsMobile and 0 or 6
+		Hub.PageView.ScrollBarThickness = IsMobile and 0 or 12
 		if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
 		SwitchToPage(Previous, true, true)
 		ResizeHub()
@@ -11570,7 +11378,7 @@ EscapeAction =
 			if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
 			local Previous = Hub.MenuStack[#Hub.MenuStack] or PlayersPage
 			SwitchToPage(Previous, true, true)
-			Hub.PageView.ScrollBarThickness = IsMobile and 0 or 6
+			Hub.PageView.ScrollBarThickness = IsMobile and 0 or 12
 			ResizeHub()
 			return Enum.ContextActionResult.Sink
 		end
