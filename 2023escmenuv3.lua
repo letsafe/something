@@ -1699,6 +1699,7 @@ ResizeHub = function()
 		local Width = math.max(720, math.floor(LayoutViewport.X - 20 + 0.5))
 		local HubHeight = MOBILE_HUBBAR_HEIGHT
 		local BottomHeight = 62
+		local TabletGroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local Top = 3
 		local BottomGap = 6
 		local PageHeight = math.max(300, math.floor(LayoutViewport.Y - HubHeight - BottomHeight - Top - BottomGap - 10 + 0.5))
@@ -1709,12 +1710,12 @@ ResizeHub = function()
 
 		Hub.HubBar.Visible = true
 		Hub.HubBar.Size = UDim2.new(1, 0, 0, HubHeight)
-		Hub.HubBar.Position = UDim2.new(0, 0, 0, 0)
+		Hub.HubBar.Position = UDim2.new(0, 0, 0, TabletGroupTop)
 		Hub.HubBar.Image = TAB_BAR_IMAGE
 		Hub.HubBar.ImageTransparency = 0
 		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
-		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer end
 
 		if HomeButton then
 			HomeButton.Visible = false
@@ -1722,7 +1723,7 @@ ResizeHub = function()
 
 		Hub.PageClipper.Parent = Hub.MenuContainer
 		Hub.PageClipper.Size = UDim2.new(1, 0, 0, PageHeight)
-		Hub.PageClipper.Position = UDim2.new(0, 0, 0, HubHeight)
+		Hub.PageClipper.Position = UDim2.new(0, 0, 0, TabletGroupTop + HubHeight)
 
 		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
 		Hub.BottomButtonFrame.Visible = true
@@ -1768,7 +1769,7 @@ ResizeHub = function()
 				math.floor((LayoutViewport.X * 0.95) - 10 + 0.5)
 			)
 
-		local GroupTop = 3
+		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
 
 		local PageHeight =
@@ -1801,6 +1802,7 @@ ResizeHub = function()
 
 		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer end
 
 		Hub.PageClipper.Size =
 			UDim2.new(
@@ -1876,7 +1878,7 @@ ResizeHub = function()
 
 					if Label then
 						Label.Position = UDim2.new(0, 0, 0, 0)
-						Label.Size = UDim2.new(1, 0, 1, 0)
+						Label.Size = UDim2.new(1, 0, 1, -6)
 						Label.ZIndex = SETTINGS_BASE_ZINDEX + 5
 					end
 
@@ -2174,7 +2176,7 @@ MakeTab = function(
 					"Title",
 
 				Parent =
-				Tab,
+				IconLabel,
 
 			BackgroundTransparency =
 				1,
@@ -2183,7 +2185,7 @@ MakeTab = function(
 				Enum.Font.SourceSansBold,
 
 			TextSize =
-				20,
+				24,
 
 			TextColor3 =
 				Color3.new(
@@ -2209,7 +2211,7 @@ MakeTab = function(
 					0
 				),
 
-			Position = UDim2.new(0,54,0,0),
+			Position = UDim2.new(0,72,0,0),
 
 			ZIndex =
 				SETTINGS_BASE_ZINDEX
@@ -2315,12 +2317,27 @@ LayoutTabs = function()
 	local Count = #Order
 	if Count == 0 then return end
 
+	if IsMobile then
+		if Hub.HubBarContainerLayout then
+			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
+			Hub.HubBarContainerLayout.FillDirection = Enum.FillDirection.Horizontal
+			Hub.HubBarContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			Hub.HubBarContainerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+			Hub.HubBarContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			Hub.HubBarContainerLayout.Padding = UDim.new(0, 0)
+		end
+	else
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
+	end
+
 	for Index, Page in ipairs(Order) do
 		if Page and Page.Tab then
 			local Tab = Page.Tab
 			local Fraction = 1 / Count
 			Tab.Size = UDim2.new(Fraction, 0, 1, 0)
-			Tab.Position = UDim2.new((Index - 1) * Fraction, 0, 0, 0)
+			if not IsMobile then
+				Tab.Position = UDim2.new((Index - 1) * Fraction, 0, 0, 0)
+			end
 			Tab.LayoutOrder = Index
 
 			local Selected = Hub.CurrentPage == Page
@@ -2334,14 +2351,20 @@ LayoutTabs = function()
 					Page.Icon.Size = UDim2.new(0, 34, 0, 28)
 					Page.Icon.Position = UDim2.new(0, 10, 0.5, -14)
 				end
-				local Title = Page.Tab:FindFirstChild("Title")
+				local Title = Page.Icon:FindFirstChild("Title")
 				if Title then
 					Title.TextColor3 = Color3.new(1, 1, 1)
 					Title.TextTransparency = Selected and 0 or 0.5
 					if IsMobile then
-						Title.TextSize = 18
-						Title.Size = UDim2.new(1.05, 0, 1, 0)
+						Title.TextSize = 20
+						Title.Size = UDim2.new(0, 140, 1, 0)
 						Title.Position = UDim2.new(1.2, 0, 0, 0)
+						Title.ClipsDescendants = false
+					else
+						Title.TextSize = 24
+						Title.Size = UDim2.new(0, 190, 1, 0)
+						Title.Position = UDim2.new(0, 48, 0, 0)
+						Title.ClipsDescendants = false
 					end
 				end
 			end
@@ -3722,7 +3745,7 @@ MakePlayerRow = function(
 					UDim2.new(0, 0, 0, 0),
 
 Position =
-					UDim2.new(0, 60, 0.5, -10),
+					UDim2.new(0, IsMobile and 80 or 60, 0.5, -10),
 
 				ZIndex =
 					SETTINGS_BASE_ZINDEX
@@ -3761,7 +3784,7 @@ Position =
 					UDim2.new(0, 0, 0, 0),
 
 Position =
-					UDim2.new(0, 60, 0.5, 12),
+					UDim2.new(0, IsMobile and 80 or 60, 0.5, 12),
 
 				ZIndex =
 					SETTINGS_BASE_ZINDEX
@@ -7126,12 +7149,18 @@ ConfigureInviteMobileHeader = function()
 	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
 	InviteBackButton.Size = UDim2.fromOffset(42, 42)
 	InviteBackButton.Position = UDim2.fromOffset(4, 7)
+	InviteBackButton.Image = ""
 
 	local Expanded = INVITE_MOBILE_SEARCH_EXPANDED
 	local Width = Expanded and INVITE_MOBILE_SEARCH_WIDTH or INVITE_MOBILE_SEARCH_COLLAPSED
 	SearchFrame.Size = UDim2.fromOffset(Width, 36)
 	SearchFrame.Position = UDim2.new(1, -(Width + 6), 0, 10)
 	SearchFrame.BackgroundTransparency = 1
+	SearchFrame.BorderSizePixel = 0
+	local SearchStroke = SearchFrame:FindFirstChildOfClass("UIStroke")
+	if SearchStroke then
+		SearchStroke.Transparency = Expanded and 0 or 1
+	end
 	SearchBox.Visible = Expanded
 	SearchPlaceholder.Visible = false
 	SearchIcon.Visible = true
@@ -10708,7 +10737,7 @@ BottomButtonSize = UDim2.new(0,260,0,70)
 
 MobileActionButtons.Reset = MakeBottomButton(
 	"ResetCharacter",
-	"    Reset Character",
+	"Reset Character",
 	"rbxasset://textures/ui/Settings/Help/ResetIcon.png",
 	UDim2.new(0, 4, 0.5, -32),
 	function()
@@ -10799,16 +10828,20 @@ ConfigureMobileActionButtons = function()
 		local ButtonCount = UseFourColumnLayout and 4 or 3
 		local Fraction = 1 / ButtonCount
 		local ButtonWidthOffset = -Gap
-		MobileActionButtons.Reset.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
 		MobileActionButtons.Leave.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+		MobileActionButtons.Reset.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
 		MobileActionButtons.Resume.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
-		MobileActionButtons.Reset.Position = UDim2.new(0, 3, 0, 0)
-		MobileActionButtons.Leave.Position = UDim2.new(Fraction, 3, 0, 0)
-		MobileActionButtons.Resume.Position = UDim2.new(Fraction * 2, 3, 0, 0)
+		MobileActionButtons.Leave.AnchorPoint = Vector2.new(0, 0)
+		MobileActionButtons.Reset.AnchorPoint = Vector2.new(0.5, 0)
+		MobileActionButtons.Resume.AnchorPoint = Vector2.new(1, 0)
+		MobileActionButtons.Leave.Position = UDim2.new(0, 0, 0, 0)
+		MobileActionButtons.Reset.Position = UDim2.new(0.5, 0, 0, 0)
+		MobileActionButtons.Resume.Position = UDim2.new(1, 0, 0, 0)
 		if IsTablet then
 			Hub.BottomButtonFrame.Visible = true
 			Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, ActionHeight)
 			Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -ActionHeight)
+			Hub.BottomButtonFrame.ClipsDescendants = false
 		end
 
 		for _, Button in next, {MobileActionButtons.Reset, MobileActionButtons.Leave, MobileActionButtons.Resume} do
@@ -10819,7 +10852,7 @@ ConfigureMobileActionButtons = function()
 			end
 			local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
 			if Label then
-				Label.TextSize = 24
+				Label.TextSize = 20
 				Label.TextWrapped = false
 				Label.TextScaled = false
 				Label.TextXAlignment = Enum.TextXAlignment.Center
@@ -11395,6 +11428,25 @@ EscapeAction =
 	end
 
 Protect(function()
+	-- Give our custom ESC handler a higher input priority on desktop so the
+	-- Roblox/native menu cannot swallow the Escape key before we see it.
+	if not IsMobile then
+		pcall(function()
+			ContextActionService:BindActionAtPriority(
+				"Settings2016Escape",
+				function(_, State)
+					if State == Enum.UserInputState.Begin then
+						return EscapeAction(nil, State)
+					end
+					return Enum.ContextActionResult.Sink
+				end,
+				false,
+				20000,
+				Enum.KeyCode.Escape
+			)
+		end)
+	end
+
 	local BoundAtPriority = pcall(function()
 		ContextActionService:BindCoreActionAtPriority("RBXEscapeMainMenu", EscapeAction, false, 10000, Enum.KeyCode.Escape, Enum.KeyCode.ButtonStart)
 	end)
