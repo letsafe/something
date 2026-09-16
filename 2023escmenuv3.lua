@@ -1779,7 +1779,7 @@ ResizeHub = function()
 			)
 
 		local PageCenterYOffset =
-			(-PageHeight / 2) + 22.5
+			(-PageHeight / 2) + 60
 
 		Height =
 			PageHeight
@@ -1895,7 +1895,7 @@ ResizeHub = function()
 			local UiScale = GetMobileUiScale()
 			local ActionHeight = 62
 			local ActionListGap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
-			local InviteOffset = InviteFriends and 80 or 0
+			local InviteOffset = InviteFriends and 72 or 0
 
 			local InviteRow =
 				PlayersPage.Frame:FindFirstChild(
@@ -1912,7 +1912,6 @@ ResizeHub = function()
 						0,
 						0,
 						72
-						+ MOBILE_LAYOUT_GAP
 					)
 
 			end
@@ -1950,7 +1949,7 @@ ResizeHub = function()
 						ActionHeight
 						+ ActionListGap
 						+ InviteOffset
-						+ ((Index - 1) * 80)
+						+ ((Index - 1) * 72)
 					)
 
 			end
@@ -1959,7 +1958,7 @@ ResizeHub = function()
 				ActionHeight
 				+ ActionListGap
 				+ InviteOffset
-				+ (#PlayerRows * 80)
+				+ (#PlayerRows * 72)
 				+ PAGE_TOP_PADDING
 
 			PlayersPage.Frame.Size =
@@ -6551,7 +6550,7 @@ RebuildPlayersPage = function()
 
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
 
-		local RowY = IsMobile and MobileActionOffset or 0
+		local RowY = IsMobile and 72 or 0
 		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
 		InviteRow.Position = UDim2.new(0,0,0,RowY)
 		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
@@ -6587,7 +6586,7 @@ RebuildPlayersPage = function()
 					+ InviteOffset
 					+ (
 						(Count - 1)
-						* 80
+						* 72
 					)
 				)
 
@@ -6603,7 +6602,7 @@ RebuildPlayersPage = function()
 			MobileActionOffset
 			+ InviteOffset
 			+ (
-				Count * 80
+				Count * 72
 			)
 			- 5
 		)
