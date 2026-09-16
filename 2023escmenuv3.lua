@@ -235,7 +235,7 @@ HOME_HEIGHT = 60
 HOME_WIDTH = 60
 
 HUBBAR_HEIGHT = 60
-MOBILE_HUBBAR_HEIGHT = 40
+MOBILE_HUBBAR_HEIGHT = 48
 
 -- Custom SystemMenuButton offsets.
 SYSTEM_MENU_OFFSET_X = 16
@@ -1729,6 +1729,8 @@ ResizeHub = function()
 		Hub.BottomButtonFrame.Visible = true
 		Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, BottomHeight)
 		Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -BottomHeight)
+		Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 20
+		Hub.BottomButtonFrame.ClipsDescendants = false
 
 		if PlayersPage and PlayersPage.Frame then
 			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, PlayersPage.Frame.Size.Y.Offset))
@@ -6521,7 +6523,7 @@ RebuildPlayersPage = function()
 	-- Mobile-only offset. PC keeps the original player-row positions.
 	local MobileUiScale = GetMobileUiScale()
 	local MobileActionOffset =
-		IsMobile
+		(IsMobile and not IsTablet)
 		and (62 + math.max(4, math.floor(MOBILE_LAYOUT_GAP * MobileUiScale + 0.5)))
 		or 0
 
@@ -11179,7 +11181,7 @@ SetVisibility =
 			Hub.Shield.Visible = true
 			Hub.HubBar.Visible = not Hub.InInviteMenu and not Hub.InConfirmation
 			Hub.PageClipper.Visible = true
-			Hub.BottomButtonFrame.Visible = (not IsMobile) and not Hub.InInviteMenu and not Hub.InConfirmation
+			Hub.BottomButtonFrame.Visible = (not IsMobile or IsTablet) and not Hub.InInviteMenu and not Hub.InConfirmation
 			if HomeButton then
 				HomeButton.Visible = HomeButtonEnabled and not IsMobile and not Hub.InInviteMenu and not Hub.InConfirmation
 			end
@@ -11381,7 +11383,7 @@ CloseInvitePage =
 		if InviteList then InviteList.Visible = false end
 		Hub.HubBar.Visible = true
 		Hub.PageClipper.Visible = true
-		Hub.BottomButtonFrame.Visible = not IsMobile
+		Hub.BottomButtonFrame.Visible = not IsMobile or IsTablet
 		Hub.PageView.ScrollBarThickness = IsMobile and 0 or 12
 		if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
 		SwitchToPage(Previous, true, true)
@@ -11406,7 +11408,7 @@ EscapeAction =
 			Hub.InConfirmation = false
 			Hub.HubBar.Visible = true
 			Hub.PageClipper.Visible = true
-			Hub.BottomButtonFrame.Visible = not IsMobile
+			Hub.BottomButtonFrame.Visible = not IsMobile or IsTablet
 			if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
 			local Previous = Hub.MenuStack[#Hub.MenuStack] or PlayersPage
 			SwitchToPage(Previous, true, true)
