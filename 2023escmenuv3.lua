@@ -195,13 +195,19 @@ IsTablet = false
 UpdateTabletPlatform = function(Viewport)
 	Viewport = Viewport or (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(720, 1280)
 
-	local PlatformMobile = false
-	pcall(function()
-		local Platform = UserInputService:GetPlatform()
-		PlatformMobile =
-			Platform == Enum.Platform.Android
-			or Platform == Enum.Platform.IOS
+	local Platform = nil
+	local PlatformRead = pcall(function()
+		Platform = UserInputService:GetPlatform()
 	end)
+
+	local PlatformMobile =
+		Platform == Enum.Platform.Android
+		or Platform == Enum.Platform.IOS
+
+	local PlatformKnown =
+		PlatformRead
+		and Platform ~= nil
+		and not tostring(Platform):lower():find("unknown", 1, true)
 
 	local TouchEnabled = UserInputService.TouchEnabled
 	local KeyboardEnabled = UserInputService.KeyboardEnabled
@@ -210,15 +216,16 @@ UpdateTabletPlatform = function(Viewport)
 	local ShortSide = math.min(Viewport.X, Viewport.Y)
 	local LongSide = math.max(Viewport.X, Viewport.Y)
 	local TabletViewport =
-		ShortSide >= 600
+		ShortSide >= 760
 		and LongSide > 0
-		and (LongSide / ShortSide) <= 1.90
+		and (LongSide / ShortSide) <= 1.85
 
-	-- Platform detection can be late/unavailable in some execution contexts.
-	-- A touch-only device with a tablet-sized viewport is a safe mobile/tablet
-	-- fallback, while touch laptops keep their keyboard/mouse and remain desktop.
+	-- Use the input/viewport fallback only when Roblox did not return a usable
+	-- platform. This prevents a touch-capable desktop from being misclassified
+	-- as mobile and shrinking the entire desktop ESC menu.
 	local TouchMobileFallback =
-		TouchEnabled
+		(not PlatformKnown)
+		and TouchEnabled
 		and not KeyboardEnabled
 		and not MouseEnabled
 
@@ -231,6 +238,17 @@ UpdateTabletPlatform = function(Viewport)
 		and TabletViewport
 
 	return IsTablet
+end
+
+-- Resolve platform state before the mobile-only pages/layout are built.
+-- ResizeHub repeats this check so late platform initialization is handled too.
+do
+	local InitialViewport = ScreenGui and ScreenGui.AbsoluteSize
+	if not InitialViewport or InitialViewport.X <= 0 or InitialViewport.Y <= 0 then
+		local Camera = workspace.CurrentCamera
+		InitialViewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
+	end
+	UpdateTabletPlatform(InitialViewport)
 end
 
 -- ============================================================
@@ -2187,7 +2205,7 @@ MakeTab = function(
 				Enum.Font.SourceSansBold,
 
 			TextSize =
-				24,
+				20,
 
 			TextColor3 =
 				Color3.new(
@@ -2213,7 +2231,7 @@ MakeTab = function(
 					0
 				),
 
-			Position = UDim2.new(0,52,0,0),
+			Position = UDim2.new(0,54,0,0),
 
 			ZIndex =
 				SETTINGS_BASE_ZINDEX
@@ -2389,9 +2407,9 @@ LayoutTabs = function()
 						Title.TextXAlignment = Enum.TextXAlignment.Left
 						Title.ClipsDescendants = false
 					else
-						Title.TextSize = 24
-						Title.Size = UDim2.new(0, 190, 1, 0)
-						Title.Position = UDim2.new(0, 48, 0, 0)
+						Title.TextSize = 20
+						Title.Size = UDim2.new(1.05, 0, 1, 0)
+						Title.Position = UDim2.new(0, 54, 0, 0)
 						Title.ClipsDescendants = false
 					end
 				end
@@ -6579,7 +6597,7 @@ RebuildPlayersPage = function()
 
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
 
-		local RowY = (IsMobile and not IsTablet) and 72 or 0
+		local RowY = IsMobile and 72 or 0
 		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
 		InviteRow.Position = UDim2.new(0,0,0,RowY)
 		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
