@@ -193,7 +193,9 @@ IsMobile = false
 IsTablet = false
 
 UpdateTabletPlatform = function(Viewport)
-	Viewport = Viewport or (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(720, 1280)
+	Viewport = Viewport
+		or (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize)
+		or Vector2.new(1280, 720)
 
 	local Platform = nil
 	local PlatformRead = pcall(function()
@@ -209,10 +211,6 @@ UpdateTabletPlatform = function(Viewport)
 		and Platform ~= nil
 		and not tostring(Platform):lower():find("unknown", 1, true)
 
-	local TouchEnabled = UserInputService.TouchEnabled
-	local KeyboardEnabled = UserInputService.KeyboardEnabled
-	local MouseEnabled = UserInputService.MouseEnabled
-
 	local ShortSide = math.min(Viewport.X, Viewport.Y)
 	local LongSide = math.max(Viewport.X, Viewport.Y)
 	local TabletViewport =
@@ -220,28 +218,20 @@ UpdateTabletPlatform = function(Viewport)
 		and LongSide > 0
 		and (LongSide / ShortSide) <= 1.85
 
-	-- Use the input/viewport fallback only when Roblox did not return a usable
-	-- platform. This prevents a touch-capable desktop from being misclassified
-	-- as mobile and shrinking the entire desktop ESC menu.
+	-- Touch fallback is used only when Roblox did not provide a usable platform.
+	-- This prevents touch-capable desktop clients from entering the phone branch.
 	local TouchMobileFallback =
 		(not PlatformKnown)
-		and TouchEnabled
-		and not KeyboardEnabled
-		and not MouseEnabled
+		and UserInputService.TouchEnabled
+		and not UserInputService.KeyboardEnabled
+		and not UserInputService.MouseEnabled
 
-	IsMobile =
-		PlatformMobile
-		or TouchMobileFallback
-
-	IsTablet =
-		IsMobile
-		and TabletViewport
-
+	IsMobile = PlatformMobile or TouchMobileFallback
+	IsTablet = IsMobile and TabletViewport
 	return IsTablet
 end
 
--- Resolve platform state before the mobile-only pages/layout are built.
--- ResizeHub repeats this check so late platform initialization is handled too.
+-- Resolve this before any mobile/tablet-only page code is constructed.
 do
 	local InitialViewport = ScreenGui and ScreenGui.AbsoluteSize
 	if not InitialViewport or InitialViewport.X <= 0 or InitialViewport.Y <= 0 then
@@ -1163,6 +1153,7 @@ TabletUiScale = nil
 TabletUiScaleObject = nil
 
 GetTabletResponsiveScale = function(Viewport)
+	if IsTablet then return 1 end
 	if not IsMobile then return 1 end
 	Viewport = Viewport or Vector2.new(720, 1280)
 	local ShortSide = math.min(Viewport.X, Viewport.Y)
@@ -1481,11 +1472,8 @@ ResizeHub = function()
 	local TabletScale = ApplyTabletResponsiveScale(Viewport)
 	local LayoutViewport = Viewport
 	local TabletXOffset = 0
-	if IsMobile and TabletScale > 1 then
+	if IsMobile and not IsTablet and TabletScale > 1 then
 		LayoutViewport = Vector2.new(Viewport.X / TabletScale, Viewport.Y / TabletScale)
-		-- The tablet menu is intentionally biased slightly left. Keep the
-		-- phone layout centered and move only the tablet-sized menu.
-		TabletXOffset = -155 / TabletScale
 	end
 
 	-- ========================================================
@@ -1766,7 +1754,7 @@ ResizeHub = function()
 		Hub.PageClipper.Position = UDim2.new(0, 0, 0, TabletGroupTop + HubHeight)
 
 		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
-		Hub.BottomButtonFrame.Visible = true
+		Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
 		Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, BottomHeight)
 		Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -BottomHeight)
 		Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 6
@@ -1803,42 +1791,64 @@ ResizeHub = function()
 
 		Hub.PageView.ScrollBarThickness = 0
 
-		-- PHONE-ONLY LAYOUT: use the actual viewport edge-to-edge.
-		-- The shared MenuContainer has an 800:600 aspect-ratio constraint for
-		-- desktop layouts, so disable that constraint on phones or it will force
-		-- the menu back into a smaller centered rectangle.
-		if Hub.MenuAspectRatio then
-			Hub.MenuAspectRatio.Enabled = false
-		end
-		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
-		Hub.MenuContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
-		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-
+		-- Match the captured native mobile hierarchy: the menu is 95% of the
+		-- viewport, with a 10px outer reduction for the HubBar/PageClipper.
 		local Width =
-			math.max(280, math.floor(LayoutViewport.X + 0.5))
+			math.max(
+				280,
+				math.floor((LayoutViewport.X * 0.95) - 10 + 0.5)
+			)
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
 
-		local PageTop = GroupTop + MobileBarHeight
 		local PageHeight =
-			math.max(100, math.floor(LayoutViewport.Y - PageTop + 0.5))
+			math.max(
+				100,
+				math.floor((LayoutViewport.Y * 0.95) - 45 + 0.5)
+			)
 
-		Height = PageHeight
+		local PageCenterYOffset =
+			(-PageHeight / 2) + 60
 
-		-- HubBar is genuinely screen-edge to screen-edge on phones.
-		Hub.HubBar.Size = UDim2.new(0, Width, 0, MobileBarHeight)
-		Hub.HubBar.Position = UDim2.new(0.5, -Width / 2, 0, GroupTop)
+		Height =
+			PageHeight
+
+		Hub.HubBar.Size =
+			UDim2.new(
+				0,
+				Width,
+				0,
+				MobileBarHeight
+			)
+
+		Hub.HubBar.Position =
+			UDim2.new(
+				0.5,
+				-Width / 2 + TabletXOffset,
+				0,
+				GroupTop
+			)
 
 		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
-		if Hub.HubBarContainerLayout then
-			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
-		end
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer end
 
-		-- Page area is also edge-to-edge and starts immediately below the HubBar.
-		Hub.PageClipper.Size = UDim2.new(0, Width, 0, PageHeight)
-		Hub.PageClipper.Position = UDim2.new(0.5, -Width / 2, 0, PageTop)
+		Hub.PageClipper.Size =
+			UDim2.new(
+				0,
+				Width,
+				0,
+				PageHeight
+			)
+
+		Hub.PageClipper.Position =
+			UDim2.new(
+				0.5,
+				-Width / 2 + TabletXOffset,
+				0.5,
+				PageCenterYOffset
+			)
 
 		-- The fixed PC button frame is NEVER used on mobile.
 		Hub.BottomButtonFrame.Visible = false
@@ -2015,7 +2025,6 @@ ResizeHub = function()
 		-- ====================================================
 		-- PC / 2023 DESKTOP LAYOUT
 		-- ====================================================
-		if Hub.MenuAspectRatio then Hub.MenuAspectRatio.Enabled = true end
 		Hub.MenuContainer.Size=UDim2.new(0.95,0,0.95,0)
 		Hub.MenuContainer.Position=UDim2.new(0.5,0,0.5,0)
 		Hub.MenuContainer.AnchorPoint=Vector2.new(0.5,0.5)
@@ -2196,7 +2205,7 @@ MakeTab = function(
 					"Title",
 
 				Parent =
-					Tab,
+				IconLabel,
 
 			BackgroundTransparency =
 				1,
@@ -2205,7 +2214,7 @@ MakeTab = function(
 				Enum.Font.SourceSansBold,
 
 			TextSize =
-				20,
+				24,
 
 			TextColor3 =
 				Color3.new(
@@ -2226,12 +2235,12 @@ MakeTab = function(
 			Size =
 				UDim2.new(
 					1,
-					-58,
+					-60,
 					1,
 					0
 				),
 
-			Position = UDim2.new(0,54,0,0),
+			Position = UDim2.new(0,72,0,0),
 
 			ZIndex =
 				SETTINGS_BASE_ZINDEX
@@ -2341,7 +2350,7 @@ LayoutTabs = function()
 		if Hub.HubBarContainerLayout then
 			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
 			Hub.HubBarContainerLayout.FillDirection = Enum.FillDirection.Horizontal
-			Hub.HubBarContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+			Hub.HubBarContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 			Hub.HubBarContainerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 			Hub.HubBarContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			Hub.HubBarContainerLayout.Padding = UDim.new(0, 0)
@@ -2368,48 +2377,22 @@ LayoutTabs = function()
 			if Page.Icon then
 				Page.Icon.ImageTransparency = Selected and 0 or 0.5
 				if IsMobile then
-					-- Phone tabs: keep the icon + text pair together and anchor
-					-- the entire pair to the RIGHT edge of each individual tab.
-					Page.Tab.AnchorPoint = Vector2.new(0, 0)
-					Page.Tab.ClipsDescendants = true
-
-					local TabWidth =
-						math.max(1, Hub.HubBar.AbsoluteSize.X / Count)
-					local TextWidth =
-						math.max(30, math.min(110, TabWidth - 50))
-					local RightPadding = 8
-					local IconTextGap = 6
-					local IconWidth = 28
-
-					Page.Icon.AnchorPoint = Vector2.new(0, 0.5)
-					Page.Icon.Size = UDim2.new(0, IconWidth, 0, 28)
-					Page.Icon.Position = UDim2.new(
-						1,
-						-(RightPadding + TextWidth + IconTextGap + IconWidth),
-						0.5,
-						0
-					)
+					Page.Icon.Size = UDim2.new(0, 34, 0, 28)
+					Page.Icon.Position = UDim2.new(0, 10, 0.5, -14)
 				end
-				local Title = Page.Tab:FindFirstChild("Title")
+				local Title = Page.Icon:FindFirstChild("Title")
 				if Title then
 					Title.TextColor3 = Color3.new(1, 1, 1)
 					Title.TextTransparency = Selected and 0 or 0.5
 					if IsMobile then
-						Title.Parent = Page.Tab
-						Title.AnchorPoint = Vector2.new(0, 0)
 						Title.TextSize = 20
-						local TabWidth =
-							math.max(1, Hub.HubBar.AbsoluteSize.X / Count)
-						local TextWidth =
-							math.max(30, math.min(110, TabWidth - 50))
-						Title.Size = UDim2.new(0, TextWidth, 1, 0)
-						Title.Position = UDim2.new(1, -(TextWidth + 8), 0, 0)
-						Title.TextXAlignment = Enum.TextXAlignment.Left
+						Title.Size = UDim2.new(0, 140, 1, 0)
+						Title.Position = UDim2.new(1.2, 0, 0, 0)
 						Title.ClipsDescendants = false
 					else
-						Title.TextSize = 20
-						Title.Size = UDim2.new(1.05, 0, 1, 0)
-						Title.Position = UDim2.new(0, 54, 0, 0)
+						Title.TextSize = 24
+						Title.Size = UDim2.new(0, 190, 1, 0)
+						Title.Position = UDim2.new(0, 48, 0, 0)
 						Title.ClipsDescendants = false
 					end
 				end
@@ -6597,7 +6580,7 @@ RebuildPlayersPage = function()
 
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
 
-		local RowY = IsMobile and 72 or 0
+		local RowY = (IsMobile and not IsTablet) and 72 or 0
 		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
 		InviteRow.Position = UDim2.new(0,0,0,RowY)
 		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
@@ -10848,16 +10831,13 @@ ConfigureMobileActionButtons = function()
 
 	if IsMobile then
 		if IsTablet then
+			Hub.BottomButtonFrame.Parent = Hub.MenuContainer
+			Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
+			Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 6
 			MobileActionButtons.Reset.Parent = Hub.BottomButtonFrame
 			MobileActionButtons.Leave.Parent = Hub.BottomButtonFrame
 			MobileActionButtons.Resume.Parent = Hub.BottomButtonFrame
 			VoiceChatButton.Parent = Hub.BottomButtonFrame
-			for _, Button in next, {MobileActionButtons.Leave, MobileActionButtons.Reset, MobileActionButtons.Resume} do
-				Button.Visible = true
-				Button.ZIndex = SETTINGS_BASE_ZINDEX + 7
-			end
-			Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
-			Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 6
 		elseif PlayersPage and PlayersPage.Frame then
 			if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
 				MobileButtonsContainer = Create("Frame", {
@@ -10890,6 +10870,7 @@ ConfigureMobileActionButtons = function()
 		MobileActionButtons.Reset.Position = UDim2.new(0.5, 0, 0, 0)
 		MobileActionButtons.Resume.Position = UDim2.new(1, 0, 0, 0)
 		if IsTablet then
+			Hub.BottomButtonFrame.Parent = Hub.MenuContainer
 			Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
 			Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, ActionHeight)
 			Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -ActionHeight)
@@ -10899,7 +10880,7 @@ ConfigureMobileActionButtons = function()
 
 		for _, Button in next, {MobileActionButtons.Reset, MobileActionButtons.Leave, MobileActionButtons.Resume} do
 			Button.Visible = true
-			Button.ZIndex = IsTablet and (SETTINGS_BASE_ZINDEX + 7) or (SETTINGS_BASE_ZINDEX + 4)
+			Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
 			for _, Child in next, Button:GetChildren() do
 				if Child:IsA("ImageLabel") then Child.Visible = false end
 			end
@@ -11251,10 +11232,6 @@ SetVisibility =
 
 			RefreshNativeVoiceMirrorCache(true)
 			SwitchToPage(CustomPage or PlayersPage, true)
-			if IsTablet and not Hub.InInviteMenu and not Hub.InConfirmation then
-				Hub.BottomButtonFrame.Visible = true
-				ConfigureMobileActionButtons()
-			end
 			if PendingPlayerListRefresh and PlayersPage then
 				RebuildPlayersPage()
 				LayoutTabs()
@@ -11439,7 +11416,7 @@ CloseInvitePage =
 		if InviteList then InviteList.Visible = false end
 		Hub.HubBar.Visible = true
 		Hub.PageClipper.Visible = true
-		Hub.BottomButtonFrame.Visible = (not IsMobile) or IsTablet
+		Hub.BottomButtonFrame.Visible = not IsMobile
 		Hub.PageView.ScrollBarThickness = IsMobile and 0 or 12
 		if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
 		SwitchToPage(Previous, true, true)
@@ -11464,7 +11441,7 @@ EscapeAction =
 			Hub.InConfirmation = false
 			Hub.HubBar.Visible = true
 			Hub.PageClipper.Visible = true
-			Hub.BottomButtonFrame.Visible = (not IsMobile) or IsTablet
+			Hub.BottomButtonFrame.Visible = not IsMobile
 			if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
 			local Previous = Hub.MenuStack[#Hub.MenuStack] or PlayersPage
 			SwitchToPage(Previous, true, true)
