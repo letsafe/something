@@ -94,3 +94,11543 @@ GetMobileUiScale = function()
 
 	return Clamp(Scale, 0.95, 1.65)
 end
+
+-- ============================================================
+-- CONSTANTS
+-- ============================================================
+
+SETTINGS_SHIELD_COLOR =
+	Color3.new(
+		41 / 255,
+		41 / 255,
+		41 / 255
+	)
+
+SETTINGS_SHIELD_TRANSPARENCY = 0.2
+SETTINGS_BASE_ZINDEX = 200
+HIDE_SELECTOR_ARROWS = false
+
+SETTINGS_INACTIVE_POSITION =
+	UDim2.new(
+		0,
+		0,
+		-1,
+		-36
+	)
+
+SETTINGS_ACTIVE_POSITION =
+	UDim2.new(
+		0,
+		0,
+		0,
+		0
+	)
+
+BUTTON_IMAGE =
+	"rbxasset://textures/ui/Settings/MenuBarAssets/MenuButton.png"
+
+BUTTON_SELECTED_IMAGE =
+	"rbxasset://textures/ui/Settings/MenuBarAssets/MenuButtonSelected.png"
+
+TAB_BAR_IMAGE =
+	"rbxasset://textures/ui/Settings/MenuBarAssets/MenuBackground.png"
+
+TAB_SELECTION_IMAGE =
+	"rbxasset://textures/ui/Settings/MenuBarAssets/MenuSelection.png"
+
+DROP_DOWN_IMAGE =
+	"rbxasset://textures/ui/Settings/DropDown/DropDown.png"
+
+SLIDER_SELECTED_LEFT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/SelectedBarLeft.png"
+
+SLIDER_SELECTED_RIGHT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/SelectedBarRight.png"
+
+SLIDER_LEFT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/Less.png"
+
+SLIDER_RIGHT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/More.png"
+
+SLIDER_BAR_LEFT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/BarLeft.png"
+
+SLIDER_BAR_RIGHT_IMAGE =
+	"rbxasset://textures/ui/Settings/Slider/BarRight.png"
+
+PLAYER_LIST_OFFSET = 20
+DESCRIPTION_PLACEHOLDER = "Short Description (Optional)"
+REPORT_DESCRIPTION_FALLBACK = "Report Reason"
+PAGE_TOP_PADDING = 12
+
+KEY_F12 = 0x7B
+KEY_PRINT_SCREEN = 0x2C
+
+ABUSE_TYPES_PLAYER = {
+	"Swearing",
+	"Inappropriate Username",
+	"Bullying",
+	"Scamming",
+	"Dating",
+	"Cheating/Exploiting",
+	"Personal Question",
+	"Offsite Links",
+}
+
+ABUSE_TYPES_GAME = {
+	"Inappropriate Content",
+	"Bad Model or Script",
+	"Offsite Link",
+}
+
+-- ============================================================
+-- PLATFORM
+-- ============================================================
+
+IsTouchClient = UserInputService.TouchEnabled
+IsMobile = false
+IsTablet = false
+
+UpdateTabletPlatform = function(Viewport)
+	Viewport = Viewport or (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(720, 1280)
+
+	local PlatformMobile = false
+	pcall(function()
+		local Platform = UserInputService:GetPlatform()
+		PlatformMobile =
+			Platform == Enum.Platform.Android
+			or Platform == Enum.Platform.IOS
+	end)
+
+	local TouchEnabled = UserInputService.TouchEnabled
+	local KeyboardEnabled = UserInputService.KeyboardEnabled
+	local MouseEnabled = UserInputService.MouseEnabled
+
+	local ShortSide = math.min(Viewport.X, Viewport.Y)
+	local LongSide = math.max(Viewport.X, Viewport.Y)
+	local TabletViewport =
+		ShortSide >= 600
+		and LongSide > 0
+		and (LongSide / ShortSide) <= 1.90
+
+	-- Platform detection can be late/unavailable in some execution contexts.
+	-- A touch-only device with a tablet-sized viewport is a safe mobile/tablet
+	-- fallback, while touch laptops keep their keyboard/mouse and remain desktop.
+	local TouchMobileFallback =
+		TouchEnabled
+		and not KeyboardEnabled
+		and not MouseEnabled
+
+	IsMobile =
+		PlatformMobile
+		or TouchMobileFallback
+
+	IsTablet =
+		IsMobile
+		and TabletViewport
+
+	return IsTablet
+end
+
+-- ============================================================
+-- CONFIGURATION
+-- ============================================================
+
+HomeButtonEnabled = true
+DisplayNameSupport = true
+InviteFriends = true
+VoiceChatEnabled = false
+
+TOTAL_HUB_WIDTH = 800
+PC_SCROLLBAR_RESERVE = 6
+PC_RIGHT_EXTENSION = 8
+PC_HUBBAR_LEFT_REDUCTION = 0
+PC_HOME_EXTRA_GAP = 0
+PC_SCROLLBAR_THICKNESS = 12
+
+-- Home button uses the live HubBar height so its geometry cannot drift.
+HOME_HEIGHT = 60
+
+-- Slightly wider than its height.
+HOME_WIDTH = 60
+
+HUBBAR_HEIGHT = 60
+MOBILE_HUBBAR_HEIGHT = 40
+TABLET_HUBBAR_HEIGHT = 48
+
+-- Custom SystemMenuButton offsets.
+SYSTEM_MENU_OFFSET_X = 16
+SYSTEM_MENU_OFFSET_Y = 4
+
+-- Recorder overlay position relative to SystemMenuButton.
+-- X: horizontal offset from the calculated left-of-button position.
+-- Y: vertical offset from the SystemMenuButton top.
+RECORDER_OFFSET_X = 165
+RECORDER_OFFSET_Y = -17
+
+SYSTEM_MENU_ICON = "rbxassetid://136616213304711"
+SYSTEM_MENU_ICON_RECT_OFFSET = Vector2.new(135, 86)
+SYSTEM_MENU_ICON_RECT_SIZE = Vector2.new(36, 36)
+SYSTEM_MENU_SIZE = Vector2.new(32, 32)
+
+-- Mobile ESC menu:
+-- 32px SystemMenuButton + 8px gap = Y 40.
+MOBILE_MENU_GAP = 8
+
+MOBILE_LAYOUT_GAP = 6
+
+MOBILE_BOTTOM_MARGIN = 12
+
+-- ============================================================
+-- FORWARD DECLARATIONS
+-- ============================================================
+-- These names are assigned later in the same chunk. They are intentionally
+-- not declared as extra locals here because this script already approaches
+-- Luau's 200-local-register limit. Runtime closures resolve these names after
+-- the later assignments have executed.
+
+-- ============================================================
+-- CLEAN OLD INSTANCE
+-- ============================================================
+
+if getgenv().Settings2016Data then
+	for _, Connection in next,
+		(getgenv().Settings2016Data.Connections or {})
+	do
+		pcall(function()
+			Connection:Disconnect()
+		end)
+	end
+
+	for _, Object in next,
+		(getgenv().Settings2016Data.Objects or {})
+	do
+		pcall(function()
+			Object:Destroy()
+		end)
+	end
+end
+
+Data = {
+	Connections = {},
+	Objects = {},
+}
+
+getgenv().Settings2016Data = Data
+
+for _, Object in next, CoreGui:GetChildren() do
+	if
+		Object.Name == "Settings2016Gui"
+		or Object.Name == "Core2016SettingsGui"
+	then
+		Object:Destroy()
+	end
+end
+
+-- ============================================================
+-- BASIC HELPERS
+-- ============================================================
+
+Connect = function(Signal, Callback)
+	local Connection = Signal:Connect(Callback)
+	Insert(Data.Connections, Connection)
+	return Connection
+end
+
+Create = function(
+	Class: string,
+	Properties: {[string]: any}
+)
+	local Object = Instance.new(Class)
+
+	for Property, Value in next,
+		(Properties or {})
+	do
+		Object[Property] = Value
+	end
+
+	return Object
+end
+
+Protect = function(Callback)
+	local Success = pcall(Callback)
+	return Success
+end
+
+FadeText = function(
+	Label,
+	Transparency
+)
+	Spawn(function()
+		local Start = Label.TextTransparency
+
+		for Index = 1, 6 do
+			if not Label.Parent then
+				return
+			end
+
+			Label.TextTransparency =
+				Start
+				+ (
+					(Transparency - Start)
+					* (Index / 6)
+				)
+
+			Wait()
+		end
+	end)
+end
+
+LerpUDim = function(
+	Start,
+	Goal,
+	Alpha
+)
+	return UDim.new(
+		Start.Scale
+			+ (
+				(Goal.Scale - Start.Scale)
+				* Alpha
+			),
+
+		Start.Offset
+			+ (
+				(Goal.Offset - Start.Offset)
+				* Alpha
+			)
+	)
+end
+
+LerpUDim2 = function(
+	Start,
+	Goal,
+	Alpha
+)
+	return UDim2.new(
+		LerpUDim(
+			Start.X,
+			Goal.X,
+			Alpha
+		),
+
+		LerpUDim(
+			Start.Y,
+			Goal.Y,
+			Alpha
+		)
+	)
+end
+
+LerpColor = function(
+	Start,
+	Goal,
+	Alpha
+)
+	return Color3.new(
+		Start.R
+			+ (
+				(Goal.R - Start.R)
+				* Alpha
+			),
+
+		Start.G
+			+ (
+				(Goal.G - Start.G)
+				* Alpha
+			),
+
+		Start.B
+			+ (
+				(Goal.B - Start.B)
+				* Alpha
+			)
+	)
+end
+
+MoveTweens = {}
+
+MoveTo = function(
+	Object,
+	Position,
+	Callback,
+	Frames
+)
+	MoveTweens[Object] =
+		(MoveTweens[Object] or 0)
+		+ 1
+
+	local Id =
+		MoveTweens[Object]
+
+	Spawn(function()
+
+		local Start =
+			Object.Position
+
+		Frames =
+			Frames
+			or 8
+
+		for Index = 1, Frames do
+
+			if
+				not Object.Parent
+				or MoveTweens[Object] ~= Id
+			then
+				return
+			end
+
+			local Alpha =
+				Index / Frames
+
+			Alpha =
+				1
+				- (
+					(1 - Alpha)
+					* (1 - Alpha)
+				)
+
+			Object.Position =
+				LerpUDim2(
+					Start,
+					Position,
+					Alpha
+				)
+
+			Wait()
+		end
+
+		Object.Position =
+			Position
+
+		if
+			Callback
+			and MoveTweens[Object] == Id
+		then
+			Callback()
+		end
+
+	end)
+end
+
+TweenTo = function(
+	Object,
+	Position,
+	Direction,
+	Style,
+	Time,
+	Callback
+)
+	MoveTweens[Object] =
+		(MoveTweens[Object] or 0)
+		+ 1
+
+	local Id =
+		MoveTweens[Object]
+
+	local Success =
+		Protect(function()
+
+			Object:TweenPosition(
+				Position,
+				Direction,
+				Style,
+				Time,
+				true,
+				function()
+
+					if
+						MoveTweens[Object] ~= Id
+					then
+						return
+					end
+
+					Object.Position =
+						Position
+
+					if Callback then
+						Callback()
+					end
+
+				end
+			)
+
+		end)
+
+	if not Success then
+		MoveTo(
+			Object,
+			Position,
+			Callback,
+			math.max(
+				1,
+				Floor(
+					(Time or 0.1)
+					* 60
+				)
+			)
+		)
+	end
+end
+
+ColorTweens = {}
+
+ColorTo = function(
+	Object,
+	Color
+)
+	ColorTweens[Object] =
+		(ColorTweens[Object] or 0)
+		+ 1
+
+	local Id =
+		ColorTweens[Object]
+
+	Spawn(function()
+
+		local Start =
+			Object.BackgroundColor3
+
+		for Index = 1, 5 do
+
+			if
+				not Object.Parent
+				or ColorTweens[Object] ~= Id
+			then
+				return
+			end
+
+			Object.BackgroundColor3 =
+				LerpColor(
+					Start,
+					Color,
+					Index / 5
+				)
+
+			Wait()
+		end
+
+	end)
+end
+
+-- ============================================================
+-- SETTINGS HELPERS
+-- ============================================================
+
+SetMouseSensitivity = function(Value)
+
+	Protect(function()
+		UserSettings().GameSettings.MouseSensitivity =
+			Value
+	end)
+
+	Protect(function()
+		UserInputService.MouseDeltaSensitivity =
+			Value
+	end)
+
+end
+
+SetMasterVolume = function(Value)
+
+	Protect(function()
+		UserSettings().GameSettings.MasterVolume =
+			Value
+	end)
+
+	Protect(function()
+		SoundService.Volume =
+			Value
+	end)
+
+end
+
+GetSetting = function(
+	Object,
+	Property,
+	Default
+)
+	local Success, Value =
+		pcall(function()
+			return Object[Property]
+		end)
+
+	if
+		Success
+		and Value ~= nil
+	then
+		return Value
+	end
+
+	return Default
+end
+
+SetSetting = function(
+	Object,
+	Property,
+	Value
+)
+	Protect(function()
+		Object[Property] = Value
+	end)
+end
+
+-- ============================================================
+-- GUI ROOT
+-- ============================================================
+
+ScreenGui =
+	Create(
+		"ScreenGui",
+		{
+			Name =
+				"Settings2016Gui",
+
+			Parent =
+				CoreGui,
+
+			IgnoreGuiInset =
+				true,
+
+			ZIndexBehavior =
+				Enum.ZIndexBehavior.Sibling,
+
+			DisplayOrder =
+				9000,
+
+			Enabled =
+				true,
+		}
+	)
+
+Insert(
+	Data.Objects,
+	ScreenGui
+)
+
+VolumeChangeSound =
+	Create(
+		"Sound",
+		{
+			Name =
+				"VolumeChangeSound",
+
+			Parent =
+				SoundService,
+
+			SoundId =
+				"rbxasset://sounds/uuhhh.mp3",
+
+			Volume =
+				1,
+		}
+	)
+
+Insert(
+	Data.Objects,
+	VolumeChangeSound
+)
+
+PlayVolumeChangeSound =
+	function()
+
+		Protect(function()
+
+			VolumeChangeSound:Stop()
+			VolumeChangeSound:Play()
+
+		end)
+
+	end
+
+-- ============================================================
+-- TEXT / BUTTONS
+-- ============================================================
+
+MakeText = function(
+	Parent,
+	Text,
+	Size,
+	Position
+)
+	return Create(
+		"TextLabel",
+		{
+			Parent =
+				Parent,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			Size =
+				Size,
+
+			Position =
+				Position
+				or UDim2.new(),
+
+			Font =
+				Enum.Font.SourceSansBold,
+
+			TextSize =
+				20,
+
+			TextColor3 =
+				Color3.new(
+					1,
+					1,
+					1
+				),
+
+			Text =
+				Text,
+
+			TextWrapped =
+				true,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 2,
+		}
+	)
+end
+
+MakeStyledButton = function(
+	Name,
+	Text,
+	Size,
+	Clicked,
+	SelectedByDefault
+)
+
+	local Button =
+		Create(
+			"ImageButton",
+			{
+				Name =
+					Name,
+
+				Image =
+					SelectedByDefault
+					and BUTTON_SELECTED_IMAGE
+					or BUTTON_IMAGE,
+
+				ScaleType =
+					Enum.ScaleType.Slice,
+
+				SliceCenter =
+					Rect.new(
+						8,
+						6,
+						46,
+						44
+					),
+
+				AutoButtonColor =
+					false,
+
+				BackgroundTransparency =
+					1,
+
+				Size =
+					Size,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 2,
+			}
+		)
+
+	local Label =
+		Create(
+			"TextLabel",
+			{
+				Name =
+					Name
+					.. "TextLabel",
+
+				Parent =
+					Button,
+
+				BackgroundTransparency =
+					1,
+
+				BorderSizePixel =
+					0,
+
+				Size =
+					UDim2.new(
+						1,
+						0,
+						1,
+						-8
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						0,
+						0,
+						0
+					),
+
+				Font =
+					Enum.Font.SourceSansBold,
+
+				TextSize =
+					24,
+
+				TextColor3 =
+					Color3.new(
+						1,
+						1,
+						1
+					),
+
+				TextXAlignment =
+					Enum.TextXAlignment.Center,
+
+				TextYAlignment =
+					Enum.TextYAlignment.Center,
+
+				Text =
+					Text,
+
+				TextWrapped =
+					true,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	Connect(
+		Button.MouseEnter,
+		function()
+			if Button.Active ~= false then
+				Button.Image =
+					BUTTON_SELECTED_IMAGE
+			end
+		end
+	)
+
+	Connect(
+		Button.MouseLeave,
+		function()
+
+			if Button.ImageTransparency >= 1 then
+				return
+			end
+
+			Button.Image =
+				SelectedByDefault
+				and BUTTON_SELECTED_IMAGE
+				or BUTTON_IMAGE
+
+		end
+	)
+
+	if Clicked then
+
+		Connect(
+			Button.MouseButton1Click,
+			Clicked
+		)
+
+	end
+
+	return Button, Label
+end
+
+-- ============================================================
+-- PAGE SYSTEM
+-- ============================================================
+
+MakePage = function(Name)
+
+	local Page = {
+		Name =
+			Name,
+
+		Rows =
+			{},
+
+		NextY =
+			0,
+
+		Frame =
+			Create(
+				"Frame",
+				{
+					Name =
+						Name
+						.. "Page",
+
+					BackgroundTransparency =
+						1,
+
+					BorderSizePixel =
+						0,
+
+					Size =
+						UDim2.new(
+							1,
+							0,
+							0,
+							0
+						),
+
+					Visible =
+						false,
+
+					ZIndex =
+						SETTINGS_BASE_ZINDEX
+						+ 1
+				})
+	}
+
+	function Page:AddRow(Row)
+
+		Row.Parent =
+			self.Frame
+
+		Row.Position =
+			UDim2.new(
+				0,
+				0,
+				0,
+				self.NextY
+			)
+
+		Insert(
+			self.Rows,
+			Row
+		)
+
+		self.NextY = self.NextY + math.max(1, Row.Size.Y.Offset)
+
+		self.Frame.Size =
+			UDim2.new(
+				1,
+				0,
+				0,
+				PAGE_TOP_PADDING
+				+ self.NextY
+			)
+
+	end
+
+	return Page
+end
+
+-- ============================================================
+-- HUB
+-- ============================================================
+
+Hub = {
+	Visible =
+		false,
+
+	Pages =
+		{},
+
+	MenuStack =
+		{},
+
+	CurrentPage =
+		nil,
+
+	NativeMenuTarget =
+		nil,
+
+	SuppressNativeOpenUntil =
+		0,
+
+	PreviousMenuPage =
+		nil,
+
+	InInviteMenu =
+		false,
+
+	InConfirmation =
+		false,
+}
+
+ClippingShield =
+	Create(
+		"Frame",
+		{
+			Name =
+				"SettingsShield",
+
+			Parent =
+				ScreenGui,
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					1,
+					0
+				),
+
+			Position =
+				SETTINGS_ACTIVE_POSITION,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			ClipsDescendants =
+				true,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX,
+		}
+	)
+
+Hub.Shield =
+	Create(
+		"Frame",
+		{
+			Name =
+				"SettingsShield",
+
+			Parent =
+				ClippingShield,
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					1,
+					0
+				),
+
+			Position =
+				SETTINGS_INACTIVE_POSITION,
+
+			BackgroundColor3 =
+				SETTINGS_SHIELD_COLOR,
+
+			BackgroundTransparency =
+				SETTINGS_SHIELD_TRANSPARENCY,
+
+			BorderSizePixel =
+				0,
+
+			Visible =
+				false,
+
+			Active =
+				true,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX,
+		}
+	)
+
+
+-- ============================================================
+-- TABLET-WIDE RESPONSIVE SCALE
+-- ============================================================
+TabletUiScale = nil
+TabletUiScaleObject = nil
+
+GetTabletResponsiveScale = function(Viewport)
+	if not IsMobile then return 1 end
+	Viewport = Viewport or Vector2.new(720, 1280)
+	local ShortSide = math.min(Viewport.X, Viewport.Y)
+	local LongSide = math.max(Viewport.X, Viewport.Y)
+	if ShortSide >= 760 and LongSide > 0 and (LongSide / ShortSide) <= 1.85 then
+		return Clamp(ShortSide / 640, 1, 1.45)
+	end
+	return 1
+end
+
+ApplyTabletResponsiveScale = function(Viewport)
+	local Scale = GetTabletResponsiveScale(Viewport)
+	if not Hub or not Hub.Shield then return Scale end
+	if IsMobile and Scale > 1 then
+		if not TabletUiScaleObject or not TabletUiScaleObject.Parent then
+			TabletUiScaleObject = Create("UIScale", {
+				Name = "TabletResponsiveScale",
+				Parent = Hub.Shield,
+				Scale = Scale,
+			})
+		else
+			TabletUiScaleObject.Scale = Scale
+		end
+	else
+		if TabletUiScaleObject then
+			Protect(function() TabletUiScaleObject:Destroy() end)
+			TabletUiScaleObject = nil
+		end
+	end
+	TabletUiScale = Scale
+	return Scale
+end
+
+Hub.Modal =
+	Create(
+		"TextButton",
+		{
+			Name =
+				"Modal",
+
+			Parent =
+				Hub.Shield,
+
+			BackgroundTransparency =
+				1,
+
+			Position =
+				UDim2.new(
+					0,
+					0,
+					0,
+					0
+				),
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					1,
+					0
+				),
+
+			Text =
+				"",
+
+			Active =
+				true,
+
+			AutoButtonColor =
+				false,
+
+			Modal =
+				true,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX,
+		}
+	)
+
+Hub.MenuContainer = Create("Frame", {
+	Name="MenuContainer", Parent=Hub.Shield, BackgroundTransparency=1,
+	Position=UDim2.new(0.5,0,0.5,0), Size=UDim2.new(0.95,0,0.95,0),
+	AnchorPoint=Vector2.new(0.5,0.5), ZIndex=SETTINGS_BASE_ZINDEX,
+})
+Hub.MenuAspectRatio = Create("UIAspectRatioConstraint", {Name="MenuAspectRatio", AspectRatio=800/600, AspectType=Enum.AspectType.ScaleWithParentSize, DominantAxis=Enum.DominantAxis.Width, Parent=Hub.MenuContainer})
+Hub.MenuListLayout = Create("UIListLayout", {Name="MenuListLayout", FillDirection=Enum.FillDirection.Vertical, VerticalAlignment=Enum.VerticalAlignment.Center, HorizontalAlignment=Enum.HorizontalAlignment.Center, SortOrder=Enum.SortOrder.LayoutOrder, Parent=nil})
+
+Hub.HubBar =
+	Create(
+		"ImageLabel",
+		{
+			Name =
+				"HubBar",
+
+			Parent =
+				Hub.MenuContainer,
+
+			Image =
+				TAB_BAR_IMAGE,
+
+			ScaleType =
+				Enum.ScaleType.Slice,
+
+			SliceCenter =
+				Rect.new(
+					4,
+					4,
+					6,
+					6
+				),
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			Size =
+				UDim2.new(
+					0,
+					TOTAL_HUB_WIDTH,
+					0,
+					HUBBAR_HEIGHT
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-TOTAL_HUB_WIDTH / 2,
+					0.1,
+					0
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 1,
+		}
+	)
+
+Hub.HubBarContainer = Create("ImageLabel", {Name="HubBarContainer", Parent=Hub.HubBar, BackgroundTransparency=1, Image=TAB_BAR_IMAGE, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(4,4,6,6), Size=UDim2.new(1,-70,1,0), Position=UDim2.new(0,70,0,0), ZIndex=SETTINGS_BASE_ZINDEX+2})
+Hub.HubBarContainerLayout = Create("UIListLayout", {Name="UIListLayout", FillDirection=Enum.FillDirection.Horizontal, HorizontalAlignment=Enum.HorizontalAlignment.Center, VerticalAlignment=Enum.VerticalAlignment.Center, SortOrder=Enum.SortOrder.LayoutOrder, Wraps=false, Padding=UDim.new(0,0), Parent=Hub.HubBarContainer})
+
+Hub.PageClipper =
+	Create(
+		"Frame",
+		{
+			Name =
+				"PageViewClipper",
+
+			Parent =
+				Hub.MenuContainer,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			ClipsDescendants =
+				true,
+
+			Size =
+				UDim2.new(
+					0,
+					TOTAL_HUB_WIDTH,
+					0,
+					420
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-TOTAL_HUB_WIDTH / 2,
+					0.1,
+					61
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 1,
+		}
+	)
+
+Hub.PageView =
+	Create(
+		"ScrollingFrame",
+		{
+			Name =
+				"PageView",
+
+			Parent =
+				Hub.PageClipper,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					1,
+					0
+				),
+
+			CanvasSize =
+				UDim2.new(
+					0,
+					0,
+					0,
+					0
+				),
+
+			ScrollBarThickness =
+				6,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 1,
+		}
+	)
+
+Hub.BottomButtonFrame =
+	Create(
+		"Frame",
+		{
+			Name =
+				"BottomButtonFrame",
+
+			Parent =
+				Hub.MenuContainer,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			Size =
+				UDim2.new(
+					0,
+					TOTAL_HUB_WIDTH,
+					0,
+					60
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-TOTAL_HUB_WIDTH / 2,
+					0.9,
+					-60
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 1,
+		}
+	)
+
+-- ============================================================
+-- HOME BUTTON
+-- ============================================================
+
+CreateHomeButton = function()
+	if not HomeButtonEnabled or HomeButton then return end
+	HomeButton = Create("ImageButton", {Name="HubBarHomeButton", Parent=Hub.HubBar, BackgroundTransparency=1, Image=TAB_BAR_IMAGE, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(4,4,6,6), AutoButtonColor=true, Size=UDim2.new(0,60,0,60), Position=UDim2.new(0,0,0,0), ZIndex=SETTINGS_BASE_ZINDEX+4})
+	Create("UIAspectRatioConstraint", {Parent=HomeButton, AspectRatio=1, AspectType=Enum.AspectType.FitWithinMaxSize, DominantAxis=Enum.DominantAxis.Height})
+	Create("ImageLabel", {Name="HubBarHomeButtonIcon", Parent=HomeButton, BackgroundTransparency=1, Image="rbxasset://textures/ui/Settings/MenuBarIcons/HomeTab.png", ScaleType=Enum.ScaleType.Stretch, Size=UDim2.new(0.7,0,0.7,0), Position=UDim2.new(0.16,0,0.18,0), ZIndex=SETTINGS_BASE_ZINDEX+5})
+	Connect(HomeButton.MouseEnter, function() HomeButton.Image="rbxasset://textures/ui/Settings/MenuBarAssets/MenuSelection@2x.png" end)
+	Connect(HomeButton.MouseLeave, function() HomeButton.Image=TAB_BAR_IMAGE end)
+	Connect(HomeButton.MouseButton1Click, function() if HomeButtonEnabled and LeavePage and Hub.Visible then PushPage(LeavePage) end end)
+end
+
+CreateHomeButton()
+
+PositionHomeButton = function()
+	if not HomeButtonEnabled or not HomeButton then return end
+	HomeButton.Parent=Hub.HubBar
+	HomeButton.Size=UDim2.new(0,Hub.HubBar.Size.Y.Offset,0,Hub.HubBar.Size.Y.Offset)
+	HomeButton.Position=UDim2.new(0,0,0,0)
+end
+
+-- ============================================================
+-- RESIZE
+-- ============================================================
+
+ResizeHub = nil
+
+ResizeHub = function()
+
+	local Viewport =
+		ScreenGui.AbsoluteSize
+
+	if
+		Viewport.X <= 0
+		or Viewport.Y <= 0
+	then
+
+		local Camera =
+			workspace.CurrentCamera
+
+		Viewport =
+			(Camera and Camera.ViewportSize)
+			or Vector2.new(
+				1280,
+				720
+			)
+
+	end
+
+	local Height
+	UpdateTabletPlatform(Viewport)
+	local TabletScale = ApplyTabletResponsiveScale(Viewport)
+	local LayoutViewport = Viewport
+	local TabletXOffset = 0
+	if IsMobile and TabletScale > 1 then
+		LayoutViewport = Vector2.new(Viewport.X / TabletScale, Viewport.Y / TabletScale)
+		-- The tablet menu is intentionally biased slightly left. Keep the
+		-- phone layout centered and move only the tablet-sized menu.
+		TabletXOffset = -155 / TabletScale
+	end
+
+	-- ========================================================
+	-- INVITE PAGE
+	-- ========================================================
+
+	if
+		Hub.InInviteMenu
+		and InvitePage
+	then
+
+		-- The invite page is a SUBPAGE of the 2016 ESC menu.
+		-- It must never expand to the whole viewport.
+		-- Only InviteList is allowed to scroll.
+
+		local Width
+		local PageHeight
+
+		if IsMobile then
+
+			-- Mobile invite page is intentionally larger than the
+			-- normal ESC menu. Keep only a tiny outer margin so the
+			-- invite list gets almost the entire available screen.
+
+			Width =
+				math.max(
+					280,
+					LayoutViewport.X - 8
+				)
+
+			local PageTop =
+				36
+
+			PageHeight =
+				math.max(
+					220,
+					LayoutViewport.Y - PageTop - 8
+				)
+
+			Hub.PageClipper.AnchorPoint =
+				Vector2.new(
+					0,
+					0
+				)
+
+			Hub.PageClipper.Size =
+				UDim2.new(
+					0,
+					Width,
+					0,
+					PageHeight
+				)
+
+			Hub.PageClipper.Position =
+				UDim2.new(
+					0.5,
+					-Width / 2 + TabletXOffset,
+					0,
+					PageTop
+				)
+
+		else
+
+			local BufferSize =
+				0.05 * Viewport.Y
+
+			Width =
+				TOTAL_HUB_WIDTH
+
+			local ExtraSpace =
+				(BufferSize * 2)
+				+ (HUBBAR_HEIGHT * 2)
+
+			PageHeight =
+				Clamp(
+					Viewport.Y - ExtraSpace,
+					150,
+					600
+				)
+
+			Hub.PageClipper.AnchorPoint =
+				Vector2.new(
+					0,
+					0
+				)
+
+			Hub.PageClipper.Size =
+				UDim2.new(
+					0,
+					Width,
+					0,
+					PageHeight
+				)
+
+			Hub.PageClipper.Position =
+				UDim2.new(
+					0.5,
+					-Width / 2,
+					0.5,
+					-PageHeight / 2
+				)
+
+		end
+
+		Hub.HubBar.Visible =
+			false
+
+		Hub.BottomButtonFrame.Visible =
+			false
+
+		if HomeButton then
+			HomeButton.Visible =
+				false
+		end
+
+		Hub.PageView.Size =
+			UDim2.new(
+				1,
+				0,
+				1,
+				0
+			)
+
+		-- Disable the OUTER scrollbar.
+		-- InviteList is the only scrolling container.
+		Hub.PageView.ScrollBarThickness =
+			0
+
+		Hub.PageView.CanvasPosition =
+			Vector2.new(
+				0,
+				0
+			)
+
+		if InviteList then
+			InviteList.Size =
+				UDim2.new(
+					1,
+					-12,
+					1,
+					-75
+				)
+
+			InviteList.Position =
+				UDim2.new(
+					0,
+					6,
+					0,
+					65
+				)
+
+		end
+
+		InvitePage.Frame.Size =
+			UDim2.new(
+				1,
+				0,
+				0,
+				PageHeight
+			)
+
+		Hub.PageView.CanvasSize =
+			UDim2.new(
+				0,
+				0,
+				0,
+				PageHeight
+			)
+
+	elseif Hub.InConfirmation then
+
+		-- ====================================================
+		-- MOBILE / DESKTOP CONFIRMATION PAGE
+		-- ====================================================
+
+		local Width =
+			IsMobile
+			and math.min(800, math.max(280, LayoutViewport.X - 16))
+			or TOTAL_HUB_WIDTH
+
+		local ConfirmationHeight = 280
+
+		Hub.HubBar.Visible = false
+		Hub.BottomButtonFrame.Visible = false
+		if HomeButton then HomeButton.Visible = false end
+
+		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageClipper.Size = UDim2.new(0, Width, 0, ConfirmationHeight)
+		Hub.PageClipper.Position =
+			IsMobile
+			and UDim2.new(0.5, -Width / 2 + TabletXOffset, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
+			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2 + 75)
+
+		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.Position = UDim2.new(0, 0, 0, 0)
+		Hub.PageView.Size = UDim2.new(1, 0, 0, ConfirmationHeight)
+		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
+		Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, ConfirmationHeight)
+		Hub.PageView.ScrollBarThickness = 0
+
+		if IsMobile then
+			PositionMobileConfirmationButtons()
+		else
+			PositionDesktopConfirmationButtons()
+			local Page = Hub.CurrentPage
+			if Page == ResetPage then
+				ApplyResetButtonAvailability()
+			end
+			if Page == ResetPage or Page == LeavePage then
+				Page.Frame.Parent = Hub.PageView
+				Page.Frame.Position = UDim2.new(0, 0, 0, 0)
+				Page.Frame.Size = UDim2.fromOffset(Width, ConfirmationHeight)
+				Page.Frame.Visible = true
+				local First = Page == ResetPage and ResetButton or LeaveButton
+				local Second = Page == ResetPage and DontResetButton or DontLeaveButton
+				First.Parent = Page.Frame
+				Second.Parent = Page.Frame
+				First.Visible = true
+				Second.Visible = true
+				local ResetAllowed = Page ~= ResetPage or GetResetButtonAllowed()
+				First.Active = ResetAllowed
+				First.Selectable = ResetAllowed
+				if Page == ResetPage then
+					First.ImageColor3 = ResetAllowed and Color3.new(1, 1, 1) or Color3.fromRGB(135, 135, 135)
+					if ResetButtonLabel then
+						ResetButtonLabel.TextColor3 = ResetAllowed and Color3.new(1, 1, 1) or Color3.fromRGB(150, 150, 150)
+					end
+				end
+				Second.Active = true
+				PositionDesktopConfirmationButtons()
+				First.ZIndex = SETTINGS_BASE_ZINDEX + 10
+				Second.ZIndex = SETTINGS_BASE_ZINDEX + 10
+			end
+		end
+
+	elseif IsMobile and IsTablet then
+
+		-- ====================================================
+		-- TABLET LAYOUT
+		-- PC-LIKE PAGE, MOBILE-STYLE HUBBAR/BOTTOM BUTTONS
+		-- ====================================================
+
+		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.Position = UDim2.new(0, 0, 0, 0)
+		Hub.PageView.Size = UDim2.new(1, 0, 1, -20)
+		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
+		Hub.PageView.ScrollBarThickness = 12
+		Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
+
+		local Width = math.max(720, math.floor(LayoutViewport.X - 20 + 0.5))
+		local HubHeight = TABLET_HUBBAR_HEIGHT
+		local BottomHeight = 62
+		local TabletGroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
+		local Top = 3
+		local BottomGap = 6
+		local PageHeight = math.max(300, math.floor(LayoutViewport.Y - HubHeight - BottomHeight - Top - BottomGap - 10 + 0.5))
+
+		Hub.MenuContainer.Size = UDim2.new(0, Width, 0, math.min(LayoutViewport.Y - 10, HubHeight + PageHeight + BottomHeight + Top + BottomGap))
+		Hub.MenuContainer.Position = UDim2.new(0.5, TabletXOffset, 0.5, 0)
+		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+
+		Hub.HubBar.Visible = true
+		Hub.HubBar.Size = UDim2.new(1, 0, 0, HubHeight)
+		Hub.HubBar.Position = UDim2.new(0, 0, 0, TabletGroupTop)
+		Hub.HubBar.Image = TAB_BAR_IMAGE
+		Hub.HubBar.ImageTransparency = 0
+		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
+		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer end
+
+		if HomeButton then
+			HomeButton.Visible = false
+		end
+
+		Hub.PageClipper.Parent = Hub.MenuContainer
+		Hub.PageClipper.Size = UDim2.new(1, 0, 0, PageHeight)
+		Hub.PageClipper.Position = UDim2.new(0, 0, 0, TabletGroupTop + HubHeight)
+
+		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
+		Hub.BottomButtonFrame.Visible = true
+		Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, BottomHeight)
+		Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -BottomHeight)
+		Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 6
+		Hub.BottomButtonFrame.ClipsDescendants = false
+
+		if PlayersPage and PlayersPage.Frame then
+			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, PlayersPage.Frame.Size.Y.Offset))
+		end
+
+	elseif IsMobile then
+
+		if Hub.InInviteMenu and ConfigureInviteMobileHeader then
+			ConfigureInviteMobileHeader()
+		end
+
+		-- ====================================================
+		-- NORMAL MOBILE ESC MENU
+		-- ====================================================
+
+		Hub.PageClipper.AnchorPoint =
+			Vector2.new(0, 0)
+
+		Hub.PageView.AnchorPoint =
+			Vector2.new(0, 0)
+
+		Hub.PageView.Position =
+			UDim2.new(0, 0, 0, 0)
+
+		Hub.PageView.Size =
+			UDim2.new(1, 0, 1, 0)
+
+		Hub.PageView.CanvasPosition =
+			Vector2.new(0, 0)
+
+		Hub.PageView.ScrollBarThickness = 0
+
+		-- PHONE-ONLY LAYOUT: use the actual viewport edge-to-edge.
+		-- The shared MenuContainer has an 800:600 aspect-ratio constraint for
+		-- desktop layouts, so disable that constraint on phones or it will force
+		-- the menu back into a smaller centered rectangle.
+		if Hub.MenuAspectRatio then
+			Hub.MenuAspectRatio.Enabled = false
+		end
+		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
+		Hub.MenuContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+
+		local Width =
+			math.max(280, math.floor(LayoutViewport.X + 0.5))
+
+		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
+		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
+
+		local PageTop = GroupTop + MobileBarHeight
+		local PageHeight =
+			math.max(100, math.floor(LayoutViewport.Y - PageTop + 0.5))
+
+		Height = PageHeight
+
+		-- HubBar is genuinely screen-edge to screen-edge on phones.
+		Hub.HubBar.Size = UDim2.new(0, Width, 0, MobileBarHeight)
+		Hub.HubBar.Position = UDim2.new(0.5, -Width / 2, 0, GroupTop)
+
+		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
+		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
+		if Hub.HubBarContainerLayout then
+			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
+		end
+
+		-- Page area is also edge-to-edge and starts immediately below the HubBar.
+		Hub.PageClipper.Size = UDim2.new(0, Width, 0, PageHeight)
+		Hub.PageClipper.Position = UDim2.new(0.5, -Width / 2, 0, PageTop)
+
+		-- The fixed PC button frame is NEVER used on mobile.
+		Hub.BottomButtonFrame.Visible = false
+		Hub.BottomButtonFrame.Size = UDim2.new(1, -10, 0, MOBILE_HUBBAR_HEIGHT)
+		Hub.BottomButtonFrame.Position = UDim2.new(0.5, 5, 1, -43)
+
+		-- The mobile action buttons belong to a ButtonsContainer inside Players.
+		if PlayersPage and PlayersPage.Frame then
+
+			local UiScale = GetMobileUiScale()
+			local ActionHeight = 62
+			local ActionWidth = 1 / 3
+
+			if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
+				MobileButtonsContainer = Create("Frame", {
+					Name = "ButtonsContainer",
+					Parent = PlayersPage.Frame,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Size = UDim2.new(1, 0, 0, 62),
+					Position = UDim2.new(0, 0, 0, 0),
+					ZIndex = SETTINGS_BASE_ZINDEX + 1,
+				})
+			end
+			MobileButtonsContainer.Size = UDim2.new(1, 0, 0, 62)
+			MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
+
+			for Index, Button in ipairs({
+				MobileActionButtons.Leave,
+				MobileActionButtons.Reset,
+				MobileActionButtons.Resume,
+			}) do
+
+				if Button then
+
+					Button.Parent = MobileButtonsContainer
+
+					Button.AnchorPoint = Vector2.new(
+						Index == 2 and 0.5 or (Index == 3 and 1 or 0),
+						0
+					)
+					Button.Size = UDim2.new(ActionWidth, -5, 0, ActionHeight)
+					Button.Position = UDim2.new(
+						Index == 2 and 0.5 or (Index == 3 and 1 or 0),
+						Index == 2 and 0 or (Index == 3 and 0 or 0),
+						0,
+						0
+					)
+
+					Button.Visible = true
+					Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
+
+					local Label =
+						Button:FindFirstChild(
+							Button.Name .. "TextLabel"
+						)
+
+					if Label then
+						Label.Position = UDim2.new(0, 0, 0, 0)
+						Label.Size = UDim2.new(1, 0, 1, -6)
+						Label.ZIndex = SETTINGS_BASE_ZINDEX + 5
+					end
+
+					for _, Child in ipairs(Button:GetChildren()) do
+						if Child:IsA("ImageLabel") then
+							Child.Visible = false
+						end
+					end
+
+				end
+
+			end
+
+			local UiScale = GetMobileUiScale()
+			local ActionHeight = 62
+			local ActionListGap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
+			local InviteOffset = InviteFriends and 72 or 0
+
+			local InviteRow =
+				PlayersPage.Frame:FindFirstChild(
+					"InviteFriendsToJoin"
+				)
+
+			if InviteRow then
+
+				-- Mobile only: move Invite Friends slightly closer
+				-- to the Leave / Reset / Resume action row.
+				InviteRow.Position =
+					UDim2.new(
+						0,
+						0,
+						0,
+						72
+					)
+
+			end
+
+			local PlayerRows = {}
+
+			for _, Child in ipairs(PlayersPage.Frame:GetChildren()) do
+
+				if
+					Child.Name:sub(1, 11) == "PlayerLabel"
+				then
+
+					Insert(PlayerRows, Child)
+
+				end
+
+			end
+
+			table.sort(
+				PlayerRows,
+				function(A, B)
+					return A.Name < B.Name
+				end
+			)
+
+			-- Do not touch the PC RebuildPlayersPage positions.
+			-- Mobile gets its own visual offset here.
+			for Index, Row in ipairs(PlayerRows) do
+
+				Row.Position =
+					UDim2.new(
+						0,
+						0,
+						0,
+						ActionHeight
+						+ ActionListGap
+						+ InviteOffset
+						+ ((Index - 1) * 72)
+					)
+
+			end
+
+			local ContentHeight =
+				ActionHeight
+				+ ActionListGap
+				+ InviteOffset
+				+ (#PlayerRows * 72)
+				+ PAGE_TOP_PADDING
+
+			PlayersPage.Frame.Size =
+				UDim2.new(
+					1,
+					0,
+					0,
+					math.max(240, ContentHeight, PageHeight)
+				)
+
+			Hub.PageView.CanvasSize =
+				UDim2.new(
+					0,
+					0,
+					0,
+					math.max(
+						ContentHeight,
+						PageHeight
+					)
+				)
+
+		else
+
+			Hub.PageView.CanvasSize =
+				UDim2.new(0, 0, 0, PageHeight)
+
+		end
+
+		if HomeButton then
+			HomeButton.Visible = false
+		end
+
+	else
+		-- ====================================================
+		-- PC / 2023 DESKTOP LAYOUT
+		-- ====================================================
+		if Hub.MenuAspectRatio then Hub.MenuAspectRatio.Enabled = true end
+		Hub.MenuContainer.Size=UDim2.new(0.95,0,0.95,0)
+		Hub.MenuContainer.Position=UDim2.new(0.5,0,0.5,0)
+		Hub.MenuContainer.AnchorPoint=Vector2.new(0.5,0.5)
+		local FullScreenHeight=Viewport.Y
+		local BufferSize=(1-0.95)*FullScreenHeight
+		local BarSize=60
+		local ExtraSpace=BufferSize*2+BarSize*2
+		local UsableScreenHeight=FullScreenHeight-ExtraSpace
+		local LargestPageSize=600
+		local MinimumPageSize=150
+		local UsePageSize
+		Hub.HubBar.Parent=Hub.MenuContainer
+		Hub.HubBar.AnchorPoint=Vector2.new(0.5,0)
+		Hub.HubBar.Size=UDim2.new(0,800,0,60)
+		if LargestPageSize < UsableScreenHeight then
+			UsePageSize=LargestPageSize
+			Hub.HubBar.Position=UDim2.new(0.5,0,0.5,-LargestPageSize/2-BarSize)
+			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,0.5,LargestPageSize/2)
+		elseif UsableScreenHeight < MinimumPageSize then
+			UsePageSize=MinimumPageSize
+			Hub.HubBar.Position=UDim2.new(0.5,0,0.5,-MinimumPageSize/2-BarSize)
+			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,0.5,MinimumPageSize/2)
+		else
+			UsePageSize=UsableScreenHeight
+			Hub.HubBar.Position=UDim2.new(0.5,0,0,BufferSize)
+			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,1,-(BufferSize+BarSize))
+		end
+		Hub.HubBar.Image=TAB_BAR_IMAGE
+		Hub.HubBar.ImageTransparency=HomeButtonEnabled and 1 or 0
+		Hub.HubBarContainer.Size=UDim2.new(1,HomeButtonEnabled and -70 or 0,1,0)
+		Hub.HubBarContainer.Position=UDim2.new(0,HomeButtonEnabled and 70 or 0,0,0)
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
+		if HomeButton then
+			HomeButton.Visible=HomeButtonEnabled
+			HomeButton.Size=UDim2.new(0,60,0,60)
+			HomeButton.Position=UDim2.new(0,0,0,0)
+		end
+		Hub.PageClipper.Parent=Hub.MenuContainer
+		Hub.PageClipper.AnchorPoint=Vector2.new(0.5,0)
+		Hub.PageClipper.Size=UDim2.new(0,800,0,UsePageSize)
+		Hub.PageClipper.Position=UDim2.new(0.5,0,0.5,-UsePageSize/2)
+		Hub.PageView.AnchorPoint=Vector2.new(0.5,0.5)
+		Hub.PageView.Position=UDim2.new(0.5,0,0.5,0)
+		Hub.PageView.Size=UDim2.new(1,0,1,-20)
+		Hub.PageView.CanvasPosition=Vector2.new(0,0)
+		Hub.PageView.ScrollBarThickness=12
+		Hub.PageView.VerticalScrollBarInset=Enum.ScrollBarInset.ScrollBar
+		Hub.BottomButtonFrame.Parent=Hub.MenuContainer
+		Hub.BottomButtonFrame.Size=UDim2.new(0,800,0,60)
+		if Hub.CurrentPage and Hub.CurrentPage.Frame then
+			Hub.CurrentPage.Frame.Position=UDim2.new(0,0,0,PAGE_TOP_PADDING)
+			Hub.PageView.CanvasSize=UDim2.new(0,0,0,math.max(Hub.CurrentPage.Frame.Size.Y.Offset+PAGE_TOP_PADDING,UsePageSize))
+		end
+
+	end
+
+	if LayoutTabs then
+		LayoutTabs()
+	end
+
+	if IsMobile then
+		ApplyTabletResponsiveScale(Viewport)
+	end
+
+end
+
+Connect(
+	ScreenGui:GetPropertyChangedSignal(
+		"AbsoluteSize"
+	),
+	ResizeHub
+)
+
+Connect(
+	workspace:GetPropertyChangedSignal(
+		"CurrentCamera"
+	),
+	ResizeHub
+)
+
+if workspace.CurrentCamera then
+
+	Connect(
+		workspace.CurrentCamera:GetPropertyChangedSignal(
+			"ViewportSize"
+		),
+		ResizeHub
+	)
+
+end
+
+-- ============================================================
+-- TABS
+-- ============================================================
+
+MakeTab = function(
+	Page,
+	Title,
+	Icon,
+	Width
+)
+
+	local Tab =
+		Create(
+			"TextButton",
+			{
+				Name =
+					Page.Name
+					.. "Tab",
+
+				Parent =
+					Hub.HubBarContainer,
+
+				BackgroundTransparency =
+					1,
+
+				Text =
+					"",
+
+				Size =
+					UDim2.new(
+						0,
+						Width
+						or 160,
+						1,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 2,
+			}
+		)
+
+	local IconLabel =
+		Create(
+			"ImageLabel",
+			{
+				Name =
+					"Icon",
+
+				Parent =
+					Tab,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					Icon,
+
+				ImageTransparency =
+					0.5,
+
+				Size = UDim2.new(0,36,0,36),
+
+				Position = UDim2.new(0,12,0.5,-18),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+	Create(
+		"UIAspectRatioConstraint",
+		{
+			Parent = IconLabel,
+			AspectRatio = 1,
+			AspectType = Enum.AspectType.FitWithinMaxSize,
+			DominantAxis = Enum.DominantAxis.Width,
+		}
+	)
+
+	local TitleLabel =
+		Create(
+			"TextLabel",
+			{
+				Name =
+					"Title",
+
+				Parent =
+					Tab,
+
+			BackgroundTransparency =
+				1,
+
+			Font =
+				Enum.Font.SourceSansBold,
+
+			TextSize =
+				24,
+
+			TextColor3 =
+				Color3.new(
+					1,
+					1,
+					1
+				),
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+
+			TextTransparency =
+				0.5,
+
+			Text =
+				Title,
+
+			Size =
+				UDim2.new(
+					1,
+					-58,
+					1,
+					0
+				),
+
+			Position = UDim2.new(0,52,0,0),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 3,
+		}
+	)
+
+	local Selection =
+		Create(
+			"ImageLabel",
+			{
+				Name =
+					"TabSelection",
+
+				Parent =
+					Tab,
+
+				Image =
+					TAB_SELECTION_IMAGE,
+
+				ScaleType =
+					Enum.ScaleType.Slice,
+
+				SliceCenter =
+					Rect.new(
+						3,
+						1,
+						4,
+						5
+					),
+
+				Visible =
+					false,
+
+				BackgroundTransparency =
+					1,
+
+				Size =
+					UDim2.new(
+						1,
+						0,
+						0,
+						6
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						0,
+						1,
+						-6
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	Page.Tab =
+		Tab
+
+	Page.Icon =
+		IconLabel
+
+	Page.Selection =
+		Selection
+
+	Connect(
+		Tab.MouseButton1Click,
+		function()
+			SwitchToPage(
+				Page
+			)
+		end
+	)
+
+end
+
+LayoutTabs = function()
+	local Order = IsMobile
+		and { PlayersPage, GamePage, ReportPage, HelpPage }
+		or { PlayersPage, GamePage, ReportPage, HelpPage, RecordPage }
+
+	local Wanted = {}
+	for _, Page in ipairs(Order) do
+		if Page then
+			Wanted[Page] = true
+		end
+	end
+
+	-- Hide tabs that do not exist on the current platform. In particular,
+	-- Captures/Record is not present on phone or tablet.
+	for _, Page in ipairs(Hub.Pages) do
+		if Page and Page.Tab then
+			Page.Tab.Visible = Wanted[Page] == true
+			if not Wanted[Page] and Page.Selection then
+				Page.Selection.Visible = false
+			end
+		end
+	end
+
+	local Count = #Order
+	if Count == 0 then return end
+
+	if IsMobile then
+		if Hub.HubBarContainerLayout then
+			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
+			Hub.HubBarContainerLayout.FillDirection = Enum.FillDirection.Horizontal
+			Hub.HubBarContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+			Hub.HubBarContainerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+			Hub.HubBarContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			Hub.HubBarContainerLayout.Padding = UDim.new(0, 0)
+		end
+	else
+		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
+	end
+
+	for Index, Page in ipairs(Order) do
+		if Page and Page.Tab then
+			local Tab = Page.Tab
+			local Fraction = 1 / Count
+			Tab.Size = UDim2.new(Fraction, 0, 1, 0)
+			if not IsMobile then
+				Tab.Position = UDim2.new((Index - 1) * Fraction, 0, 0, 0)
+			end
+			Tab.LayoutOrder = Index
+
+			local Selected = Hub.CurrentPage == Page
+			if Page.Selection then
+				Page.Selection.Visible = Selected
+			end
+
+			if Page.Icon then
+				Page.Icon.ImageTransparency = Selected and 0 or 0.5
+				if IsMobile then
+					-- Phone tabs: keep the icon + text pair together and anchor
+					-- the entire pair to the RIGHT edge of each individual tab.
+					Page.Tab.AnchorPoint = Vector2.new(0, 0)
+					Page.Tab.ClipsDescendants = true
+
+					local TabWidth =
+						math.max(1, Hub.HubBar.AbsoluteSize.X / Count)
+					local TextWidth =
+						math.max(30, math.min(110, TabWidth - 50))
+					local RightPadding = 8
+					local IconTextGap = 6
+					local IconWidth = 28
+
+					Page.Icon.AnchorPoint = Vector2.new(0, 0.5)
+					Page.Icon.Size = UDim2.new(0, IconWidth, 0, 28)
+					Page.Icon.Position = UDim2.new(
+						1,
+						-(RightPadding + TextWidth + IconTextGap + IconWidth),
+						0.5,
+						0
+					)
+				end
+				local Title = Page.Tab:FindFirstChild("Title")
+				if Title then
+					Title.TextColor3 = Color3.new(1, 1, 1)
+					Title.TextTransparency = Selected and 0 or 0.5
+					if IsMobile then
+						Title.Parent = Page.Tab
+						Title.AnchorPoint = Vector2.new(0, 0)
+						Title.TextSize = 20
+						local TabWidth =
+							math.max(1, Hub.HubBar.AbsoluteSize.X / Count)
+						local TextWidth =
+							math.max(30, math.min(110, TabWidth - 50))
+						Title.Size = UDim2.new(0, TextWidth, 1, 0)
+						Title.Position = UDim2.new(1, -(TextWidth + 8), 0, 0)
+						Title.TextXAlignment = Enum.TextXAlignment.Left
+						Title.ClipsDescendants = false
+					else
+						Title.TextSize = 24
+						Title.Size = UDim2.new(0, 190, 1, 0)
+						Title.Position = UDim2.new(0, 48, 0, 0)
+						Title.ClipsDescendants = false
+					end
+				end
+			end
+		end
+	end
+end
+
+-- ============================================================
+-- SWITCH PAGE
+-- ============================================================
+
+GetPageIndex = function(Page)
+
+	for Index, Other in next,
+		Hub.Pages
+	do
+
+		if Other == Page then
+			return Index
+		end
+
+	end
+
+	return 1
+end
+
+SwitchToPage = function(
+	Page,
+	NoStack,
+	NoAnimation
+)
+
+	if not Page then
+		return
+	end
+
+	local OldPage =
+		Hub.CurrentPage
+
+	local OldFrame =
+		OldPage
+		and OldPage.Frame
+
+	local IsConfirmationPage =
+		Page == ResetPage
+		or Page == LeavePage
+		or OldPage == ResetPage
+		or OldPage == LeavePage
+
+	local Direction =
+		(
+			GetPageIndex(Page)
+			>= GetPageIndex(OldPage)
+		)
+		and 1
+		or -1
+
+	for _, Other in next,
+		Hub.Pages
+	do
+
+		if
+			Other.Frame
+			and Other ~= Page
+			and Other ~= OldPage
+		then
+
+			Other.Frame.Visible =
+				false
+
+		end
+
+		if Other.Selection then
+
+			local Title =
+				Other.Icon
+				and Other.Tab:FindFirstChild(
+					"Title"
+				)
+
+			Other.Selection.Visible =
+				false
+
+			Other.Icon.ImageTransparency =
+				0.5
+
+			if Title then
+				Title.TextTransparency =
+					0.5
+			end
+
+		end
+
+	end
+
+	Page.Frame.Parent =
+		Hub.PageView
+
+	Page.Frame.Visible =
+		true
+
+	if IsConfirmationPage then
+		Page.Frame.Position = UDim2.new(0, 0, 0, 0)
+		if OldFrame and OldFrame ~= Page.Frame then
+			OldFrame.Visible = false
+		end
+	end
+
+	if
+		OldFrame
+		and OldFrame ~= Page.Frame
+		and OldFrame.Parent == Hub.PageView
+		and OldFrame.Visible
+		and not NoAnimation
+		and not IsConfirmationPage
+	then
+
+		local PageWidth =
+			math.max(
+				Hub.PageClipper.AbsoluteSize.X,
+				800
+			)
+
+		Page.Frame.Position =
+			UDim2.new(
+				0,
+				Direction * PageWidth,
+				0,
+				PAGE_TOP_PADDING
+			)
+
+		TweenTo(
+			Page.Frame,
+			UDim2.new(
+				0,
+				0,
+				0,
+				PAGE_TOP_PADDING
+			),
+			Enum.EasingDirection.In,
+			Enum.EasingStyle.Quad,
+			0.1
+		)
+
+		TweenTo(
+			OldFrame,
+			UDim2.new(
+				0,
+				-Direction * PageWidth,
+				0,
+				PAGE_TOP_PADDING
+			),
+			Enum.EasingDirection.Out,
+			Enum.EasingStyle.Quad,
+			0.1
+		)
+
+		task.delay(
+			0.12,
+			function()
+
+				if
+					Hub.CurrentPage ~= OldPage
+					and OldFrame
+				then
+
+					OldFrame.Visible =
+						false
+
+				end
+
+			end
+		)
+
+	else
+
+		Page.Frame.Position =
+			UDim2.new(
+				0,
+				0,
+				0,
+				PAGE_TOP_PADDING
+			)
+
+		if
+			OldFrame
+			and OldFrame ~= Page.Frame
+		then
+
+			OldFrame.Visible =
+				false
+
+		end
+
+	end
+
+	Hub.PageView.CanvasPosition =
+		Vector2.new(
+			0,
+			0
+		)
+
+	Hub.PageView.CanvasSize =
+		UDim2.new(
+			0,
+			0,
+			0,
+			math.max(
+				Page.Frame.Size.Y.Offset
+				+ PAGE_TOP_PADDING,
+				Hub.PageClipper.AbsoluteSize.Y
+			)
+		)
+
+	Hub.CurrentPage =
+		Page
+
+	if LayoutTabs then
+		LayoutTabs()
+	end
+
+	if Page.Selection then
+
+		local Title =
+			Page.Icon
+			and Page.Icon:FindFirstChild(
+				"Title"
+			)
+
+		Page.Selection.Visible =
+			true
+
+		Page.Icon.ImageTransparency =
+			0
+
+		if Title then
+			Title.TextTransparency =
+				0
+		end
+
+	end
+
+	if
+		not NoStack
+		and Hub.MenuStack[#Hub.MenuStack] ~= Page
+	then
+
+		Insert(
+			Hub.MenuStack,
+			Page
+		)
+
+	end
+
+	if IsMobile then
+		if BuildMobileHelpPage then BuildMobileHelpPage() end
+		if ApplyMobileReportLayout then ApplyMobileReportLayout() end
+	end
+
+end
+
+AddPage = function(
+	Page,
+	Title,
+	Icon,
+	Width
+)
+
+	Insert(
+		Hub.Pages,
+		Page
+	)
+
+	if Title then
+		MakeTab(
+			Page,
+			Title,
+			Icon,
+			Width
+		)
+	end
+
+	LayoutTabs()
+
+end
+
+-- ============================================================
+-- ROW SYSTEM
+-- ============================================================
+
+MakeRow = function(
+	Page,
+	Name,
+	Height
+)
+
+	local Row =
+		Create(
+			"ImageButton",
+			{
+				Name =
+					Name
+					.. "Frame",
+
+				BackgroundTransparency =
+					1,
+
+				BorderSizePixel =
+					0,
+
+				Image =
+					"",
+
+				Active =
+					false,
+
+				AutoButtonColor =
+					false,
+
+				Selectable =
+					false,
+
+				Size =
+					UDim2.new(
+						1,
+						0,
+						0,
+						Height
+						or 50
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 2,
+			}
+		)
+
+	Create(
+		"TextLabel",
+		{
+			Name =
+				Name
+				.. "Label",
+
+			Parent =
+				Row,
+
+			BackgroundTransparency =
+				1,
+
+			Font =
+				Enum.Font.SourceSansBold,
+
+			TextSize =
+				24,
+
+			TextColor3 =
+				Color3.new(
+					1,
+					1,
+					1
+				),
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+
+			Text =
+				Name,
+
+			Size =
+				UDim2.new(
+					0,
+					200,
+					1,
+					0
+				),
+
+			Position =
+				UDim2.new(
+					0,
+					10,
+					0,
+					0
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 3,
+		}
+	)
+
+	Page:AddRow(
+		Row
+	)
+
+	return Row
+end
+
+-- ============================================================
+-- VOICE CHAT
+-- ============================================================
+
+VoiceEnabledCache = {}
+VoiceCheckBusy = {}
+VoiceCheckError = {}
+VoiceMutedPlayers = {}
+VoiceSavedVolumes = {}
+VoiceCheckNext = {}
+SavedVoiceGroupId = nil
+
+VOICE_ICON_ROOT = "rbxasset://textures/ui/VoiceChat/"
+VOICE_MISC_ROOT = VOICE_ICON_ROOT .. "Misc/"
+VOICE_MIC_ROOT = VOICE_ICON_ROOT .. "MicDark/"
+
+GetAudioDeviceInputCache = {}
+VoiceActivityPeak = {}
+VoiceActivityStamp = {}
+NativeVoiceIconObjects = {}
+NativeVoiceIconImages = {}
+NativeVoiceScanStamp = 0
+NativeVoiceScanScheduled = false
+
+GetAudioDeviceInput = function(Player)
+	if not Player then
+		return nil
+	end
+
+	local Cached = GetAudioDeviceInputCache[Player]
+	if Cached and Cached.Parent then
+		local Matches = false
+		Protect(function()
+			Matches = Cached:IsA("AudioDeviceInput") and Cached.Player == Player
+		end)
+		if Matches then
+			return Cached
+		end
+	end
+
+	local Input = nil
+
+	-- AudioDeviceInput is identified by its Player property. Do not assume
+	-- Roblox parents it directly under Player; depending on the Audio API
+	-- path it may live elsewhere in the client audio tree.
+	Protect(function()
+		local Direct = Player:FindFirstChild("AudioDeviceInput")
+		if Direct and Direct:IsA("AudioDeviceInput") then
+			Input = Direct
+		end
+	end)
+
+	if not Input then
+		Protect(function()
+			for _, Descendant in next, SoundService:GetDescendants() do
+				if Descendant:IsA("AudioDeviceInput") then
+					local Owner = nil
+					Protect(function() Owner = Descendant.Player end)
+					if Owner == Player then
+						Input = Descendant
+						break
+					end
+				end
+			end
+		end)
+	end
+
+	if not Input then
+		Protect(function()
+			for _, Descendant in next, CoreGui:GetDescendants() do
+				if Descendant:IsA("AudioDeviceInput") then
+					local Owner = nil
+					Protect(function() Owner = Descendant.Player end)
+					if Owner == Player then
+						Input = Descendant
+						break
+					end
+				end
+			end
+		end)
+	end
+
+	-- With the Audio API enabled, the official pattern is an AudioDeviceInput
+	-- owned by the Player. Create the local device if Roblox has not created it
+	-- yet so the analyzer can attach to the real microphone stream.
+	if not Input and Player == LocalPlayer then
+		Protect(function()
+			if VoiceChatService.UseAudioApi == Enum.AudioApiRollout.Enabled then
+				Input = Instance.new("AudioDeviceInput")
+				Input.Name = "Settings2016LocalAudioDeviceInput"
+				Input.Player = Player
+				Input.Parent = Player
+			end
+		end)
+	end
+
+	if Input then
+		GetAudioDeviceInputCache[Player] = Input
+	end
+
+	return Input
+end
+
+VoiceAnalyzers = {}
+VoiceAnalyzerWires = {}
+LastVoicePeak = 0
+
+EnsureVoiceAnalyzer = function(Player)
+	if not Player then return nil end
+
+	local Input = GetAudioDeviceInput(Player)
+	if not Input then return nil end
+
+	local Analyzer = VoiceAnalyzers[Player]
+	if Analyzer and Analyzer.Parent and Analyzer:IsA("AudioAnalyzer") then
+		local Wire = VoiceAnalyzerWires[Player]
+		if Wire and Wire.Parent and Wire:IsA("Wire") then
+			return Analyzer
+		end
+	end
+
+	Analyzer = nil
+	Protect(function()
+		Analyzer = SoundService:FindFirstChild("Settings2016VoiceAnalyzer_" .. tostring(Player.UserId))
+	end)
+	if not Analyzer then
+		Protect(function()
+			Analyzer = Instance.new("AudioAnalyzer")
+			Analyzer.Name = "Settings2016VoiceAnalyzer_" .. tostring(Player.UserId)
+			Analyzer.SpectrumEnabled = false
+			Analyzer.Parent = SoundService
+		end)
+	end
+	if not Analyzer then return nil end
+
+	local Wire = nil
+	Protect(function()
+		for _, Child in next, Analyzer:GetChildren() do
+			if Child:IsA("Wire") then
+				Wire = Child
+				break
+			end
+		end
+	end)
+
+	if not Wire then
+		Protect(function()
+			Wire = Instance.new("Wire")
+			Wire.Name = "Settings2016VoiceAnalyzerWire"
+			Wire.SourceInstance = Input
+			Wire.SourceName = "Output"
+			Wire.TargetInstance = Analyzer
+			Wire.TargetName = "Input"
+			Wire.Parent = Analyzer
+		end)
+	else
+		Protect(function()
+			Wire.SourceInstance = Input
+			Wire.SourceName = "Output"
+			Wire.TargetInstance = Analyzer
+			Wire.TargetName = "Input"
+		end)
+	end
+
+	if Wire then
+		VoiceAnalyzers[Player] = Analyzer
+		VoiceAnalyzerWires[Player] = Wire
+		return Analyzer
+	end
+
+	return nil
+end
+
+GetVoiceAnalyzer = function(Player)
+	local Analyzer = EnsureVoiceAnalyzer(Player)
+	if Analyzer then return Analyzer end
+
+	Protect(function()
+		Analyzer = SoundService:FindFirstChild("Settings2016VoiceAnalyzer_" .. tostring(Player.UserId))
+	end)
+	if Analyzer then return Analyzer end
+
+	Protect(function()
+		Analyzer = Player:FindFirstChildWhichIsA("AudioAnalyzer", true)
+	end)
+	if Analyzer then return Analyzer end
+
+	Protect(function()
+		local Character = Player.Character
+		if Character then
+			Analyzer = Character:FindFirstChildWhichIsA("AudioAnalyzer", true)
+		end
+	end)
+
+	return Analyzer
+end
+
+GetVoiceLevel = function(Player)
+	if not Player then return 0 end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+
+	local Peak = 0
+	local Analyzer = GetVoiceAnalyzer(Player)
+	if Analyzer then
+		Protect(function()
+			Peak = tonumber(Analyzer.PeakLevel) or 0
+		end)
+	end
+
+	-- AudioAnalyzer.PeakLevel is already the peak volume value for the
+	-- latest audio buffer. Do not apply sqrt/log/dB conversion here.
+	-- Roblox documents PeakLevel as the loudest volume observed in that
+	-- buffer, and it changes more often than the frame rate.
+	Peak = Clamp(Peak, 0, 1)
+
+	-- Internal voice-chat fallback. Older/internal voice can expose mic
+	-- activity through PlayerMicActivitySignalChange even when the Audio API
+	-- path does not provide an AudioAnalyzer reading.
+	local ActivityPeak = tonumber(VoiceActivityPeak[UserId]) or 0
+	local Stamp = tonumber(VoiceActivityStamp[UserId]) or 0
+	if ActivityPeak > 0 and (os.clock() - Stamp) <= 0.35 then
+		if ActivityPeak > Peak then Peak = ActivityPeak end
+	end
+
+	return Clamp(Peak, 0, 1)
+end
+
+VoiceUnmutedIcon = function(Level)
+	-- Unmuted0 is reserved for an actual zero/no-signal reading.
+	if Level <= 0.00001 then return VOICE_MIC_ROOT .. "Unmuted0@3x.png" end
+	if Level < 0.2 then return VOICE_MIC_ROOT .. "Unmuted20@3x.png" end
+	if Level < 0.4 then return VOICE_MIC_ROOT .. "Unmuted40@3x.png" end
+	if Level < 0.6 then return VOICE_MIC_ROOT .. "Unmuted60@3x.png" end
+	if Level < 0.8 then return VOICE_MIC_ROOT .. "Unmuted80@3x.png" end
+	return VOICE_MIC_ROOT .. "Unmuted100@3x.png"
+end
+
+-- Roblox's normal voice UI already has the exact microphone peak meter that
+-- the user sees in the real ESC menu. Prefer mirroring that icon whenever it
+-- exists. This makes the custom button follow the same peak thresholds rather
+-- than inventing its own approximation.
+RefreshNativeVoiceMirrorCache = function(Force)
+	local Now = os.clock()
+	if not Force and (Now - NativeVoiceScanStamp) < 0.35 then return end
+	NativeVoiceScanStamp = Now
+	local Found = {}
+	Protect(function()
+		for _, Obj in next, CoreGui:GetDescendants() do
+			if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton"))
+				and Obj ~= VoiceChatButton
+				and not Obj:IsDescendantOf(ScreenGui)
+			then
+				local Image = tostring(Obj.Image or "")
+				if Image:find("VoiceChat", 1, true)
+					and (Image:find("Unmuted", 1, true)
+					or Image:find("Muted", 1, true)
+					or Image:find("Connecting", 1, true)
+					or Image:find("Error", 1, true))
+				then
+					local BestPlayer = nil
+					local BestScore = 0
+					local Parent = Obj
+					for _ = 1, 6 do
+						Parent = Parent and Parent.Parent
+						if not Parent then break end
+						local Name = string.lower(tostring(Parent.Name or ""))
+						for _, Player in next, Players:GetPlayers() do
+							if Player ~= LocalPlayer then
+								local Score = 0
+								if Name == string.lower(Player.Name) then Score = 500 end
+								if Name:find(string.lower(Player.Name), 1, true) then Score = math.max(Score, 250) end
+								local Id = tostring(Player.UserId or 0)
+								if tonumber(Id) and tonumber(Id) > 1 and Name:find(Id, 1, true) then Score = math.max(Score, 180) end
+								if Name:find("voice", 1, true) or Name:find("mic", 1, true) then Score += 20 end
+								if Obj.Visible then Score += 10 end
+								if Score > BestScore then
+									BestScore = Score
+									BestPlayer = Player
+								end
+							end
+						end
+					end
+					if BestPlayer and BestScore >= 50 then
+						Found[BestPlayer.UserId] = Obj
+					end
+				end
+			end
+		end
+	end)
+	NativeVoiceIconObjects = Found
+	NativeVoiceIconImages = {}
+	for UserId, Obj in next, Found do
+		local Image = nil
+		Protect(function() Image = tostring(Obj.Image or "") end)
+		NativeVoiceIconImages[UserId] = Image
+		Protect(function()
+			Connect(Obj:GetPropertyChangedSignal("Image"), function()
+				if NativeVoiceIconObjects[UserId] == Obj then
+					NativeVoiceIconImages[UserId] = tostring(Obj.Image or "")
+				end
+			end)
+		end)
+	end
+end
+
+ScheduleNativeVoiceMirrorRefresh = function()
+	if NativeVoiceScanScheduled then return end
+	NativeVoiceScanScheduled = true
+	Spawn(function()
+		Wait(0.1)
+		NativeVoiceScanScheduled = false
+		RefreshNativeVoiceMirrorCache(true)
+	end)
+end
+
+FindNativeVoiceIcon = function(Player)
+	if not Player then return nil end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if Player == LocalPlayer then
+		-- Local icon can be updated independently, so keep the direct cached object.
+		local Obj = NativeVoiceIconObjects[UserId]
+		if Obj and Obj.Parent then
+			local Image = NativeVoiceIconImages[UserId]
+			if Image and Image ~= "" then return Image end
+		end
+	else
+		local Obj = NativeVoiceIconObjects[UserId]
+		if Obj and Obj.Parent then
+			local Image = NativeVoiceIconImages[UserId]
+			if Image and Image ~= "" then return Image end
+		end
+	end
+	return nil
+end
+
+FindNativePlayerVoice = function(Player)
+	local Image = FindNativeVoiceIcon(Player)
+	if not Image then return false end
+	return Image:find("Unmuted", 1, true) ~= nil or Image:find("Muted", 1, true) ~= nil
+end
+
+GetVoiceIcon = function(Player, ForcedMuted)
+	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
+	local Muted = ForcedMuted == true
+	local Input = GetAudioDeviceInput(Player)
+
+	if Input and not Muted then
+		Protect(function() Muted = Input.Muted == true end)
+	end
+	if not Muted and VoiceChatInternal and UserId > 1 then
+		Protect(function() Muted = VoiceChatInternal:IsSubscribePaused(UserId) == true end)
+	end
+	if Player == LocalPlayer and not Muted and VoiceChatInternal then
+		Protect(function() Muted = VoiceChatInternal:IsPublishPaused() == true end)
+	end
+
+	if Muted then return VOICE_MIC_ROOT .. "Muted@3x.png" end
+	if Player == LocalPlayer then
+		if not VoiceChatEnabled or not LocalVoiceEnabled then
+			return VOICE_MIC_ROOT .. "Muted@3x.png"
+		end
+
+		-- Keep Roblox's own live voice meter as the primary source.
+		-- Only force Unmuted0 when an actual AudioAnalyzer is present and
+		-- reports a genuine zero peak. This preserves the working native peak.
+		local Analyzer = GetVoiceAnalyzer(Player)
+		if Analyzer then
+			local Peak = nil
+			Protect(function() Peak = tonumber(Analyzer.PeakLevel) end)
+			if Peak ~= nil then
+				Peak = Clamp(Peak, 0, 1)
+				if Peak <= 0.00001 then
+					return VOICE_MIC_ROOT .. "Unmuted0@3x.png"
+				end
+			end
+		end
+
+		local Native = FindNativeVoiceIcon(Player)
+		if Native and Native:find("Unmuted", 1, true) then
+			return Native
+		end
+	else
+		if VoiceEnabledCache[UserId] ~= true then
+			return VOICE_ICON_ROOT .. (VoiceCheckError[UserId] and "Error@3x.png" or "Connecting@3x.png")
+		end
+		local Native = FindNativeVoiceIcon(Player)
+		if Native and (Native:find("Unmuted", 1, true) or Native:find("Muted", 1, true)) then
+			return Native
+		end
+	end
+
+	return VoiceUnmutedIcon(GetVoiceLevel(Player))
+end
+
+VoiceProcessActivityInfo = function(ActivityInfo)
+	if type(ActivityInfo) ~= "table" then return end
+
+	local UserId = tonumber(
+		ActivityInfo.userId
+		or ActivityInfo.UserId
+		or ActivityInfo.playerUserId
+		or ActivityInfo.PlayerUserId
+		or ActivityInfo.id
+		or ActivityInfo.Id
+	)
+	if not UserId then
+		local PlayerValue = ActivityInfo.player or ActivityInfo.Player
+		if typeof(PlayerValue) == "Instance" then
+			Protect(function() UserId = PlayerValue.UserId end)
+		elseif type(PlayerValue) == "number" then
+			UserId = PlayerValue
+		end
+	end
+	if not UserId then return end
+
+	local Peak = nil
+	for _, Key in next, {
+		"peakLevel", "PeakLevel", "peak", "Peak", "level", "Level",
+		"loudness", "Loudness", "volume", "Volume", "micLevel", "MicLevel"
+	} do
+		local Value = tonumber(ActivityInfo[Key])
+		if Value then
+			Peak = Value
+			break
+		end
+	end
+
+	if Peak then
+		if Peak > 1 and Peak <= 100 then Peak = Peak / 100 end
+		VoiceActivityPeak[UserId] = Clamp(Peak, 0, 1)
+		VoiceActivityStamp[UserId] = os.clock()
+		return
+	end
+
+	local Speaking = ActivityInfo.active
+	if Speaking == nil then Speaking = ActivityInfo.Active end
+	if Speaking == nil then Speaking = ActivityInfo.isSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.IsSpeaking end
+	if Speaking == true then
+		VoiceActivityPeak[UserId] = 1
+		VoiceActivityStamp[UserId] = os.clock()
+	end
+end
+
+RefreshVoiceParticipants = function()
+	if not VoiceChatEnabled then return false end
+	local PlayerList = Players:GetPlayers()
+	local Changed = false
+
+	-- Do not clear a confirmed voice player just because a group/participant
+	-- query is temporarily incomplete. These sources are discovery fallbacks.
+	Protect(function()
+		local Groups = VoiceChatService:GetChatGroupsAsync(PlayerList)
+		if type(Groups) == "table" then
+			for Index, Player in next, PlayerList do
+				if Player ~= LocalPlayer then
+					local GroupList = Groups[Index]
+					if type(GroupList) == "table" and #GroupList > 0 then
+						local Id = tonumber(Player.UserId or Player.userId) or 0
+						if Id > 1 and VoiceEnabledCache[Id] ~= true then
+							VoiceEnabledCache[Id] = true
+							VoiceCheckError[Id] = nil
+							Changed = true
+						end
+					end
+				end
+			end
+		end
+	end)
+
+	for _, Player in next, PlayerList do
+		if Player ~= LocalPlayer and GetAudioDeviceInput(Player) then
+			local Id = tonumber(Player.UserId or Player.userId) or 0
+			if Id > 1 and VoiceEnabledCache[Id] ~= true then
+				VoiceEnabledCache[Id] = true
+				VoiceCheckError[Id] = nil
+				Changed = true
+			end
+		end
+	end
+
+	if VoiceChatInternal then
+		Protect(function()
+			local Participants = VoiceChatInternal:GetParticipants()
+			if type(Participants) == "table" then
+				for _, Participant in next, Participants do
+					local Id = nil
+					if type(Participant) == "number" then
+						Id = Participant
+					elseif type(Participant) == "string" then
+						Id = tonumber(Participant)
+					elseif type(Participant) == "table" then
+						Id = tonumber(Participant.UserId or Participant.userId or Participant.PlayerUserId or Participant.playerUserId or Participant.Id or Participant.id)
+						if not Id and Participant.Player then
+							Id = tonumber(Participant.Player.UserId or Participant.Player.userId)
+						end
+					end
+					if Id and Id > 1 and Id ~= LocalPlayer.UserId and VoiceEnabledCache[Id] ~= true then
+						VoiceEnabledCache[Id] = true
+						VoiceCheckError[Id] = nil
+						Changed = true
+					end
+				end
+			end
+		end)
+	end
+
+	-- Native Roblox player voice icons are a high-confidence signal, but the
+	-- expensive CoreGui scan is performed only when the page is rebuilt/opened.
+	for _, Player in next, PlayerList do
+		if Player ~= LocalPlayer then
+			local Id = tonumber(Player.UserId or Player.userId) or 0
+			if Id > 1 and VoiceEnabledCache[Id] ~= true and FindNativePlayerVoice(Player) then
+				VoiceEnabledCache[Id] = true
+				VoiceCheckError[Id] = nil
+				Changed = true
+			end
+		end
+	end
+
+	return Changed
+end
+
+GetPlayerVoiceStatus = function(Player)
+	if not Player then return nil end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if UserId <= 1 then return false end
+	if not VoiceChatEnabled then return false end
+
+	local Success = false
+	local Found = false
+
+	-- With RobloxScript authority this direct call is the cleanest test.
+	Protect(function()
+		Found = VoiceChatService:IsVoiceEnabledForUserIdAsync(UserId) == true
+		Success = true
+	end)
+
+	if not Success and VoiceChatInternal then
+		Protect(function()
+			Found = VoiceChatInternal:IsVoiceEnabledForUserIdAsync(UserId) == true
+			Success = true
+		end)
+	end
+
+	if Success then return Found end
+
+	if GetAudioDeviceInput(Player) then return true end
+	if FindNativePlayerVoice(Player) then return true end
+
+	return nil
+end
+
+CheckVoiceForPlayer = function(Player, Callback)
+	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
+	if UserId <= 1 or not VoiceChatEnabled then
+		if Callback then Callback(false, false) end
+		return
+	end
+
+	local Status = GetPlayerVoiceStatus(Player)
+	if Status == true then
+		local Was = VoiceEnabledCache[UserId] == true
+		VoiceEnabledCache[UserId] = true
+		VoiceCheckError[UserId] = nil
+		if Callback then Callback(true, false, not Was) end
+		return
+	end
+
+	if Status == false then
+		local Was = VoiceEnabledCache[UserId] == true
+		if Was or FindNativePlayerVoice(Player) then
+			VoiceEnabledCache[UserId] = true
+			VoiceCheckError[UserId] = nil
+			if Callback then Callback(true, false, not Was) end
+		else
+			VoiceEnabledCache[UserId] = false
+			VoiceCheckError[UserId] = nil
+			if Callback then Callback(false, false, Was) end
+		end
+		return
+	end
+
+	VoiceCheckError[UserId] = true
+	if Callback then Callback(VoiceEnabledCache[UserId] == true, true) end
+end
+
+GetLocalVoiceMuted = function()
+	local Input = GetAudioDeviceInput(LocalPlayer)
+	if Input then
+		local Muted = false
+		Protect(function() Muted = Input.Muted == true end)
+		return Muted
+	end
+	if VoiceChatInternal then
+		local Muted = false
+		Protect(function() Muted = VoiceChatInternal:IsPublishPaused() == true end)
+		return Muted
+	end
+	return LocalVoiceMuted == true
+end
+
+SetLocalVoiceMuted = function(Muted)
+	Muted = Muted == true
+	local Changed = false
+
+	local Input = GetAudioDeviceInput(LocalPlayer)
+	if Input then
+		Changed = Protect(function()
+			Input.Muted = Muted
+			return true
+		end) or Changed
+	end
+
+	if VoiceChatInternal then
+		Changed = Protect(function()
+			VoiceChatInternal:PublishPause(Muted)
+			return true
+		end) or Changed
+	end
+
+	LocalVoiceMuted = Muted
+	return Changed
+end
+
+RefreshLocalVoiceState = function()
+	local Entitled = false
+	local Success = false
+	Success = Protect(function()
+		Entitled = VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
+		return true
+	end)
+	if not Success and VoiceChatInternal then
+		Success = Protect(function()
+			Entitled = VoiceChatInternal:IsContextVoiceEnabled() == true
+			return true
+		end)
+	end
+	LocalVoiceEnabled = VoiceChatEnabled and Entitled
+	VoiceEnabledCache[LocalPlayer.UserId] = Entitled
+	VoiceCheckError[LocalPlayer.UserId] = not Success
+	if LocalVoiceEnabled then
+		EnsureVoiceAnalyzer(LocalPlayer)
+		LocalVoiceMuted = GetLocalVoiceMuted()
+	else
+		LocalVoiceMuted = false
+	end
+	return LocalVoiceEnabled
+end
+
+GetLocalVoiceGroupId = function()
+	local GroupId = ""
+	if VoiceChatInternal then
+		Protect(function() GroupId = tostring(VoiceChatInternal:GetGroupId() or "") end)
+	end
+	if GroupId ~= "" then return GroupId end
+	Protect(function()
+		local Groups = VoiceChatService:GetChatGroupsAsync({LocalPlayer})
+		local First = Groups and Groups[1]
+		if type(First) == "table" and First[1] then GroupId = tostring(First[1]) end
+	end)
+	return GroupId
+end
+
+SetVoiceChatPreference = function(Enabled)
+	VoiceChatEnabled = Enabled == true
+	VoiceCheckNext = {}
+
+	if not VoiceChatEnabled then
+		if VoiceChatInternal then
+			Protect(function()
+				local GroupId = tostring(VoiceChatInternal:GetGroupId() or "")
+				if GroupId ~= "" then SavedVoiceGroupId = GroupId end
+			end)
+			Protect(function() VoiceChatInternal:PublishPause(true) end)
+			Protect(function() VoiceChatInternal:Leave() end)
+		end
+		LocalVoiceEnabled = false
+		LocalVoiceMuted = false
+		VoiceEnabledCache = {}
+		VoiceCheckError = {}
+		VoiceActivityPeak = {}
+		VoiceActivityStamp = {}
+		if RebuildPlayersPage then RebuildPlayersPage() end
+		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+		return
+	end
+
+	local GroupId = SavedVoiceGroupId or GetLocalVoiceGroupId()
+	if VoiceChatInternal and GroupId ~= "" then
+		Protect(function()
+			VoiceChatInternal:JoinByGroupId(GroupId, false)
+			VoiceChatInternal:PublishPause(false)
+		end)
+		SavedVoiceGroupId = GroupId
+	end
+
+	Spawn(function()
+		for _ = 1, 20 do
+			if not VoiceChatEnabled then return end
+			RefreshLocalVoiceState()
+			if LocalVoiceEnabled then
+				local Input = GetAudioDeviceInput(LocalPlayer)
+				if Input then Protect(function() Input.Muted = false end) end
+				if VoiceChatInternal then Protect(function() VoiceChatInternal:PublishPause(false) end) end
+			end
+			RefreshVoiceParticipants()
+			if LocalVoiceEnabled then break end
+			Wait(0.5)
+		end
+		if RebuildPlayersPage then RebuildPlayersPage() end
+		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+		if AudioInputSelector and AudioInputSelector.UpdateDropDownList then
+			local NewMicNames = GetMicDeviceOptions()
+			Protect(function() AudioInputSelector:UpdateDropDownList(NewMicNames) end)
+		end
+	end)
+end
+
+SetRemoteVoiceMuted = function(Player, Muted)
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	local Done = false
+
+	if VoiceChatInternal then
+		Done = Protect(function()
+			return VoiceChatInternal:SubscribePause(UserId, Muted == true) == true
+		end)
+	end
+
+	local Input = GetAudioDeviceInput(Player)
+	if Input then
+		if Muted then
+			if VoiceSavedVolumes[UserId] == nil then
+				local Volume = 1
+				Protect(function() Volume = tonumber(Input.Volume) or 1 end)
+				VoiceSavedVolumes[UserId] = Volume
+			end
+			Done = Protect(function() Input.Volume = 0 return true end) or Done
+		else
+			local Restore = VoiceSavedVolumes[UserId]
+			VoiceSavedVolumes[UserId] = nil
+			Done = Protect(function() Input.Volume = Restore or 1 return true end) or Done
+		end
+	end
+
+	return Done
+end
+
+SetMuteAll = function(Muted)
+	Muted = Muted == true
+
+	-- Always update our own per-player state first.
+	for _, Player in next, Players:GetPlayers() do
+		if Player ~= LocalPlayer then
+			local UserId = tonumber(Player.UserId or Player.userId) or 0
+			if UserId > 1 then
+				VoiceMutedPlayers[UserId] = Muted and true or nil
+
+				-- The internal API is the primary path for remote subscriptions.
+				if VoiceChatInternal then
+					Protect(function()
+						VoiceChatInternal:SubscribePause(UserId, Muted)
+					end)
+				end
+
+				-- Explicit volume fallback/restore makes the result reliable even if
+				-- SubscribePause is unavailable for a particular player.
+				local Input = GetAudioDeviceInput(Player)
+				if Input then
+					if Muted then
+						if VoiceSavedVolumes[UserId] == nil then
+							local Volume = 1
+							Protect(function() Volume = tonumber(Input.Volume) or 1 end)
+							VoiceSavedVolumes[UserId] = Volume
+						end
+						Protect(function() Input.Volume = 0 end)
+					else
+						local Restore = VoiceSavedVolumes[UserId]
+						VoiceSavedVolumes[UserId] = nil
+						Protect(function() Input.Volume = Restore or 1 end)
+					end
+				end
+			end
+		end
+	end
+
+	-- Also use the aggregate internal API when available; the explicit loop above
+	-- remains the authoritative per-user operation.
+	if VoiceChatInternal then
+		Protect(function()
+			VoiceChatInternal:SubscribePauseAll(Muted)
+		end)
+	end
+end
+
+LocalVoiceEnabled = false
+LocalVoiceMuted = false
+RefreshLocalVoiceState()
+
+LocalVoiceInput = GetAudioDeviceInput(LocalPlayer)
+if LocalVoiceInput then
+	Protect(function()
+		LocalVoiceMuted = LocalVoiceInput.Muted == true
+	end)
+	EnsureVoiceAnalyzer(LocalPlayer)
+end
+
+-- ============================================================
+-- PLAYER LIST
+-- ============================================================
+
+GetHeadshot = function(Player)
+
+	return "rbxthumb://type=Avatar&id="
+		.. tostring(
+			math.max(
+				1,
+				Player.UserId
+				or Player.userId
+				or 1
+			)
+		)
+		.. "&w=100&h=100"
+
+end
+
+RebuildPlayersPage = nil
+
+MakePlayerRow = function(
+	Page,
+	Player,
+	Index
+)
+
+	local Row =
+		Create(
+			"ImageLabel",
+			{
+				Name =
+					"PlayerLabel"
+					.. Player.Name,
+
+				Parent =
+					Page.Frame,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"rbxasset://textures/ui/dialog_white.png",
+
+				ImageTransparency =
+					0.85,
+
+				ScaleType =
+					Enum.ScaleType.Slice,
+
+				SliceCenter =
+					Rect.new(
+						10,
+						10,
+						10,
+						10
+					),
+
+				Size =
+					UDim2.new(1, 0, 0, 62),
+
+				Position =
+					UDim2.new(
+						0,
+						0,
+						0,
+						PLAYER_LIST_OFFSET
+						+ (
+							(Index - 1)
+							* 80
+						)
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 2,
+			}
+		)
+
+	Connect(
+		Row.MouseEnter,
+		function()
+			Row.ImageTransparency =
+				0.65
+		end
+	)
+
+	Connect(
+		Row.MouseLeave,
+		function()
+			Row.ImageTransparency =
+				0.85
+		end
+	)
+
+	Create(
+		"ImageLabel",
+		{
+			Name =
+				"Icon",
+
+			Parent =
+				Row,
+
+			BackgroundTransparency =
+				1,
+
+			Image =
+				GetHeadshot(
+					Player
+				),
+
+			Size =
+				UDim2.new(
+					0,
+					36,
+					0,
+					36
+				),
+
+			Position =
+				UDim2.new(
+					0,
+					12,
+					0.5,
+					-18
+				),
+
+			ScaleType =
+				Enum.ScaleType.Fit,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 3,
+		}
+	)
+
+	if DisplayNameSupport then
+
+		Create(
+			"TextLabel",
+			{
+				Name =
+					"DisplayNameLabel",
+
+				Parent =
+					Row,
+
+				BackgroundTransparency =
+					1,
+
+				Font =
+					Enum.Font.SourceSans,
+
+				TextSize =
+					36,
+
+				TextColor3 =
+					Color3.new(
+						1,
+						1,
+						1
+					),
+
+				TextXAlignment =
+					Enum.TextXAlignment.Left,
+
+				Text =
+					Player.DisplayName
+					or Player.Name,
+
+				Size =
+					UDim2.new(0, 0, 0, 0),
+
+Position =
+					UDim2.new(0, IsMobile and 80 or 60, 0.5, -10),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+		Create(
+			"TextLabel",
+			{
+				Name =
+					"NameLabel",
+
+				Parent =
+					Row,
+
+				BackgroundTransparency =
+					1,
+
+				Font =
+					Enum.Font.SourceSans,
+
+				TextSize =
+					24,
+
+				TextColor3 = Color3.fromRGB(162, 162, 162),
+
+				TextXAlignment =
+					Enum.TextXAlignment.Left,
+
+				Text =
+					"@"
+					.. Player.Name,
+
+				Size =
+					UDim2.new(0, 0, 0, 0),
+
+Position =
+					UDim2.new(0, IsMobile and 80 or 60, 0.5, 12),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	else
+
+		Create(
+			"TextLabel",
+			{
+				Name =
+					"NameLabel",
+
+				Parent =
+					Row,
+
+				BackgroundTransparency =
+					1,
+
+				Font =
+					Enum.Font.SourceSans,
+
+				TextSize =
+					24,
+
+				TextColor3 =
+					Color3.new(
+						1,
+						1,
+						1
+					),
+
+				TextXAlignment =
+					Enum.TextXAlignment.Left,
+
+				Text =
+					Player.Name,
+
+				Size =
+					UDim2.new(
+						1,
+						-330,
+						1,
+						0
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						60,
+						0,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	end
+
+	local UserId =
+		tonumber(
+			Player.UserId
+			or Player.userId
+		)
+		or 0
+
+	local IsSelf =
+		Player == LocalPlayer
+
+	local CanTargetPlayer =
+		(not IsSelf)
+		and UserId > 1
+
+	local BUTTON_WIDTH = 46
+	local BUTTON_HEIGHT = 46
+	local GAP = 12
+	local FRIEND_WIDTH = 156
+	local ACTION_RIGHT_PAD = 14
+
+	local VoiceButton
+	local ViewButton
+	local ReportButton
+	local BlockButton
+	local FriendButton
+	local FriendLabel
+
+	local PositionPlayerActionButtons = function(HasVoice)
+		if not CanTargetPlayer then return end
+		local Right = 0
+		local Step = BUTTON_WIDTH + GAP
+		if FriendButton then
+			FriendButton.Size = UDim2.fromOffset(FRIEND_WIDTH, BUTTON_HEIGHT)
+			FriendButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD), 0.5, -BUTTON_HEIGHT / 2)
+			Right = FRIEND_WIDTH + GAP
+		end
+		local function Place(Button)
+			if not Button then return end
+			Button.Size = UDim2.fromOffset(BUTTON_WIDTH, BUTTON_HEIGHT)
+			Button.Position = UDim2.new(1, -(Right + BUTTON_WIDTH + ACTION_RIGHT_PAD), 0.5, -BUTTON_HEIGHT / 2)
+			Right += Step
+		end
+		Place(BlockButton)
+		Place(ReportButton)
+		Place(ViewButton)
+		if HasVoice then Place(VoiceButton) end
+	end
+
+	if UserId > 1 then
+
+		ViewButton =
+			MakeStyledButton(
+				Player.Name
+					.. "ViewButton",
+				"",
+				UDim2.new(
+					0,
+					BUTTON_WIDTH,
+					0,
+					BUTTON_HEIGHT
+				),
+				function()
+
+					local TargetUserId =
+						tonumber(
+							Player.UserId
+							or Player.userId
+						)
+						or 0
+
+					if TargetUserId <= 0 then
+						return
+					end
+
+					if OpenReportPlayer then
+						-- no-op
+					end
+
+					local Success =
+						Protect(
+							function()
+
+								GuiService:
+									InspectPlayerFromUserId(
+										TargetUserId
+									)
+
+							end
+						)
+
+					if not Success then
+
+						Protect(
+							function()
+
+								StarterGui:SetCore(
+									"InspectPlayerFromUserId",
+									TargetUserId
+								)
+
+							end
+						)
+
+					end
+
+				end
+			)
+
+		ViewButton.Parent =
+			Row
+
+		if IsSelf then
+
+			ViewButton.Position =
+				UDim2.new(
+					1,
+					-(BUTTON_WIDTH + GAP + ACTION_RIGHT_PAD),
+					0.5,
+					-BUTTON_HEIGHT / 2
+				)
+
+		else
+
+			ViewButton.Position =
+				UDim2.new(
+					1,
+					-(
+						FRIEND_WIDTH
+						+ ACTION_RIGHT_PAD
+						+ GAP
+						+ BUTTON_WIDTH
+						+ GAP
+						+ BUTTON_WIDTH
+						+ GAP
+						+ BUTTON_WIDTH
+						+ GAP
+						+ BUTTON_WIDTH
+					),
+					0.5,
+					-BUTTON_HEIGHT / 2
+				)
+
+		end
+
+		Create(
+			"ImageLabel",
+			{
+				Name =
+					"Icon",
+
+				Parent =
+					ViewButton,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"rbxasset://textures/ui/InspectMenu/ico_inspect.png",
+
+				Size =
+					UDim2.new(
+						0,
+						28,
+						0,
+						28
+					),
+
+				Position =
+					UDim2.new(
+						0.5,
+						-14,
+						0.5,
+						-14
+					),
+
+				ScaleType =
+					Enum.ScaleType.Fit,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 4,
+			}
+		)
+
+	end
+
+
+	if CanTargetPlayer and VoiceChatEnabled then
+		local ExistingVoice = VoiceEnabledCache[UserId]
+		if ExistingVoice == true then
+			VoiceButton = MakeStyledButton(
+				Player.Name .. "VoiceButton",
+				"",
+				UDim2.new(0, BUTTON_WIDTH, 0, BUTTON_HEIGHT),
+				function()
+					local Muted = not VoiceMutedPlayers[UserId]
+					if SetRemoteVoiceMuted(Player, Muted) then
+						VoiceMutedPlayers[UserId] = Muted and true or nil
+					end
+				end
+			)
+			VoiceButton.Parent = Row
+			VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
+			local VoiceIcon = Create("ImageLabel", {
+				Name = "VoiceIcon",
+				Parent = VoiceButton,
+				BackgroundTransparency = 1,
+				Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true),
+				Size = UDim2.new(0, BUTTON_HEIGHT - 8, 0, BUTTON_HEIGHT - 8),
+				Position = UDim2.new(0.5, -(BUTTON_HEIGHT - 8) / 2, 0.5, -(BUTTON_HEIGHT - 8) / 2),
+				ScaleType = Enum.ScaleType.Fit,
+				ZIndex = SETTINGS_BASE_ZINDEX + 4,
+			})
+			Connect(UserInputService.InputChanged, function()
+				if VoiceIcon.Parent then
+					VoiceIcon.Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true)
+				end
+			end)
+		else
+			CheckVoiceForPlayer(Player, function(Enabled)
+				if Enabled and Row.Parent then
+					VoiceButton = MakeStyledButton(
+						Player.Name .. "VoiceButton",
+						"",
+						UDim2.new(0, BUTTON_WIDTH, 0, BUTTON_HEIGHT),
+						function()
+							local Muted = not VoiceMutedPlayers[UserId]
+							if SetRemoteVoiceMuted(Player, Muted) then
+								VoiceMutedPlayers[UserId] = Muted and true or nil
+							end
+						end
+					)
+					VoiceButton.Parent = Row
+					VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
+					local VoiceIcon = Create("ImageLabel", {
+						Name = "VoiceIcon",
+						Parent = VoiceButton,
+						BackgroundTransparency = 1,
+						Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true),
+						Size = UDim2.new(0, BUTTON_HEIGHT - 8, 0, BUTTON_HEIGHT - 8),
+						Position = UDim2.new(0.5, -(BUTTON_HEIGHT - 8) / 2, 0.5, -(BUTTON_HEIGHT - 8) / 2),
+						ScaleType = Enum.ScaleType.Fit,
+						ZIndex = SETTINGS_BASE_ZINDEX + 4,
+					})
+					Connect(UserInputService.InputChanged, function()
+						if VoiceIcon.Parent then VoiceIcon.Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true) end
+					end)
+					PositionPlayerActionButtons(true)
+				else
+					PositionPlayerActionButtons(false)
+				end
+			end)
+		end
+	end
+
+	if CanTargetPlayer then
+
+		ReportButton =
+			MakeStyledButton(
+				Player.Name
+					.. "ReportButton",
+				"",
+				UDim2.new(
+					0,
+					BUTTON_WIDTH,
+					0,
+					BUTTON_HEIGHT
+				),
+				function()
+
+					if OpenReportPlayer then
+						OpenReportPlayer(
+							Player
+						)
+					end
+
+				end
+			)
+
+		ReportButton.Parent =
+			Row
+
+		ReportButton.Position =
+			UDim2.new(
+				1,
+				-(
+					FRIEND_WIDTH
+					+ ACTION_RIGHT_PAD
+					+ GAP
+					+ BUTTON_WIDTH
+					+ GAP
+					+ BUTTON_WIDTH
+				),
+				0.5,
+				-BUTTON_HEIGHT / 2
+			)
+
+		Create(
+			"ImageLabel",
+			{
+				Name =
+					"Icon",
+
+				Parent =
+					ReportButton,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"rbxasset://textures/ui/Settings/MenuBarIcons/ReportAbuseTab.png",
+
+				Size =
+					UDim2.new(
+						0,
+						28,
+						0,
+						28
+					),
+
+				Position =
+					UDim2.new(
+						0.5,
+						-14,
+						0.5,
+						-14
+					),
+
+				ScaleType =
+					Enum.ScaleType.Fit,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 4,
+			}
+		)
+
+		BlockButton =
+			MakeStyledButton(
+				Player.Name
+					.. "BlockButton",
+				"",
+				UDim2.new(
+					0,
+					BUTTON_WIDTH,
+					0,
+					BUTTON_HEIGHT
+				),
+				function()
+
+					RunAfterMenuCloses(
+						function()
+
+							Protect(
+								function()
+
+									StarterGui:SetCore(
+										"PromptBlockPlayer",
+										Player
+									)
+
+								end
+							)
+
+						end
+					)
+
+				end
+			)
+
+		BlockButton.Parent =
+			Row
+
+		BlockButton.Position =
+			UDim2.new(
+				1,
+				-(
+					FRIEND_WIDTH
+					+ ACTION_RIGHT_PAD
+					+ GAP
+					+ BUTTON_WIDTH
+				),
+				0.5,
+				-BUTTON_HEIGHT / 2
+			)
+
+		Create(
+			"ImageLabel",
+			{
+				Name =
+					"Icon",
+
+				Parent =
+					BlockButton,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"rbxasset://textures/ui/Settings/Players/BlockIcon.png",
+
+				Size =
+					UDim2.new(
+						0,
+						28,
+						0,
+						28
+					),
+
+				Position =
+					UDim2.new(
+						0.5,
+						-14,
+						0.5,
+						-14
+					),
+
+				ScaleType =
+					Enum.ScaleType.Fit,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 4,
+			}
+		)
+
+		local Status
+
+		Protect(
+			function()
+				Status =
+					LocalPlayer:GetFriendStatus(
+						Player
+					)
+			end
+		)
+
+		if
+			Status
+			== Enum.FriendStatus.Friend
+		then
+
+			FriendButton =
+				Create(
+					"TextButton",
+					{
+						Name =
+							"FriendStatus",
+
+						Parent =
+							Row,
+
+						Text =
+							"Friend",
+
+						BackgroundTransparency =
+							1,
+
+						Font =
+							Enum.Font.SourceSans,
+
+						TextSize =
+							24,
+
+						TextColor3 =
+							Color3.new(
+								1,
+								1,
+								1
+							),
+
+						Size =
+							UDim2.new(
+								0,
+								FRIEND_WIDTH,
+								0,
+								BUTTON_HEIGHT
+							),
+
+						Position =
+							UDim2.new(
+								1,
+								-FRIEND_WIDTH,
+								0.5,
+								-BUTTON_HEIGHT / 2
+							),
+
+						ZIndex =
+							SETTINGS_BASE_ZINDEX
+							+ 3,
+					}
+				)
+
+		elseif
+			Status
+			== Enum.FriendStatus.FriendRequestSent
+		then
+
+			FriendButton =
+				Create(
+					"TextButton",
+					{
+						Name =
+							"FriendStatus",
+
+						Parent =
+							Row,
+
+						Text =
+							"Request Sent",
+
+						BackgroundTransparency =
+							1,
+
+						Font =
+							Enum.Font.SourceSans,
+
+						TextSize =
+							24,
+
+						TextColor3 =
+							Color3.new(
+								1,
+								1,
+								1
+							),
+
+						Size =
+							UDim2.new(
+								0,
+								FRIEND_WIDTH,
+								0,
+								BUTTON_HEIGHT
+							),
+
+						Position =
+							UDim2.new(
+								1,
+								-FRIEND_WIDTH,
+								0.5,
+								-BUTTON_HEIGHT / 2
+							),
+
+						ZIndex =
+							SETTINGS_BASE_ZINDEX
+							+ 3,
+					}
+				)
+
+		else
+
+			FriendButton, FriendLabel =
+				MakeStyledButton(
+					"FriendStatus",
+					"Add Friend",
+					UDim2.new(
+						0,
+						FRIEND_WIDTH,
+						0,
+						BUTTON_HEIGHT
+					),
+					function()
+
+						if
+							FriendLabel
+							and FriendLabel.Text ~= ""
+						then
+
+							FriendButton.ImageTransparency =
+								1
+
+							FriendLabel.Text =
+								""
+
+							Protect(
+								function()
+
+									StarterGui:SetCore(
+										"PromptSendFriendRequest",
+										Player
+									)
+
+								end
+							)
+
+							Protect(
+								function()
+
+									LocalPlayer:
+										RequestFriendship(
+											Player
+										)
+
+								end
+							)
+
+						end
+
+					end
+				)
+
+			FriendButton.Name =
+				"FriendStatus"
+
+			if FriendLabel then
+				FriendLabel.TextSize = 22
+			end
+
+			FriendButton.Parent =
+				Row
+
+			FriendButton.Position =
+				UDim2.new(
+					1,
+					-FRIEND_WIDTH,
+					0.5,
+					-BUTTON_HEIGHT / 2
+				)
+
+			if FriendLabel then
+				FriendLabel.ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3
+			end
+
+		end
+
+	end
+
+	PositionPlayerActionButtons(VoiceButton ~= nil)
+
+	for _, Button in next,
+		{
+			ViewButton,
+			ReportButton,
+			BlockButton,
+			FriendButton,
+		}
+	do
+
+		if Button then
+
+			Connect(
+				Button.MouseEnter,
+				function()
+					Row.ImageTransparency =
+						0.65
+				end
+			)
+
+			Connect(
+				Button.MouseLeave,
+				function()
+					Row.ImageTransparency =
+						0.85
+				end
+			)
+
+		end
+
+	end
+
+	PositionPlayerActionButtons(VoiceButton ~= nil)
+
+	return Row
+end
+
+-- ============================================================
+-- POST MENU CALLBACK
+-- ============================================================
+
+RunAfterMenuCloses = function(
+	Callback
+)
+
+	SetVisibility(
+		false
+	)
+
+	Spawn(function()
+
+		Wait(
+			0.45
+		)
+
+		if Callback then
+			Callback()
+		end
+
+	end)
+
+end
+
+-- ============================================================
+-- SELECTOR
+-- ============================================================
+
+MakeSelector = function(
+	Page,
+	Name,
+	Values,
+	Index,
+	Changed
+)
+
+	local CurrentIndex =
+		Index
+		or 1
+
+	local Row =
+		MakeRow(
+			Page,
+			Name
+		)
+
+	local SelectorFrame =
+		Create(
+			"ImageButton",
+			{
+				Name =
+					Name
+					.. "Selector",
+
+				Parent =
+					Row,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"",
+
+				AutoButtonColor =
+					false,
+
+				Size =
+					UDim2.new(
+						0,
+						502,
+						0,
+						50
+					),
+
+				Position =
+					UDim2.new(
+						1,
+						-502,
+						0.5,
+						-25
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 2,
+			}
+		)
+
+	local Left =
+		Create(
+			"ImageButton",
+			{
+				Parent =
+					SelectorFrame,
+
+				Name =
+					"LeftButton",
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"",
+
+				Size =
+					UDim2.new(
+						0,
+						60,
+						0,
+						50
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						-10,
+						0.5,
+						-25
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	Create(
+		"ImageLabel",
+		{
+			Parent =
+				Left,
+
+			BackgroundTransparency =
+				1,
+
+			Image =
+				"rbxasset://textures/ui/Settings/Slider/Left.png",
+
+			ScaleType =
+				Enum.ScaleType.Fit,
+
+			Size =
+				UDim2.new(
+					0,
+					30,
+					0,
+					30
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-15,
+					0.5,
+					-15
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 4,
+		}
+	)
+
+	local Right =
+		Create(
+			"ImageButton",
+			{
+				Parent =
+					SelectorFrame,
+
+				Name =
+					"RightButton",
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"",
+
+				Size =
+					UDim2.new(
+						0,
+						50,
+						0,
+						50
+					),
+
+				Position =
+					UDim2.new(
+						1,
+						-50,
+						0,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	Create(
+		"ImageLabel",
+		{
+			Parent =
+				Right,
+
+			BackgroundTransparency =
+				1,
+
+			Image =
+				"rbxasset://textures/ui/Settings/Slider/Right.png",
+
+			ScaleType =
+				Enum.ScaleType.Fit,
+
+			Size =
+				UDim2.new(
+					0,
+					30,
+					0,
+					30
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-15,
+					0.5,
+					-15
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 4,
+		}
+	)
+
+	if HIDE_SELECTOR_ARROWS then
+		for _, ArrowObject in next, {Left, Right} do
+			for _, Descendant in next, ArrowObject:GetDescendants() do
+				if Descendant:IsA("ImageLabel") then
+					Descendant.Visible = false
+				end
+			end
+		end
+	end
+
+	local Label =
+		Create(
+			"TextLabel",
+			{
+				Parent =
+					SelectorFrame,
+
+				Name =
+					"Selection",
+
+				BackgroundTransparency =
+					1,
+
+				BorderSizePixel =
+					0,
+
+				Size =
+					UDim2.new(
+						1,
+						-120,
+						1,
+						0
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						60,
+						0,
+						0
+					),
+
+				TextColor3 =
+					Color3.new(
+						1,
+						1,
+						1
+					),
+
+				TextTransparency =
+					0.2,
+
+				TextYAlignment =
+					Enum.TextYAlignment.Center,
+
+				Font =
+					Enum.Font.SourceSans,
+
+				TextSize =
+					24,
+
+				Text =
+					Values[CurrentIndex],
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	local SelectorApi = {
+		CurrentIndex =
+			CurrentIndex,
+
+		SelectorFrame =
+			SelectorFrame,
+
+		Selection =
+			SelectorFrame,
+
+		RowFrame =
+			Row,
+
+		TextLabel =
+			Label,
+
+		Interactable =
+			true,
+	}
+
+	local SetText = function(
+		Text,
+		Direction
+	)
+
+		Label.Text =
+			Text
+
+		Label.Position =
+			UDim2.new(
+				0,
+				60
+				+ (
+					(Direction or 0)
+					* 16
+				),
+				0,
+				0
+			)
+
+		Label.TextTransparency =
+			0.75
+
+		MoveTo(
+			Label,
+			UDim2.new(
+				0,
+				60,
+				0,
+				0
+			)
+		)
+
+		FadeText(
+			Label,
+			0.2
+		)
+
+	end
+
+	local Apply = function(
+		Delta
+	)
+
+		if not SelectorApi.Interactable then
+			return
+		end
+
+		CurrentIndex =
+			CurrentIndex
+			+ Delta
+
+		if
+			CurrentIndex
+			> #Values
+		then
+
+			CurrentIndex =
+				1
+
+		elseif
+			CurrentIndex
+			< 1
+		then
+
+			CurrentIndex =
+				#Values
+
+		end
+
+		SelectorApi.CurrentIndex =
+			CurrentIndex
+
+		SetText(
+			Values[CurrentIndex],
+			Delta
+		)
+
+		if Changed then
+			Changed(
+				CurrentIndex,
+				Values[CurrentIndex]
+			)
+		end
+
+	end
+
+	Connect(
+		Left.MouseButton1Click,
+		function()
+			Apply(-1)
+		end
+	)
+
+	Connect(
+		Right.MouseButton1Click,
+		function()
+			Apply(1)
+		end
+	)
+
+	Connect(
+		SelectorFrame.MouseButton1Click,
+		function()
+			Apply(1)
+		end
+	)
+
+	function SelectorApi:SetSelectionIndex(
+		NewIndex,
+		FireChanged
+	)
+
+		if not NewIndex
+			or #Values == 0
+		then
+			return
+		end
+
+		CurrentIndex =
+			Clamp(
+				NewIndex,
+				1,
+				#Values
+			)
+
+		SelectorApi.CurrentIndex =
+			CurrentIndex
+
+		SetText(
+			Values[CurrentIndex],
+			0
+		)
+
+		if Changed
+			and FireChanged
+		then
+
+			Changed(
+				CurrentIndex,
+				Values[CurrentIndex]
+			)
+
+		end
+
+	end
+
+	function SelectorApi:SetPosition(
+		Position
+	)
+
+		SelectorFrame.Position =
+			Position
+
+	end
+
+	function SelectorApi:SetSize(
+		Size
+	)
+
+		SelectorFrame.Size =
+			Size
+
+	end
+
+	function SelectorApi:SetInteractable(
+		Interactable
+	)
+
+		SelectorApi.Interactable =
+			Interactable
+
+		SelectorFrame.ImageTransparency =
+			Interactable
+			and 0
+			or 0.65
+
+		Label.TextTransparency =
+			Interactable
+			and 0.2
+			or 0.65
+
+		Left.Visible =
+			Interactable
+
+		Right.Visible =
+			Interactable
+
+	end
+
+	function SelectorApi:GetSelectedIndex()
+		return CurrentIndex
+	end
+
+	function SelectorApi:GetSelectedValue()
+		return Values[CurrentIndex]
+	end
+
+	return SelectorApi
+end
+
+-- ============================================================
+-- SLIDER
+-- ============================================================
+
+MakeSlider = function(
+	Page,
+	Name,
+	Steps,
+	Index,
+	Changed,
+	MinStep
+)
+
+	MinStep =
+		MinStep
+		or 0
+
+	local CurrentIndex =
+		Clamp(
+			Index
+			or 1,
+			MinStep,
+			Steps
+		)
+
+	local Row =
+		MakeRow(
+			Page,
+			Name
+		)
+
+	local Holder =
+		Create(
+			"Frame",
+			{
+				Parent =
+					Row,
+
+				BackgroundTransparency =
+					1,
+
+				Size =
+					UDim2.new(
+						0,
+						502,
+						0,
+						50
+					),
+
+				Position =
+					UDim2.new(
+						1,
+						-502,
+						0.5,
+						-25
+					),
+
+				Active =
+					true,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 2,
+			}
+		)
+
+	local Left =
+		Create(
+			"ImageButton",
+			{
+				Parent =
+					Holder,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"",
+
+				Size =
+					UDim2.new(
+						0,
+						50,
+						0,
+						50
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						0,
+						0,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	Create(
+		"ImageLabel",
+		{
+			Parent =
+				Left,
+
+			BackgroundTransparency =
+				1,
+
+			Image =
+				SLIDER_LEFT_IMAGE,
+
+			ScaleType =
+				Enum.ScaleType.Fit,
+
+			Size =
+				UDim2.new(
+					0,
+					30,
+					0,
+					30
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-15,
+					0.5,
+					-15
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 4,
+		}
+	)
+
+	local Right =
+		Create(
+			"ImageButton",
+			{
+				Parent =
+					Holder,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					"",
+
+				Size =
+					UDim2.new(
+						0,
+						50,
+						0,
+						50
+					),
+
+				Position =
+					UDim2.new(
+						1,
+						-50,
+						0.5,
+						-25
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 3,
+			}
+		)
+
+	Create(
+		"ImageLabel",
+		{
+			Parent =
+				Right,
+
+			BackgroundTransparency =
+				1,
+
+			Image =
+				SLIDER_RIGHT_IMAGE,
+
+			ScaleType =
+				Enum.ScaleType.Fit,
+
+			Size =
+				UDim2.new(
+					0,
+					30,
+					0,
+					30
+				),
+
+			Position =
+				UDim2.new(
+					0.5,
+					-15,
+					0.5,
+					-15
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 4,
+		}
+	)
+
+	local Segments =
+		{}
+
+	local Dragging =
+		false
+
+	local SliderApi = {
+		SliderFrame =
+			Holder,
+
+		Selection =
+			Holder,
+
+		RowFrame =
+			Row,
+
+		Interactable =
+			true,
+	}
+
+	local Refresh = function(
+		Immediate
+	)
+
+		for Index2, Segment in next,
+			Segments
+		do
+
+			local Selected =
+				SliderApi.Interactable
+				and Index2 <= CurrentIndex
+
+			local Color =
+				(
+					Selected
+					and Color3.fromRGB(
+						0,
+						162,
+						255
+					)
+					or Color3.fromRGB(
+						78,
+						84,
+						96
+					)
+				)
+
+			if
+				Index2 == 1
+				or Index2 == Steps
+			then
+
+				if Selected then
+
+					if Index2 == 1 then
+
+						Segment.Image =
+							SLIDER_SELECTED_LEFT_IMAGE
+
+					else
+
+						Segment.Image =
+							SLIDER_SELECTED_RIGHT_IMAGE
+
+					end
+
+				else
+
+					if Index2 == 1 then
+
+						Segment.Image =
+							SLIDER_BAR_LEFT_IMAGE
+
+					else
+
+						Segment.Image =
+							SLIDER_BAR_RIGHT_IMAGE
+
+					end
+
+				end
+
+				Segment.ImageTransparency =
+					0.36
+
+				Segment.BackgroundTransparency =
+					1
+
+			else
+
+				if Immediate then
+
+					Segment.BackgroundColor3 =
+						Color
+
+				else
+
+					ColorTo(
+						Segment,
+						Color
+					)
+
+				end
+
+			end
+
+		end
+
+		Left.Visible =
+			SliderApi.Interactable
+			and CurrentIndex > MinStep
+
+		Right.Visible =
+			SliderApi.Interactable
+			and CurrentIndex < Steps
+
+	end
+
+	local SetSliderValue = function(
+		NewIndex
+	)
+
+		NewIndex =
+			Clamp(
+				NewIndex,
+				MinStep,
+				Steps
+			)
+
+		if
+			CurrentIndex
+			== NewIndex
+		then
+			return
+		end
+
+		CurrentIndex =
+			NewIndex
+
+		Refresh()
+
+		if Changed then
+			Changed(
+				CurrentIndex
+			)
+		end
+
+	end
+
+	local SetSliderFromX =
+		function(X)
+
+			if
+				not SliderApi.Interactable
+			then
+				return
+			end
+
+			local FirstSegment =
+				Segments[1]
+
+			local LastSegment =
+				Segments[Steps]
+
+			if
+				not FirstSegment
+				or not LastSegment
+			then
+				return
+			end
+
+			local StartX =
+				FirstSegment.AbsolutePosition.X
+
+			local EndX =
+				LastSegment.AbsolutePosition.X
+				+ LastSegment.AbsoluteSize.X
+
+			local Alpha =
+				Clamp(
+					(
+						X - StartX
+					)
+					/ (
+						EndX - StartX
+					),
+					0,
+					1
+				)
+
+			if MinStep > 0 then
+
+				SetSliderValue(
+					Clamp(
+						Floor(
+							(
+								Alpha
+								* Steps
+							)
+							+ 1
+						),
+						MinStep,
+						Steps
+					)
+				)
+
+			else
+
+				SetSliderValue(
+					Clamp(
+						Floor(
+							Alpha
+							* (
+								Steps
+								+ 1
+							)
+						),
+						0,
+						Steps
+					)
+				)
+
+			end
+
+		end
+
+	for Index2 = 1, Steps do
+
+		local Segment =
+			Create(
+				"ImageButton",
+				{
+					Parent =
+						Holder,
+
+					BackgroundColor3 =
+						Color3.fromRGB(
+							78,
+							84,
+							96
+						),
+
+					BackgroundTransparency =
+						0.36,
+
+					BorderSizePixel =
+						0,
+
+					AutoButtonColor =
+						false,
+
+					Image =
+						"",
+
+					ImageTransparency =
+						0.36,
+
+					Size =
+						UDim2.new(
+							0,
+							35,
+							0,
+							25
+						),
+
+					Position =
+						UDim2.new(
+							0,
+							60
+							+ (
+								(Index2 - 1)
+								* 39
+							),
+							0.5,
+							-12
+						),
+
+					ZIndex =
+						SETTINGS_BASE_ZINDEX
+						+ 3,
+				}
+			)
+
+		if
+			Index2 == 1
+			or Index2 == Steps
+		then
+
+			Segment.BackgroundTransparency =
+				1
+
+			Segment.ScaleType =
+				Enum.ScaleType.Slice
+
+			Segment.SliceCenter =
+				Rect.new(
+					3,
+					3,
+					32,
+					21
+				)
+
+		end
+
+		Segments[Index2] =
+			Segment
+
+		Connect(
+			Segment.MouseButton1Click,
+			function()
+
+				if SliderApi.Interactable then
+					SetSliderValue(
+						Index2
+					)
+				end
+
+			end
+		)
+
+	end
+
+	local Capture =
+		Create(
+			"TextButton",
+			{
+				Parent =
+					Holder,
+
+				BackgroundTransparency =
+					1,
+
+				BorderSizePixel =
+					0,
+
+				Text =
+					"",
+
+				AutoButtonColor =
+					false,
+
+				Active =
+					true,
+
+				Size =
+					UDim2.new(
+						0,
+						400,
+						1,
+						0
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						52,
+						0,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 5,
+			}
+		)
+
+	Connect(
+		Capture.InputBegan,
+		function(Input)
+
+			if
+				Input.UserInputType
+					== Enum.UserInputType.MouseButton1
+				or Input.UserInputType
+					== Enum.UserInputType.Touch
+			then
+
+				Dragging =
+					true
+
+				SetSliderFromX(
+					Input.Position.X
+				)
+
+			end
+
+		end
+	)
+
+	Connect(
+		Capture.InputChanged,
+		function(Input)
+
+			if
+				Dragging
+				and (
+					Input.UserInputType
+						== Enum.UserInputType.MouseMovement
+					or Input.UserInputType
+						== Enum.UserInputType.Touch
+				)
+			then
+
+				SetSliderFromX(
+					Input.Position.X
+				)
+
+			end
+
+		end
+	)
+
+	Connect(
+		UserInputService.InputChanged,
+		function(Input)
+
+			if
+				Dragging
+				and (
+					Input.UserInputType
+						== Enum.UserInputType.MouseMovement
+					or Input.UserInputType
+						== Enum.UserInputType.Touch
+				)
+			then
+
+				SetSliderFromX(
+					Input.Position.X
+				)
+
+			end
+
+		end
+	)
+
+	Connect(
+		UserInputService.InputEnded,
+		function(Input)
+
+			if
+				Input.UserInputType
+					== Enum.UserInputType.MouseButton1
+				or Input.UserInputType
+					== Enum.UserInputType.Touch
+			then
+
+				Dragging =
+					false
+
+			end
+
+		end
+	)
+
+	Connect(
+		Left.MouseButton1Click,
+		function()
+
+			if SliderApi.Interactable then
+
+				SetSliderValue(
+					CurrentIndex - 1
+				)
+
+			end
+
+		end
+	)
+
+	Connect(
+		Right.MouseButton1Click,
+		function()
+
+			if SliderApi.Interactable then
+
+				SetSliderValue(
+					CurrentIndex + 1
+				)
+
+			end
+
+		end
+	)
+
+	Refresh(true)
+
+	function SliderApi:SetValue(
+		NewValue
+	)
+
+		CurrentIndex =
+			Clamp(
+				NewValue,
+				MinStep,
+				Steps
+			)
+
+		Refresh(true)
+
+	end
+
+	function SliderApi:GetValue()
+		return CurrentIndex
+	end
+
+	function SliderApi:SetInteractable(
+		Interactable
+	)
+
+		SliderApi.Interactable =
+			Interactable
+
+		Holder.Active =
+			Interactable
+
+		Holder.ZIndex =
+			SETTINGS_BASE_ZINDEX
+			+ (
+				Interactable
+				and 2
+				or 1
+			)
+
+		for _, Segment in next,
+			Segments
+		do
+
+			Segment.Active =
+				Interactable
+
+			Segment.Selectable =
+				Interactable
+
+			Segment.ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ (
+					Interactable
+					and 3
+					or 1
+				)
+
+		end
+
+		Refresh(true)
+
+	end
+
+	function SliderApi:SetZIndex(
+		NewZIndex
+	)
+
+		Holder.ZIndex =
+			NewZIndex
+
+		Left.ZIndex =
+			NewZIndex + 1
+
+		Right.ZIndex =
+			NewZIndex + 1
+
+		for _, Segment in next,
+			Segments
+		do
+
+			Segment.ZIndex =
+				NewZIndex + 1
+
+		end
+
+	end
+
+	function SliderApi:SetMinStep(
+		NewMinStep
+	)
+
+		MinStep =
+			Clamp(
+				NewMinStep or 0,
+				0,
+				Steps
+			)
+
+		CurrentIndex =
+			Clamp(
+				CurrentIndex,
+				MinStep,
+				Steps
+			)
+
+		Refresh(true)
+
+	end
+
+	return SliderApi
+end
+
+-- ============================================================
+-- DROPDOWN
+-- ============================================================
+
+MakeDropDown = function(
+	Page,
+	Name,
+	Values,
+	Index,
+	Changed
+)
+
+	local CurrentIndex =
+		Index
+
+	local Row =
+		MakeRow(
+			Page,
+			Name
+		)
+
+	local Button =
+		MakeStyledButton(
+			Name
+				.. "DropDown",
+			Values[CurrentIndex]
+			or "Choose One",
+			UDim2.new(
+				0,
+				300,
+				0,
+				44
+			)
+		)
+
+	Button.Parent =
+		Row
+
+	Button.Position =
+		UDim2.new(
+			1,
+			-350,
+			0.5,
+			-22
+		)
+
+	local Arrow =
+		Create(
+			"ImageLabel",
+			{
+				Parent =
+					Button,
+
+				BackgroundTransparency =
+					1,
+
+				Image =
+					DROP_DOWN_IMAGE,
+
+				Size =
+					UDim2.new(
+						0,
+						15,
+						0,
+						10
+					),
+
+				Position =
+					UDim2.new(
+						1,
+						-40,
+						0.5,
+						-7
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 4,
+			}
+		)
+
+	local Label =
+		Button:FindFirstChild(
+			Name
+				.. "DropDownTextLabel"
+		)
+
+	local DropDownApi = {
+		CurrentIndex =
+			CurrentIndex,
+
+		DropDownFrame =
+			Button,
+
+		Selection =
+			Button,
+
+		Interactable =
+			true,
+	}
+
+	local Overlay =
+		Create(
+			"TextButton",
+			{
+				Parent =
+					ScreenGui,
+
+				Name =
+					Name
+					.. "DropDownFullscreenFrame",
+
+				Visible =
+					false,
+
+				BackgroundColor3 =
+					Color3.new(
+						0,
+						0,
+						0
+					),
+
+				BackgroundTransparency =
+					0.2,
+
+				BorderSizePixel =
+					0,
+
+				Text =
+					"",
+
+				Size =
+					UDim2.new(
+						1,
+						0,
+						1,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 20,
+			}
+		)
+
+	local Panel =
+		Create(
+			"ImageLabel",
+			{
+				Parent =
+					Overlay,
+
+				Image =
+					BUTTON_IMAGE,
+
+				ScaleType =
+					Enum.ScaleType.Slice,
+
+				SliceCenter =
+					Rect.new(
+						8,
+						6,
+						46,
+						44
+					),
+
+				BackgroundTransparency =
+					1,
+
+				Size =
+					UDim2.new(
+						0,
+						400,
+						0.9,
+						0
+					),
+
+				Position =
+					UDim2.new(
+						0.5,
+						-200,
+						0.05,
+						0
+					),
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 21,
+			}
+		)
+
+	local List =
+		Create(
+			"ScrollingFrame",
+			{
+				Parent =
+					Panel,
+
+				BackgroundTransparency =
+					1,
+
+				BorderSizePixel =
+					0,
+
+				Size =
+					UDim2.new(
+						1,
+						-20,
+						1,
+						-25
+					),
+
+				Position =
+					UDim2.new(
+						0,
+						10,
+						0,
+						10
+					),
+
+				CanvasSize =
+					UDim2.new(
+						0,
+						0,
+						0,
+						#Values * 51
+					),
+
+				ScrollBarThickness =
+					6,
+
+				ZIndex =
+					SETTINGS_BASE_ZINDEX
+					+ 21,
+			}
+		)
+
+	local SetSelection = function(
+		NewIndex,
+		FireChanged
+	)
+
+		CurrentIndex =
+			NewIndex
+
+		DropDownApi.CurrentIndex =
+			CurrentIndex
+
+		local Value =
+			CurrentIndex
+			and Values[CurrentIndex]
+			or nil
+
+		Label.Text =
+			Value
+			or "Choose One"
+
+		if
+			Changed
+			and FireChanged
+		then
+
+			Changed(
+				CurrentIndex,
+				Value
+			)
+
+		end
+
+	end
+
+	local Rebuild = function(
+		NewValues
+	)
+
+		Values =
+			NewValues
+			or Values
+
+		if
+			CurrentIndex
+			and CurrentIndex > #Values
+		then
+
+			CurrentIndex =
+				nil
+
+			DropDownApi.CurrentIndex =
+				nil
+
+		end
+
+		for _, Child in next,
+			List:GetChildren()
+		do
+
+			if Child:IsA("TextButton") then
+				Child:Destroy()
+			end
+
+		end
+
+		for Index2, Value in next,
+			Values
+		do
+
+			local Option =
+				Create(
+					"TextButton",
+					{
+						Parent =
+							List,
+
+						Name =
+							"Selection"
+							.. tostring(
+								Index2
+							),
+
+						BackgroundTransparency =
+							1,
+
+						BorderSizePixel =
+							0,
+
+						AutoButtonColor =
+							false,
+
+						Size =
+							UDim2.new(
+								1,
+								-28,
+								0,
+								50
+							),
+
+						Position =
+							UDim2.new(
+								0,
+								14,
+								0,
+								(
+									Index2 - 1
+								)
+								* 51
+							),
+
+						TextColor3 =
+							(
+								Index2
+								== CurrentIndex
+							)
+							and Color3.new(
+								1,
+								1,
+								1
+							)
+							or Color3.new(
+								0.7,
+								0.7,
+								0.7
+							),
+
+						Font =
+							Enum.Font.SourceSans,
+
+						TextSize =
+							24,
+
+						Text =
+							Value,
+
+						ZIndex =
+							SETTINGS_BASE_ZINDEX
+							+ 22,
+					}
+				)
+
+			Connect(
+				Option.MouseButton1Click,
+				function()
+
+					SetSelection(
+						Index2,
+						true
+					)
+
+					Overlay.Visible =
+						false
+
+				end
+			)
+
+		end
+
+		List.CanvasSize =
+			UDim2.new(
+				0,
+				0,
+				0,
+				#Values * 51
+			)
+
+		SetSelection(
+			CurrentIndex,
+			false
+		)
+
+	end
+
+	Connect(
+		Button.MouseButton1Click,
+		function()
+
+			if DropDownApi.Interactable then
+
+				Overlay.Visible =
+					true
+
+			end
+
+		end
+	)
+
+	Connect(
+		Overlay.MouseButton1Click,
+		function()
+			Overlay.Visible =
+				false
+		end
+	)
+
+	Rebuild(
+		Values
+	)
+
+	function DropDownApi:UpdateDropDownList(
+		NewValues
+	)
+		Rebuild(
+			NewValues
+		)
+	end
+
+	function DropDownApi:SetSelectionIndex(
+		NewIndex,
+		FireChanged
+	)
+
+		if
+			not NewIndex
+			or NewIndex < 1
+			or NewIndex > #Values
+		then
+
+			SetSelection(
+				nil,
+				FireChanged
+			)
+
+			return false
+
+		end
+
+		SetSelection(
+			NewIndex,
+			FireChanged
+		)
+
+		return true
+	end
+
+	function DropDownApi:SetSelectionByValue(
+		Value,
+		FireChanged
+	)
+
+		for Index2, Item in next,
+			Values
+		do
+
+			if Item == Value then
+
+				SetSelection(
+					Index2,
+					FireChanged
+				)
+
+				return true
+
+			end
+
+		end
+
+		return false
+	end
+
+	function DropDownApi:ResetSelectionIndex(
+		FireChanged
+	)
+
+		SetSelection(
+			nil,
+			FireChanged
+		)
+
+	end
+
+	function DropDownApi:GetSelectedIndex()
+		return CurrentIndex
+	end
+
+	function DropDownApi:GetSelectedValue()
+
+		return CurrentIndex
+			and Values[CurrentIndex]
+			or nil
+
+	end
+
+	function DropDownApi:SetInteractable(
+		Interactable
+	)
+
+		DropDownApi.Interactable =
+			Interactable
+
+		Button.ImageTransparency =
+			Interactable
+			and 0
+			or 0.65
+
+		Button.Active =
+			Interactable
+
+		Button.Selectable =
+			Interactable
+
+		if Label then
+
+			Label.TextTransparency =
+				Interactable
+				and 0
+				or 0.65
+
+		end
+
+		if Arrow then
+
+			Arrow.ImageTransparency =
+				Interactable
+				and 0
+				or 0.65
+
+		end
+
+	end
+
+	return DropDownApi
+end
+
+-- ============================================================
+-- PAGES
+-- ============================================================
+
+PlayersPage =
+	MakePage(
+		"People"
+	)
+
+AddPage(
+	PlayersPage,
+	"People",
+	"rbxasset://textures/ui/Settings/MenuBarIcons/PlayersTabIcon.png",
+	150
+)
+
+if PlayersPage.Icon then
+
+	PlayersPage.Icon.Size =
+		UDim2.new(
+			0,
+			36,
+			0,
+			36
+		)
+
+	PlayersPage.Icon.Position =
+		UDim2.new(
+			0,
+			15,
+			0.5,
+			-18
+		)
+
+end
+
+-- ============================================================
+-- INVITE FRIENDS ROW ON NORMAL PLAYER PAGE
+-- ============================================================
+
+INVITE_BUTTON_WIDTH =
+	70
+
+INVITE_BUTTON_HEIGHT =
+	46
+
+INVITE_MOBILE_SEARCH_EXPANDED = false
+INVITE_MOBILE_SEARCH_WIDTH = 260
+INVITE_MOBILE_SEARCH_COLLAPSED = 38
+INVITE_MOBILE_HEADER_DIVIDER = nil
+
+MakeInviteFriendsRow = function(Page)
+	local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
+	local RowWidth = VoiceActive and UDim2.new(0.5, -4, 0, 60) or UDim2.new(1, 0, 0, 60)
+	local function BaseRow(Name, Pos)
+		return Create("ImageButton", {Name=Name, Parent=Page.Frame, BackgroundTransparency=1, BorderSizePixel=0, Image="rbxasset://textures/ui/dialog_white.png", ImageTransparency=0.85, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(10,10,10,10), Size=RowWidth, Position=Pos, AutoButtonColor=false, ZIndex=SETTINGS_BASE_ZINDEX+2})
+	end
+	local Row=BaseRow("InviteFriendsToJoin", UDim2.new(0,0,0,PLAYER_LIST_OFFSET))
+	Create("ImageLabel", {Name="Icon",Parent=Row,BackgroundTransparency=1,Image="rbxassetid://80022950003290",Size=UDim2.fromOffset(24,24),Position=UDim2.new(0,14,0.5,-12),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+3})
+	Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-54,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
+	local MuteRow
+	if VoiceActive then
+		MuteRow=BaseRow("MuteAllVoiceRow", UDim2.new(0.5,4,0,PLAYER_LIST_OFFSET))
+		local Icon=Create("ImageLabel", {Name="Icon",Parent=MuteRow,BackgroundTransparency=1,Image=VOICE_MISC_ROOT.."UnmuteAll@3x.png",Size=UDim2.fromOffset(30,30),Position=UDim2.new(0,14,0.5,-15),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+4})
+		local Label=Create("TextLabel", {Name="MuteAllLabel",Parent=MuteRow,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Mute All",Size=UDim2.new(1,-56,1,0),Position=UDim2.new(0,52,0,0),ZIndex=SETTINGS_BASE_ZINDEX+4})
+		local State=false
+		Connect(MuteRow.MouseEnter,function() MuteRow.ImageTransparency=0.65 end)
+		Connect(MuteRow.MouseLeave,function() MuteRow.ImageTransparency=0.85 end)
+		Connect(MuteRow.MouseButton1Click,function() State=not State SetMuteAll(State) Label.Text=State and "Unmute All" or "Mute All" end)
+		Icon.Image=VOICE_MISC_ROOT.."UnmuteAll@3x.png"
+	end
+	Connect(Row.MouseEnter,function() Row.ImageTransparency=0.65 end)
+	Connect(Row.MouseLeave,function() Row.ImageTransparency=0.85 end)
+	Connect(Row.MouseButton1Click,function() if OpenInviteFriends then OpenInviteFriends() end end)
+	return Row,MuteRow
+end
+
+RebuildPlayersPage = function()
+
+	-- Mirror Roblox's own voice player icons first. This scan happens once per
+	-- rebuild instead of once per frame, which keeps the menu responsive.
+	RefreshNativeVoiceMirrorCache(true)
+
+	for _, Child in next,
+		PlayersPage.Frame:GetChildren()
+	do
+
+		if
+			Child.Name:sub(
+				1,
+				11
+			)
+			== "PlayerLabel"
+
+			or Child.Name == "InviteFriendsToJoin"
+			or Child.Name == "MuteAllVoiceRow"
+		then
+			Child:Destroy()
+		end
+
+	end
+
+	local SortedPlayers =
+		Players:GetPlayers()
+
+	-- Mobile-only offset. PC keeps the original player-row positions.
+	local MobileUiScale = GetMobileUiScale()
+	local MobileActionOffset =
+		(IsMobile and not IsTablet)
+		and (62 + math.max(4, math.floor(MOBILE_LAYOUT_GAP * MobileUiScale + 0.5)))
+		or 0
+
+	table.sort(
+		SortedPlayers,
+		function(
+			PlayerA,
+			PlayerB
+		)
+
+			return
+				PlayerA.Name
+				<
+				PlayerB.Name
+
+		end
+	)
+
+	local Count =
+		0
+
+	local InviteOffset =
+		0
+
+	if InviteFriends then
+
+		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
+
+		local RowY = (IsMobile and not IsTablet) and 72 or 0
+		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
+		InviteRow.Position = UDim2.new(0,0,0,RowY)
+		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
+		if MuteRow then MuteRow.Position = UDim2.new(0.5,4,0,RowY) end
+
+		InviteOffset =
+			80
+
+	end
+
+	for _, Player in next,
+		SortedPlayers
+	do
+
+		Count +=
+			1
+
+		local Row =
+			MakePlayerRow(
+				PlayersPage,
+				Player,
+				Count
+			)
+
+		if Row then
+
+			Row.Position =
+				UDim2.new(
+					0,
+					0,
+					0,
+					MobileActionOffset
+					+ InviteOffset
+					+ (
+						(Count - 1)
+						* 72
+					)
+				)
+
+		end
+
+	end
+
+	PlayersPage.Frame.Size =
+		UDim2.new(
+			1,
+			0,
+			0,
+			MobileActionOffset
+			+ InviteOffset
+			+ (
+				Count * 72
+			)
+			- 5
+		)
+
+end
+
+RebuildPlayersPage()
+
+-- Voice entitlements can become available after the player list is first
+-- rendered. Recheck everyone shortly after the first render so VC buttons do
+-- not depend on the exact timing of the initial row creation.
+Spawn(function()
+	for Pass = 1, 4 do
+		Wait(Pass == 1 and 0.25 or 0.75)
+		if VoiceChatEnabled then
+			local Changed = false
+			for _, Player in next, Players:GetPlayers() do
+				if Player ~= LocalPlayer then
+					local Id = tonumber(Player.UserId or Player.userId) or 0
+					local Before = VoiceEnabledCache[Id] == true
+					CheckVoiceForPlayer(Player)
+					if Before ~= (VoiceEnabledCache[Id] == true) then Changed = true end
+				end
+			end
+			if RefreshVoiceParticipants() then Changed = true end
+			if Changed then
+				RebuildPlayersPage()
+			end
+		end
+	end
+end)
+
+Protect(function()
+	Connect(SoundService.DescendantAdded, function(Descendant)
+		if Descendant:IsA("AudioDeviceInput") then
+			local Owner = nil
+			Protect(function() Owner = Descendant.Player end)
+			if Owner == LocalPlayer then
+				GetAudioDeviceInputCache[LocalPlayer] = Descendant
+				EnsureVoiceAnalyzer(LocalPlayer)
+			end
+		end
+	end)
+end)
+
+Connect(
+	Players.PlayerAdded,
+	function(Player)
+
+		RebuildPlayersPage()
+
+		Spawn(function()
+			Wait(0.5)
+			CheckVoiceForPlayer(Player, function(Enabled)
+				if Enabled and VoiceChatEnabled then
+					RebuildPlayersPage()
+				end
+			end)
+		end)
+
+	end
+)
+
+PendingPlayerListRefresh = false
+
+Connect(
+	Players.PlayerRemoving,
+	function()
+		PendingPlayerListRefresh = true
+	end
+)
+
+Protect(function()
+
+	Connect(
+		LocalPlayer.FriendStatusChanged,
+		function()
+			RebuildPlayersPage()
+		end
+	)
+
+end)
+
+-- ============================================================
+-- INVITE FRIENDS PAGE
+-- ============================================================
+
+SearchBox = nil
+InviteList = nil
+SearchIcon = nil
+SearchPlaceholder = nil
+
+InvitePage =
+	MakePage(
+		"InviteFriends"
+	)
+
+AddPage(
+	InvitePage
+)
+
+InviteHeader =
+	Create(
+		"Frame",
+		{
+			Name =
+				"InviteHeader",
+
+			Parent =
+				InvitePage.Frame,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			Size =
+				UDim2.new(
+					1,
+					0,
+					0,
+					60
+				),
+
+			Position =
+				UDim2.new(
+					0,
+					0,
+					0,
+					0
+				),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 10,
+		}
+	)
+
+InviteBackButton, InviteBackLabel =
+	MakeStyledButton(
+		"InviteBackButton",
+		"Back",
+		UDim2.new(
+			0,
+			90,
+			0,
+			44
+		),
+		function()
+
+			local Previous =
+				Hub.PreviousMenuPage
+				or Hub.MenuStack[#Hub.MenuStack]
+				or PlayersPage
+
+			Hub.PreviousMenuPage = nil
+			if Hub.MenuStack[#Hub.MenuStack] == Previous then
+				table.remove(Hub.MenuStack, #Hub.MenuStack)
+			end
+
+			Hub.InInviteMenu =
+				false
+
+			if SearchBox then
+				Protect(function()
+					SearchBox:ReleaseFocus()
+				end)
+			end
+
+			SearchBox.Text =
+				""
+
+			InviteHeader.Visible =
+				false
+
+			InviteList.Visible =
+				false
+
+			Hub.PageView.ScrollBarThickness =
+				IsMobile and 0 or 12
+
+
+			Hub.HubBar.Visible =
+				true
+
+			Hub.PageClipper.Visible =
+				true
+
+			Hub.BottomButtonFrame.Visible =
+				true
+
+			if HomeButton then
+
+				HomeButton.Visible =
+					HomeButtonEnabled
+					and not IsMobile
+
+			end
+
+			SwitchToPage(
+				Previous,
+				true,
+				true
+			)
+
+			ResizeHub()
+
+		end
+	)
+
+InviteBackButton.Parent =
+	InviteHeader
+InviteBackButton.Active = true
+InviteBackButton.Selectable = true
+InviteBackButton.AutoButtonColor = false
+InviteBackButton.ZIndex = SETTINGS_BASE_ZINDEX + 12
+
+InviteBackButton.Position =
+	UDim2.new(
+		0,
+		8,
+		0,
+		8
+	)
+
+InviteBackLabel.ZIndex =
+	SETTINGS_BASE_ZINDEX
+	+ 12
+
+Create(
+	"TextLabel",
+	{
+		Name =
+			"InviteFriendsTitle",
+
+		Parent =
+			InviteHeader,
+
+		BackgroundTransparency =
+			1,
+
+		Font =
+			Enum.Font.SourceSansBold,
+
+		TextSize =
+			27,
+
+		TextColor3 =
+			Color3.new(
+				1,
+				1,
+				1
+			),
+
+		Text =
+			"Invite Friends",
+
+		TextXAlignment =
+			Enum.TextXAlignment.Center,
+
+		TextYAlignment =
+			Enum.TextYAlignment.Center,
+
+		Size =
+			UDim2.new(
+				0,
+				240,
+				0,
+				44
+			),
+
+		Position =
+			UDim2.new(
+				0.5,
+				-132,
+				0,
+				8
+			),
+
+		ZIndex =
+			SETTINGS_BASE_ZINDEX
+			+ 11,
+	}
+)
+
+-- ============================================================
+-- SEARCH BOX
+-- ============================================================
+
+SearchFrame =
+	Create(
+		"Frame",
+		{
+			Name =
+				"SearchFrame",
+
+			Parent =
+				InviteHeader,
+
+			BackgroundTransparency = 1,
+
+			BorderSizePixel = 1,
+
+			BorderColor3 = Color3.fromRGB(170, 170, 170),
+
+			Size = UDim2.new(0, 220, 0, 34),
+
+			Position = UDim2.new(1, -228, 0, 15),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 10,
+		}
+	)
+
+Create(
+	"UICorner",
+	{
+		Parent =
+			SearchFrame,
+
+		CornerRadius =
+			UDim.new(
+				0,
+				2
+			),
+	}
+)
+
+-- Hollow search-box outline: transparent inside, visible border only.
+Create(
+	"UIStroke",
+	{
+		Name = "SearchBorder",
+		Parent = SearchFrame,
+		Color = Color3.fromRGB(170, 170, 170),
+		Thickness = 1,
+		Transparency = 0,
+	})
+
+SearchIcon =
+	Create(
+		"ImageLabel",
+		{
+			Name = "SearchIcon",
+			Parent = SearchFrame,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Image = "rbxassetid://124148806944890",
+			ImageTransparency = 0,
+			ScaleType = Enum.ScaleType.Fit,
+			Size = UDim2.fromOffset(20, 20),
+			Position = UDim2.new(0, 8, 0.5, -10),
+			ZIndex = SETTINGS_BASE_ZINDEX + 15,
+		}
+	)
+
+SearchPlaceholder =
+	Create(
+		"TextLabel",
+		{
+			Name =
+				"SearchPlaceholder",
+
+			Parent =
+				SearchFrame,
+
+			BackgroundTransparency =
+				1,
+
+			Font =
+				Enum.Font.SourceSans,
+
+			TextSize =
+				18,
+
+			TextColor3 =
+				Color3.fromRGB(
+					190,
+					190,
+					190
+				),
+
+			Text =
+				"Search for friends",
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+
+			TextYAlignment =
+				Enum.TextYAlignment.Center,
+
+
+			Size = UDim2.new(1, -42, 1, 0),
+
+			Position = UDim2.new(0, 34, 0, 0),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 11,
+		}
+	)
+
+SearchBox =
+	Create(
+		"TextBox",
+		{
+			Name =
+				"SearchBox",
+
+			Parent =
+				SearchFrame,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			ClearTextOnFocus =
+				false,
+
+			Font =
+				Enum.Font.SourceSans,
+
+			TextSize =
+				18,
+
+			TextColor3 =
+				Color3.new(
+					1,
+					1,
+					1
+				),
+
+			Text =
+				"",
+
+			PlaceholderText =
+				"",
+
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
+
+			TextYAlignment =
+				Enum.TextYAlignment.Center,
+
+			BackgroundTransparency = 1,
+
+			Size = UDim2.new(1, -42, 1, 0),
+
+			Position = UDim2.new(0, 34, 0, 0),
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 13,
+		}
+	)
+
+Connect(
+	SearchBox.Focused,
+	function()
+
+		SearchIcon.Visible =
+			true
+
+		SearchPlaceholder.Visible =
+			false
+
+	end
+)
+
+Connect(
+	SearchBox.FocusLost,
+	function()
+
+		SearchIcon.Visible = IsMobile or SearchBox.Text == ""
+
+		SearchPlaceholder.Visible =
+			(not IsMobile) and SearchBox.Text == ""
+
+	end
+)
+
+Connect(
+	SearchBox:GetPropertyChangedSignal(
+		"Text"
+	),
+	function()
+
+		if RebuildInviteList then
+			RebuildInviteList()
+		end
+
+		if IsMobile then
+			SearchIcon.Visible = true
+			SearchPlaceholder.Visible = false
+
+		elseif
+			SearchBox.Text ~= ""
+			or SearchBox:IsFocused()
+		then
+
+			SearchIcon.Visible =
+				false
+
+			SearchPlaceholder.Visible =
+				false
+
+		else
+
+			SearchIcon.Visible =
+				true
+
+			SearchPlaceholder.Visible =
+				true
+
+		end
+
+	end
+)
+
+-- ============================================================
+-- MOBILE INVITE SEARCH / HEADER BEHAVIOR
+-- ============================================================
+ConfigureInviteMobileHeader = function()
+	if not InviteHeader or not SearchFrame or not SearchBox or not SearchIcon then return end
+	if not IsMobile then
+		InviteBackLabel.Text = "Back"
+		InviteBackLabel.TextSize = 24
+		SearchFrame.Size = UDim2.new(0, 220, 0, 34)
+		SearchFrame.Position = UDim2.new(1, -228, 0, 15)
+		SearchBox.Visible = true
+		SearchPlaceholder.Visible = SearchBox.Text == ""
+		SearchIcon.Visible = SearchBox.Text == "" or SearchBox:IsFocused()
+		return
+	end
+
+	InviteBackLabel.Text = "←"
+	InviteBackLabel.TextSize = 36
+	InviteBackLabel.TextXAlignment = Enum.TextXAlignment.Center
+	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
+	InviteBackButton.Size = UDim2.fromOffset(42, 42)
+	InviteBackButton.Position = UDim2.fromOffset(4, 7)
+	InviteBackButton.Image = ""
+
+	local Expanded = INVITE_MOBILE_SEARCH_EXPANDED
+	local Width = Expanded and INVITE_MOBILE_SEARCH_WIDTH or INVITE_MOBILE_SEARCH_COLLAPSED
+	SearchFrame.Size = UDim2.fromOffset(Width, 36)
+	SearchFrame.Position = UDim2.new(1, -(Width + 6), 0, 10)
+	SearchFrame.BackgroundTransparency = 1
+	SearchFrame.BorderSizePixel = 0
+	local SearchStroke = SearchFrame:FindFirstChildOfClass("UIStroke")
+	if SearchStroke then
+		SearchStroke.Transparency = Expanded and 0 or 1
+	end
+	SearchBox.Visible = Expanded
+	SearchPlaceholder.Visible = false
+	SearchIcon.Visible = true
+	SearchIcon.Position = UDim2.fromOffset(8, 8)
+	SearchIcon.Size = UDim2.fromOffset(20, 20)
+	SearchBox.Position = UDim2.new(0, 34, 0, 0)
+	SearchBox.Size = UDim2.new(1, -42, 1, 0)
+end
+
+Connect(SearchFrame.InputBegan, function(Input)
+	if not IsMobile or not InviteList.Visible then return end
+	if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+		INVITE_MOBILE_SEARCH_EXPANDED = true
+		ConfigureInviteMobileHeader()
+		Protect(function() SearchBox:CaptureFocus() end)
+	end
+end)
+
+Connect(UserInputService.InputBegan, function(Input, Processed)
+	if not IsMobile or not Hub.InInviteMenu or not InviteList.Visible or Processed then return end
+	if SearchBox and SearchBox:IsFocused() then return end
+	local Delta = 0
+	if Input.KeyCode == Enum.KeyCode.W or Input.KeyCode == Enum.KeyCode.Up then
+		Delta = -70
+	elseif Input.KeyCode == Enum.KeyCode.S or Input.KeyCode == Enum.KeyCode.Down then
+		Delta = 70
+	elseif Input.KeyCode == Enum.KeyCode.Left then
+		INVITE_MOBILE_SEARCH_EXPANDED = false
+		ConfigureInviteMobileHeader()
+		return
+	end
+	if Delta ~= 0 then
+		local MaxY = math.max(0, InviteList.AbsoluteCanvasSize.Y - InviteList.AbsoluteWindowSize.Y)
+		InviteList.CanvasPosition = Vector2.new(0, math.clamp(InviteList.CanvasPosition.Y + Delta, 0, MaxY))
+	end
+end)
+
+-- ============================================================
+-- INVITE LIST
+-- ============================================================
+
+InviteList =
+	Create(
+		"ScrollingFrame",
+		{
+			Name =
+				"InviteList",
+
+			Parent =
+				InvitePage.Frame,
+
+			BackgroundTransparency =
+				1,
+
+			BorderSizePixel =
+				0,
+
+			Size =
+				UDim2.new(
+					1,
+					-20,
+					1,
+					-70
+				),
+
+			Position =
+				UDim2.new(
+					0,
+					10,
+					0,
+					65
+				),
+
+			CanvasSize =
+				UDim2.new(
+					0,
+					0,
+					0,
+					0
+				),
+
+			ScrollBarThickness =
+				6,
+
+			ZIndex =
+				SETTINGS_BASE_ZINDEX
+				+ 5,
+		}
+	)
+
+INVITE_MOBILE_HEADER_DIVIDER = Create("Frame", {
+	Name = "InviteHeaderDivider",
+	Parent = InvitePage.Frame,
+	BackgroundColor3 = Color3.fromRGB(120, 120, 120),
+	BackgroundTransparency = 0,
+	BorderSizePixel = 0,
+	Size = UDim2.new(1, -20, 0, 1),
+	Position = UDim2.new(0, 10, 0, 62),
+	ZIndex = SETTINGS_BASE_ZINDEX + 14,
+})
+
+Connect(InviteList:GetPropertyChangedSignal("CanvasPosition"), function()
+	if INVITE_MOBILE_HEADER_DIVIDER and InviteList.Parent then
+		INVITE_MOBILE_HEADER_DIVIDER.Visible = InviteList.CanvasPosition.Y <= 0
+	end
+end)
+
+InviteHeader.Visible =
+	false
+
+InviteList.Visible =
+	false
+
+InviteFriendsCache =
+	{}
+
+-- Persist invite state in getgenv so rebuilding the invite list,
+-- leaving/reopening the ESC menu, or rerunning this script does not
+-- forget which friends have already received an accepted invite.
+InviteState =
+	getgenv().Settings2016InviteState
+
+if type(InviteState) ~= "table" then
+	InviteState = {}
+	getgenv().Settings2016InviteState = InviteState
+end
+
+CurrentInviteJobId = tostring(game.JobId or "")
+
+if InviteState.JobId ~= CurrentInviteJobId then
+	InviteState = {
+		JobId = CurrentInviteJobId,
+		InvitedFriendIds = {},
+	}
+	getgenv().Settings2016InviteState = InviteState
+end
+
+InvitedFriendIds =
+	InviteState.InvitedFriendIds
+
+if type(InvitedFriendIds) ~= "table" then
+	InvitedFriendIds = {}
+	InviteState.InvitedFriendIds = InvitedFriendIds
+end
+
+PendingInviteFriendIds =
+	{}
+
+InviteRows =
+	{}
+
+-- Legacy Roblox-style presence palette:
+-- Online = cyan       #00A2FF
+-- In Experience = green #00FF00
+-- In Studio = orange  #FFB000
+ONLINE_COLOR =
+	Color3.fromRGB(
+		0,
+		162,
+		255
+	)
+
+IN_EXPERIENCE_COLOR = Color3.fromRGB(2, 183, 90)
+
+IN_STUDIO_COLOR = Color3.fromRGB(246, 136, 2)
+
+OFFLINE_COLOR = Color3.fromRGB(128, 128, 128)
+
+-- ============================================================
+-- FRIEND STATUS
+-- ============================================================
+
+GetInviteStatus =
+	function(
+		Friend
+	)
+
+		if not Friend or not Friend.IsOnline then
+			return
+				"Offline",
+				OFFLINE_COLOR
+		end
+
+		local LocationType =
+			Friend.LocationType
+
+		local NumericLocationType =
+			type(LocationType) == "number"
+			and LocationType
+			or tonumber(LocationType)
+
+		-- Roblox LocationType values:
+		-- 0 = Mobile Website
+		-- 1 = Mobile In-Experience
+		-- 2 = Computer Website
+		-- 3 = Computer Studio
+		-- 4 = Computer In-Experience
+		-- 5 = Xbox Website/App
+		-- 6 = Studio / Team Create
+		if NumericLocationType == 1
+			or NumericLocationType == 4
+		then
+			return
+				"In Experience",
+				IN_EXPERIENCE_COLOR
+		end
+
+		if NumericLocationType == 3
+			or NumericLocationType == 6
+		then
+			return
+				"In Studio",
+				IN_STUDIO_COLOR
+		end
+
+		return
+			"Online",
+			ONLINE_COLOR
+
+	end
+
+-- ============================================================
+-- FETCH FRIENDS
+-- ============================================================
+
+FetchFriends =
+	function()
+
+		local Result =
+			{}
+
+		local Success, Pages =
+			pcall(
+				function()
+
+					return
+						Players:GetFriendsAsync(
+							LocalPlayer.UserId
+						)
+
+				end
+			)
+
+		if
+			Success
+			and Pages
+		then
+
+			while true do
+
+				for _, Friend in ipairs(
+					Pages:GetCurrentPage()
+				) do
+
+					Insert(
+						Result,
+						{
+							Id =
+								Friend.Id,
+
+							Username =
+								Friend.Username
+								or "",
+
+							DisplayName =
+								Friend.DisplayName
+								or Friend.Username
+								or "",
+
+							IsOnline =
+								Friend.IsOnline
+								== true,
+
+							LocationType =
+								nil,
+
+							Invited =
+								InvitedFriendIds[
+									tostring(Friend.Id)
+								]
+								== true,
+						}
+					)
+
+				end
+
+				if Pages.IsFinished then
+					break
+				end
+
+				local Advanced =
+					pcall(
+						function()
+
+							Pages:
+								AdvanceToNextPageAsync()
+
+						end
+					)
+
+				if not Advanced then
+					break
+				end
+
+			end
+
+		end
+
+		local SuccessOnline,
+			OnlineFriends =
+			pcall(
+				function()
+					return
+						LocalPlayer:
+							GetFriendsOnlineAsync(
+								200
+							)
+				end
+			)
+
+		-- Older clients expose GetFriendsOnline instead of the Async form.
+		if not SuccessOnline or not OnlineFriends then
+			SuccessOnline, OnlineFriends =
+				pcall(
+					function()
+						return
+							LocalPlayer:
+								GetFriendsOnline(
+									200
+								)
+					end
+				)
+		end
+
+		if
+			SuccessOnline
+			and type(OnlineFriends) == "table"
+		then
+
+			local OnlineMap =
+				{}
+
+			for _, Online in ipairs(
+				OnlineFriends
+			) do
+
+				local FriendId =
+					Online.VisitorId
+					or Online.UserId
+					or Online.Id
+
+				if FriendId then
+					OnlineMap[tostring(FriendId)] = Online
+				end
+
+			end
+
+			for _, Friend in ipairs(
+				Result
+			) do
+
+				local Online =
+					OnlineMap[tostring(Friend.Id)]
+
+				if Online then
+					Friend.IsOnline =
+						Online.IsOnline ~= false
+					Friend.LocationType =
+						Online.LocationType
+					Friend.PlaceId = Online.PlaceId
+					Friend.GameId = Online.GameId
+					Friend.LastLocation = Online.LastLocation
+				end
+
+			end
+
+		end
+
+		table.sort(
+			Result,
+			function(A, B)
+				local function StatusRank(Friend)
+					local Status = GetInviteStatus(Friend)
+					if Status == "In Experience" then
+						return 1
+					elseif Status == "Online" then
+						return 2
+					elseif Status == "In Studio" then
+						return 3
+					end
+					return 4
+				end
+
+				local ARank = StatusRank(A)
+				local BRank = StatusRank(B)
+				if ARank ~= BRank then
+					return ARank < BRank
+				end
+
+				local AName = DisplayNameSupport and (A.DisplayName or A.Username) or A.Username
+				local BName = DisplayNameSupport and (B.DisplayName or B.Username) or B.Username
+				return string.lower(AName or "") < string.lower(BName or "")
+			end
+		)
+
+		return Result
+
+	end
+
+FriendMatchesSearch =
+	function(
+		Friend,
+		Query
+	)
+
+		Query =
+			string.lower(
+				Query
+				or ""
+			)
+
+		if Query == "" then
+			return true
+		end
+
+		if string.find(
+			string.lower(
+				Friend.Username
+				or ""
+			),
+			Query,
+			1,
+			true
+		) then
+
+			return true
+
+		end
+
+		if
+			DisplayNameSupport
+			and string.find(
+				string.lower(
+					Friend.DisplayName
+					or ""
+				),
+				Query,
+				1,
+				true
+			)
+		then
+
+			return true
+
+		end
+
+		return false
+
+	end
+
+-- ============================================================
+-- INVITE FUNCTION
+-- ============================================================
+
+ActiveInviteOptions =
+		nil
+
+InviteFriend =
+	function(
+		Friend,
+		Button,
+		Label
+	)
+
+		if
+			not Friend
+			or not Friend.Id
+			or Friend.Invited
+		then
+			return
+		end
+
+		local FriendId =
+			tonumber(Friend.Id)
+
+		if not FriendId then
+			return
+		end
+
+		if ActiveInviteOptions then
+			pcall(function()
+				ActiveInviteOptions:Destroy()
+			end)
+			ActiveInviteOptions = nil
+		end
+
+		local FriendKey = tostring(FriendId)
+		PendingInviteFriendIds[FriendKey] = true
+		if Button then
+			Button.Active = false
+			Button.Selectable = false
+		end
+		if Label then
+			Label.Text = "Sending..."
+			Label.TextColor3 = Color3.new(1, 1, 1)
+			Label.TextTransparency = 0
+		end
+
+		local Options = nil
+
+		pcall(function()
+			Options = Instance.new("ExperienceInviteOptions")
+		end)
+
+		local OptionsReady = false
+
+		if Options then
+
+			OptionsReady =
+				pcall(function()
+					Options.InviteUser = FriendId
+				end)
+
+			pcall(function()
+				Options.PromptMessage =
+					"Invite "
+					.. (Friend.DisplayName or Friend.Username or "friend")
+					.. " to join?"
+				end)
+
+		end
+
+		local Success = false
+
+		if Options and OptionsReady then
+
+			ActiveInviteOptions = Options
+
+			Success =
+				Protect(function()
+					SocialService:PromptGameInvite(
+						LocalPlayer,
+						Options
+					)
+				end)
+
+		end
+
+		if not Success then
+
+			if ActiveInviteOptions == Options then
+				ActiveInviteOptions = nil
+			end
+
+			pcall(function()
+				if Options then
+					Options:Destroy()
+				end
+			end)
+
+			PendingInviteFriendIds[FriendKey] = nil
+			if Button then
+				Button.ImageTransparency = 0
+				Button.BackgroundTransparency = 1
+				Button.Active = true
+				Button.Selectable = true
+			end
+
+			if Label then
+				Label.Text = "Invite"
+				Label.TextColor3 = Color3.new(1, 1, 1)
+			end
+
+			return
+		end
+
+		-- ========================================================
+		-- IMMEDIATELY PERSIST INVITED STATE
+		-- ========================================================
+		-- Once Roblox accepts the prompt call, this session treats the
+		-- selected friend as invited. Do not depend on recipient data
+		-- from GameInvitePromptClosed, because some clients return nil
+		-- or an empty recipient list even after the targeted prompt was used.
+
+		Spawn(function()
+			Wait(0.4 + math.random() * 1.5)
+			InvitedFriendIds[FriendKey] = true
+			InviteState.InvitedFriendIds = InvitedFriendIds
+			Friend.Invited = true
+			PendingInviteFriendIds[FriendKey] = nil
+			if RebuildInviteList then
+				RebuildInviteList()
+			end
+		end)
+
+		if Button then
+			Button.ImageTransparency = 1
+			Button.BackgroundTransparency = 1
+			Button.AutoButtonColor = false
+			Button.Active = false
+			Button.Selectable = false
+		end
+
+		if Label then
+			Label.Text = "Sending..."
+			Label.TextColor3 = Color3.new(1, 1, 1)
+			Label.TextTransparency = 0
+		end
+
+		if ActiveInviteOptions == Options then
+			ActiveInviteOptions = nil
+		end
+
+		pcall(function()
+			if Options then
+				Options:Destroy()
+			end
+		end)
+
+		if RebuildInviteList then
+			RebuildInviteList()
+		end
+	end
+
+-- ============================================================
+-- BUILD INVITE ROW
+-- ============================================================
+
+INVITE_ROW_HEIGHT =
+	80
+
+INVITE_ROW_GAP =
+	6
+
+
+INVITED_COLOR =
+	Color3.fromRGB(
+		190,
+		190,
+		190
+	)
+
+BuildInviteRow =
+	function(
+		Friend,
+		Index
+	)
+
+		Friend.Invited =
+			InvitedFriendIds[
+				tostring(Friend.Id)
+			]
+			== true
+
+		local Row =
+			Create(
+				"ImageLabel",
+				{
+					Name =
+						"InviteFriend_"
+						.. tostring(Friend.Id),
+
+					Parent =
+						InviteList,
+
+					BackgroundTransparency =
+						1,
+
+					Image =
+						"rbxasset://textures/ui/dialog_white.png",
+
+					ImageTransparency =
+						0.85,
+
+					ScaleType =
+						Enum.ScaleType.Slice,
+
+					SliceCenter =
+						Rect.new(
+							10,
+							10,
+							10,
+							10
+						),
+
+					Size =
+						UDim2.new(
+							1,
+							0,
+							0,
+							60
+						),
+
+					Position =
+						UDim2.new(
+							0,
+							0,
+							0,
+							PLAYER_LIST_OFFSET
+							+ ((Index - 1) * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP))
+						),
+
+					ZIndex =
+						SETTINGS_BASE_ZINDEX + 2,
+				}
+			)
+
+		Connect(
+			Row.MouseEnter,
+			function()
+				Row.ImageTransparency =
+					0.65
+			end
+		)
+
+		Connect(
+			Row.MouseLeave,
+			function()
+				Row.ImageTransparency =
+					0.85
+			end
+		)
+
+		local AvatarBackground =
+			Create(
+				"Frame",
+				{
+					Name = "AvatarBackground",
+					Parent = Row,
+					BackgroundColor3 = Color3.new(1, 1, 1),
+					BackgroundTransparency = 0,
+					BorderSizePixel = 0,
+					Size = UDim2.new(0, 36, 0, 36),
+					Position = UDim2.new(0, 12, 0.5, -18),
+					ZIndex = SETTINGS_BASE_ZINDEX + 2,
+				})
+
+		Create("UIStroke", {
+			Parent = AvatarBackground,
+			Color = Color3.fromRGB(145, 145, 145),
+			Thickness = 1,
+			Transparency = 0,
+		})
+
+		local Avatar =
+			Create(
+				"ImageLabel",
+				{
+					Name = "Icon",
+					Parent = Row,
+					BackgroundTransparency = 1,
+					Image =
+						"rbxthumb://type=AvatarBust&id="
+						.. tostring(tonumber(Friend.Id) or 1)
+						.. "&w=100&h=100",
+					Size = UDim2.new(0, 36, 0, 36),
+					Position = UDim2.new(0, 12, 0.5, -18),
+					ScaleType = Enum.ScaleType.Fit,
+					ZIndex = SETTINGS_BASE_ZINDEX + 3,
+				}
+			)
+
+		local DisplayText =
+			DisplayNameSupport
+			and (Friend.DisplayName or Friend.Username)
+			or Friend.Username
+
+		Create(
+			"TextLabel",
+			{
+				Name = "DisplayName",
+				Parent = Row,
+				BackgroundTransparency = 1,
+				Font = Enum.Font.SourceSans,
+				TextSize = 24,
+				TextColor3 = Color3.new(1, 1, 1),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Text = DisplayText,
+				Size = UDim2.new(1, -330, 0, 30),
+				Position = UDim2.new(0, 60, 0, 5),
+				ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			}
+		)
+
+		Create(
+			"TextLabel",
+			{
+				Name = "Username",
+				Parent = Row,
+				BackgroundTransparency = 1,
+				Font = Enum.Font.SourceSans,
+				TextSize = 17,
+				TextColor3 = Color3.fromRGB(190, 190, 190),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Text = "@" .. (Friend.Username or ""),
+				Size = UDim2.new(1, -330, 0, 22),
+				Position = UDim2.new(0, 60, 0, 27),
+				ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			}
+		)
+
+		local StatusText, StatusColor =
+			GetInviteStatus(Friend)
+
+		Create(
+			"TextLabel",
+			{
+				Name = "Status",
+				Parent = Row,
+				BackgroundTransparency = 1,
+				Font = Enum.Font.SourceSans,
+				TextSize = 16,
+				TextColor3 = StatusColor,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Text = StatusText,
+				Size = UDim2.new(1, -330, 0, 18),
+				Position = UDim2.new(0, 60, 0, 40),
+				ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			}
+		)
+
+		-- ========================================================
+		-- INVITE STATE DISPLAY
+		-- ========================================================
+
+		if Friend.Invited then
+
+			Create(
+				"TextLabel",
+				{
+					Name = "InvitedLabel",
+					Parent = Row,
+					BackgroundTransparency = 1,
+					Font = Enum.Font.SourceSans,
+					TextSize = 24,
+					TextColor3 = INVITED_COLOR,
+					TextXAlignment = Enum.TextXAlignment.Center,
+					TextYAlignment = Enum.TextYAlignment.Center,
+					Text = "Invited...",
+					Size = UDim2.new(0, INVITE_BUTTON_WIDTH, 0, INVITE_BUTTON_HEIGHT),
+					Position = UDim2.new(1, -(INVITE_BUTTON_WIDTH + 12), 0.5, -(INVITE_BUTTON_HEIGHT / 2)),
+					ZIndex = SETTINGS_BASE_ZINDEX + 3,
+				}
+			)
+
+		else
+
+			local InviteButton, InviteLabel =
+				MakeStyledButton(
+					"InviteButton",
+					"Invite",
+					UDim2.new(0, INVITE_BUTTON_WIDTH, 0, INVITE_BUTTON_HEIGHT)
+				)
+
+			InviteButton.Active = true
+			InviteButton.Selectable = true
+
+			Connect(
+				InviteButton.Activated,
+				function()
+					InviteFriend(
+						Friend,
+						InviteButton,
+						InviteLabel
+					)
+				end
+			)
+
+			InviteButton.Parent = Row
+
+			InviteButton.Position =
+				UDim2.new(
+					1,
+					-(INVITE_BUTTON_WIDTH + 12),
+					0.5,
+					-(INVITE_BUTTON_HEIGHT / 2)
+				)
+
+		end
+
+		return Row
+
+	end
+
+-- ============================================================
+-- REBUILD INVITE LIST
+-- ============================================================
+
+RebuildInviteList =
+	function()
+
+		for _, Row in next,
+			InviteRows
+		do
+
+			pcall(
+				function()
+					Row:Destroy()
+				end
+			)
+
+		end
+
+		InviteRows =
+			{}
+
+		local Count =
+			0
+
+		local Query =
+			SearchBox.Text
+
+		for _, Friend in ipairs(
+			InviteFriendsCache
+		) do
+
+			if FriendMatchesSearch(
+				Friend,
+				Query
+			) then
+
+				Count +=
+					1
+
+				Insert(
+					InviteRows,
+					BuildInviteRow(
+						Friend,
+						Count
+					)
+				)
+
+			end
+
+		end
+
+		InviteList.CanvasSize =
+			UDim2.new(
+				0,
+				0,
+				0,
+				math.max(
+					0,
+					Count * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP)
+					- INVITE_ROW_GAP
+				)
+			)
+
+	end
+
+RefreshInviteFriends =
+	function()
+
+		InviteFriendsCache =
+			FetchFriends()
+
+		RebuildInviteList()
+
+	end
+
+OpenInviteFriends =
+	function()
+
+		Hub.PreviousMenuPage =
+			Hub.CurrentPage
+			or PlayersPage
+
+		Hub.InInviteMenu =
+			true
+
+		Hub.InConfirmation =
+			false
+
+		Hub.HubBar.Visible =
+			false
+
+		Hub.PageClipper.Visible =
+			true
+
+		Hub.BottomButtonFrame.Visible =
+			false
+
+		if HomeButton then
+			HomeButton.Visible =
+				false
+		end
+
+		InviteHeader.Visible =
+			true
+
+		InviteList.Visible =
+			true
+
+		if INVITE_MOBILE_HEADER_DIVIDER then INVITE_MOBILE_HEADER_DIVIDER.Visible = true end
+
+		SearchBox.Text =
+			""
+
+		INVITE_MOBILE_SEARCH_EXPANDED = false
+		if ConfigureInviteMobileHeader then ConfigureInviteMobileHeader() end
+
+		SearchIcon.Visible =
+			true
+
+		SearchPlaceholder.Visible =
+			true
+
+		Hub.PageView.ScrollBarThickness =
+			0
+
+		SwitchToPage(
+			InvitePage,
+			true,
+			true
+		)
+
+		RefreshInviteFriends()
+
+		ResizeHub()
+		if ConfigureInviteMobileHeader then ConfigureInviteMobileHeader() end
+
+	end
+
+-- ============================================================
+-- GAME PAGE
+-- ============================================================
+
+GamePage =
+	MakePage(
+		"GameSettings"
+	)
+
+AddPage(
+	GamePage,
+	"Settings",
+	"rbxasset://textures/ui/Settings/MenuBarIcons/GameSettingsTab.png",
+	170
+)
+
+SavedCoreGuiState =
+	{}
+
+CoreGuiStateCaptured =
+	false
+
+TOPBAR_CORE_GUI_TYPES = {
+	"Chat",
+	"PlayerList",
+	"Backpack",
+	"Health",
+	"EmotesMenu",
+	"SelfView",
+	"Captures",
+}
+
+SetTopbarCoreGuiEnabled =
+	function(Enabled)
+
+		if Enabled then
+
+			if
+				not CoreGuiStateCaptured
+			then
+				return
+			end
+
+			for Name, WasEnabled in next,
+				SavedCoreGuiState
+			do
+
+				Protect(
+					function()
+
+						StarterGui:SetCoreGuiEnabled(
+							Enum.CoreGuiType[Name],
+							WasEnabled
+						)
+
+					end
+				)
+
+			end
+
+			SavedCoreGuiState =
+				{}
+
+			CoreGuiStateCaptured =
+				false
+
+			return
+
+		end
+
+		if CoreGuiStateCaptured then
+			return
+		end
+
+		SavedCoreGuiState =
+			{}
+
+		for _, Name in next,
+			TOPBAR_CORE_GUI_TYPES
+		do
+
+			Protect(
+				function()
+
+					local CoreType =
+						Enum.CoreGuiType[Name]
+
+					if CoreType then
+
+						SavedCoreGuiState[Name] =
+							StarterGui:GetCoreGuiEnabled(
+								CoreType
+							)
+
+						StarterGui:SetCoreGuiEnabled(
+							CoreType,
+							false
+						)
+
+					end
+
+				end
+			)
+
+		end
+
+		CoreGuiStateCaptured =
+			true
+
+	end
+
+CameraDefaultString =
+	IsTouchClient
+	and "Default (Follow)"
+	or "Default (Classic)"
+
+MovementDefaultString =
+	IsTouchClient
+	and "Default (Thumbstick)"
+	or "Default (Keyboard)"
+
+ClickToMoveString =
+	IsTouchClient
+	and "Tap to Move"
+	or "Click to Move"
+
+MakeSectionHeader =
+	function(
+		Page,
+		Title
+	)
+
+		local Row =
+			MakeRow(
+				Page,
+				Title,
+				64
+			)
+
+		local Label =
+			Row:FindFirstChild(
+				Title
+				.. "Label"
+			)
+
+		if Label then
+
+			Label.TextSize =
+				28
+
+			Label.TextColor3 =
+				Color3.fromRGB(
+					190,
+					210,
+					255
+				)
+
+			Label.Size =
+				UDim2.new(
+					1,
+					-20,
+					1,
+					-10
+				)
+
+			Label.Position =
+				UDim2.new(
+					0,
+					10,
+					0,
+					10
+				)
+
+		end
+
+		return Row
+
+	end
+
+MakeButtonRow =
+	function(
+		Page,
+		Name,
+		Text,
+		Clicked
+	)
+
+		local Row =
+			MakeRow(
+				Page,
+				Name
+			)
+
+		local Button =
+			MakeStyledButton(
+				Name
+					.. "Action",
+				Text,
+				UDim2.new(
+					0,
+					300,
+					0,
+					44
+				),
+				Clicked
+			)
+
+		Button.Parent =
+			Row
+
+		Button.Position =
+			UDim2.new(
+				1,
+				-400,
+				0.5,
+				-22
+			)
+
+		return Button, Row
+
+	end
+
+MakeBooleanSelector =
+	function(
+		Page,
+		Name,
+		Object,
+		Property,
+		OnFirst,
+		OffSecond
+	)
+
+		local Current =
+			GetSetting(
+				Object,
+				Property,
+				false
+			)
+
+		local Start =
+			(
+				(
+					Current == true
+					or Current == 1
+				)
+				and 1
+			)
+			or 2
+
+		return MakeSelector(
+			Page,
+			Name,
+			{
+				OnFirst
+					or "On",
+				OffSecond
+					or "Off",
+			},
+			Start,
+			function(Index)
+
+				SetSetting(
+					Object,
+					Property,
+					Index == 1
+				)
+
+			end
+		)
+
+	end
+
+MakeSectionHeader(
+	GamePage,
+	"View & Controls"
+)
+
+MakeOverrideText =
+	function(Row)
+
+	return Create(
+		"TextLabel",
+		{
+			Name = "DevOverrideLabel",
+			Parent = Row,
+			BackgroundTransparency = 1,
+			Font = Enum.Font.SourceSans,
+			TextSize = 24,
+			TextColor3 = Color3.new(1, 1, 1),
+			Text = "Set by Developer",
+			Visible = false,
+			Size = UDim2.new(0, 200, 1, 0),
+			Position = UDim2.new(1, -350, 0, 0),
+			ZIndex = SETTINGS_BASE_ZINDEX + 3,
+		}
+	)
+
+	end
+
+SetChangerVisible =
+	function(
+		Changer,
+		OverrideText,
+		Visible
+	)
+
+	if Changer then
+		Changer:SetInteractable(Visible)
+		Changer.SelectorFrame.Visible = Visible
+	end
+
+	if OverrideText then
+		OverrideText.Visible = not Visible
+	end
+
+	end
+
+ShiftLockMode, ShiftLockOverride = nil, nil
+
+if UserInputService.MouseEnabled and UserInputService.KeyboardEnabled then
+
+	ShiftLockMode =
+		MakeSelector(
+			GamePage,
+			"Shift Lock Switch",
+			{"On", "Off"},
+			(
+				GameSettings.ControlMode
+				== Enum.ControlMode.MouseLockSwitch
+				and 1
+			)
+			or 2,
+			function(Index)
+				Protect(function()
+					GameSettings.ControlMode =
+						(
+							Index == 1
+							and Enum.ControlMode.MouseLockSwitch
+						)
+						or Enum.ControlMode.Classic
+				end)
+			end
+		)
+
+	ShiftLockOverride = MakeOverrideText(ShiftLockMode.RowFrame)
+
+end
+
+CameraItems =
+	(
+		IsTouchClient
+		and Enum.TouchCameraMovementMode
+		or Enum.ComputerCameraMovementMode
+	):GetEnumItems()
+
+CameraNames, CameraMap, CameraStart = {}, {}, 1
+
+for Index, Item in next, CameraItems do
+	local Name =
+		(
+			Item.Name == "Default"
+			and CameraDefaultString
+		)
+		or Item.Name
+
+	CameraNames[Index] = Name
+	CameraMap[Name] = Item
+
+	if
+		(
+			IsTouchClient
+			and GameSettings.TouchCameraMovementMode == Item
+		)
+		or (
+			not IsTouchClient
+			and GameSettings.ComputerCameraMovementMode == Item
+		)
+	then
+		CameraStart = Index
+	end
+end
+
+CameraMode =
+	MakeSelector(
+		GamePage,
+		"Camera Mode",
+		CameraNames,
+		CameraStart,
+		function(_, Value)
+			Protect(function()
+				if IsTouchClient then
+					GameSettings.TouchCameraMovementMode = CameraMap[Value]
+				else
+					GameSettings.ComputerCameraMovementMode = CameraMap[Value]
+				end
+			end)
+		end
+	)
+
+CameraOverride = MakeOverrideText(CameraMode.RowFrame)
+
+MoveItems =
+	(
+		IsTouchClient
+		and Enum.TouchMovementMode
+		or Enum.ComputerMovementMode
+	):GetEnumItems()
+
+MoveNames, MoveMap, MoveStart = {}, {}, 1
+
+for Index, Item in next, MoveItems do
+	local Name = Item.Name
+	if Name == "Default" then
+		Name = MovementDefaultString
+	elseif Name == "KeyboardMouse" then
+		Name = "Keyboard + Mouse"
+	elseif Name == "ClickToMove" then
+		Name = ClickToMoveString
+	end
+
+	MoveNames[Index] = Name
+	MoveMap[Name] = Item
+
+	if
+		(
+			IsTouchClient
+			and GameSettings.TouchMovementMode == Item
+		)
+		or (
+			not IsTouchClient
+			and GameSettings.ComputerMovementMode == Item
+		)
+	then
+		MoveStart = Index
+	end
+end
+
+MovementMode =
+	MakeSelector(
+		GamePage,
+		"Movement Mode",
+		MoveNames,
+		MoveStart,
+		function(_, Value)
+			Protect(function()
+				if IsTouchClient then
+					GameSettings.TouchMovementMode = MoveMap[Value]
+				else
+					GameSettings.ComputerMovementMode = MoveMap[Value]
+				end
+			end)
+		end
+	)
+
+MovementOverride = MakeOverrideText(MovementMode.RowFrame)
+
+UpdateDevChoiceSettings =
+	function(Property)
+
+		if ShiftLockMode and (not Property or Property == "DevEnableMouseLock") then
+			local CanUseShiftLock = true
+			Protect(function()
+				CanUseShiftLock = LocalPlayer.DevEnableMouseLock
+			end)
+			SetChangerVisible(ShiftLockMode, ShiftLockOverride, CanUseShiftLock)
+		end
+
+		if not Property or Property == "DevComputerCameraMode" or Property == "DevTouchCameraMode" then
+			local CanUseCamera = true
+			Protect(function()
+				CanUseCamera =
+					(
+						IsTouchClient
+						and LocalPlayer.DevTouchCameraMode == Enum.DevTouchCameraMovementMode.UserChoice
+					)
+					or (
+						not IsTouchClient
+						and LocalPlayer.DevComputerCameraMode == Enum.DevComputerCameraMovementMode.UserChoice
+					)
+			end)
+			SetChangerVisible(CameraMode, CameraOverride, CanUseCamera)
+		end
+
+		if not Property or Property == "DevComputerMovementMode" or Property == "DevTouchMovementMode" then
+			local CanUseMovement = true
+			Protect(function()
+				CanUseMovement =
+					(
+						IsTouchClient
+						and LocalPlayer.DevTouchMovementMode == Enum.DevTouchMovementMode.UserChoice
+					)
+					or (
+						not IsTouchClient
+						and LocalPlayer.DevComputerMovementMode == Enum.DevComputerMovementMode.UserChoice
+					)
+			end)
+			SetChangerVisible(MovementMode, MovementOverride, CanUseMovement)
+		end
+
+	end
+
+UpdateDevChoiceSettings()
+Connect(LocalPlayer.Changed, UpdateDevChoiceSettings)
+
+MouseStart =
+	Clamp(
+		Floor(
+			(
+				2 / 3
+			)
+			* (
+				math.sqrt(
+					(
+						75 * (GameSettings.MouseSensitivity or 1)
+					)
+					- 11
+				)
+				- 2
+			)
+		),
+		1,
+		10
+	)
+
+MakeSlider(
+	GamePage,
+	"Mouse Sensitivity",
+	10,
+	MouseStart,
+	function(Value)
+		Value = Clamp(Value, 1, 10)
+		SetMouseSensitivity(
+			(0.03 * (Value ^ 2))
+			+ (0.08 * Value)
+			+ 0.2
+		)
+	end,
+	1
+)
+
+MakeBooleanSelector(GamePage, "UI Navigation Toggle", GameSettings, "UiNavigationKeyBindEnabled")
+MakeBooleanSelector(GamePage, "People's Names", GameSettings, "PlayerNamesEnabled", "Show", "Hide")
+MakeBooleanSelector(GamePage, "My Badges", GameSettings, "BadgeVisible", "Show", "Hide")
+
+MakeSectionHeader(GamePage, "Audio")
+
+MakeSlider(
+	GamePage,
+	"Volume",
+	10,
+	Floor((GameSettings.MasterVolume or 1) * 10),
+	function(Value)
+		SetMasterVolume(Value / 10)
+		PlayVolumeChangeSound()
+	end
+)
+
+-- Voice Chat is a real setting only when BOTH conditions are true:
+--   1) this experience has VoiceChatService.EnableDefaultVoice enabled
+--   2) the local account has Voice Chat enabled/eligible
+-- This intentionally fails closed if either check cannot be read.
+GetGameVoiceSupport = function()
+	local Supported = false
+	local Success = false
+	Success = Protect(function()
+		Supported = VoiceChatService.EnableDefaultVoice == true
+		return true
+	end)
+	return Success and Supported
+end
+
+GetAccountVoiceAllowed = function()
+	local Allowed = false
+	local Success = false
+	Success = Protect(function()
+		Allowed = VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
+		return true
+	end)
+	return Success and Allowed
+end
+
+VoiceGameSupported = GetGameVoiceSupport()
+VoiceAccountAllowed = GetAccountVoiceAllowed()
+VoiceOptionAvailable = VoiceGameSupported and VoiceAccountAllowed
+
+if VoiceOptionAvailable then
+	Protect(function()
+		VoiceChatService.UseAudioApi = Enum.AudioApiRollout.Enabled
+	end)
+
+	VoiceChatSelector = MakeSelector(GamePage, "Voice Chat", {"On", "Off"}, VoiceChatEnabled and 1 or 2, function(Index)
+		SetVoiceChatPreference(Index == 1)
+	end)
+
+	-- GetMicDevices/SetMicDevice are deprecated legacy APIs, so accept
+	-- several return shapes instead of assuming one particular tuple layout.
+	GetMicDeviceOptions = function()
+		local Names = {"Default"}
+		MicDeviceMap = {Default = {Name = "", Guid = ""}}
+		local Seen = {Default = true}
+
+		local AddDevice = function(Name, Guid)
+			if not Name then return end
+			Name = tostring(Name)
+			if Name == "" or Seen[Name] then return end
+			Guid = tostring(Guid or "")
+			Seen[Name] = true
+			Insert(Names, Name)
+			MicDeviceMap[Name] = {Name = Name, Guid = Guid}
+		end
+
+		local ParseDevice = function(Device)
+			if type(Device) ~= "table" then return end
+			local Name = Device.Name or Device.name or Device.DisplayName or Device.displayName or Device.DeviceName or Device.deviceName
+			local Guid = Device.Guid or Device.guid or Device.Id or Device.id or Device.DeviceGuid or Device.deviceGuid
+			if Name then
+				AddDevice(Name, Guid)
+			end
+			for _, Child in next, Device do
+				if type(Child) == "table" then ParseDevice(Child) end
+			end
+		end
+
+		if VoiceChatInternal then
+			Protect(function()
+				local Returned = {VoiceChatInternal:GetMicDevices()}
+				for _, Value in next, Returned do
+					ParseDevice(Value)
+				end
+			end)
+		end
+
+		return Names
+	end
+
+	MicDeviceNames = GetMicDeviceOptions()
+	AudioInputSelector = MakeSelector(GamePage, "Audio Input Device", MicDeviceNames, 1, function(Index, Value)
+		local Info = MicDeviceMap[Value]
+		if not Info or not VoiceChatInternal then return end
+		Protect(function() VoiceChatInternal:SetMicDevice(Info.Name, Info.Guid) end)
+	end)
+end
+
+MakeSectionHeader(GamePage, "Chat & Language")
+
+MakeButtonRow(
+	GamePage,
+	"Give Translation Feedback",
+	"Give Feedback",
+	function()
+		RunAfterMenuCloses(function()
+			pcall(function()
+				SocialService:PromptFeedbackSubmissionAsync()
+			end)
+		end)
+	end
+)
+
+MakeBooleanSelector(GamePage, "Automatic Chat Translation", GameSettings, "ChatTranslationEnabled")
+MakeBooleanSelector(GamePage, "Chat Translation Language", GameSettings, "ChatTranslationToggleEnabled")
+MakeBooleanSelector(GamePage, "View Untranslated Messages", GameSettings, "ChatTranslationFTUXShown")
+
+MakeSectionHeader(GamePage, "Display & Graphics")
+
+MakeSelector(
+	GamePage,
+	"Fullscreen",
+	{"On", "Off"},
+	(GameSettings:InFullScreen() and 1) or 2,
+	function()
+		Protect(function()
+			local Success = pcall(function()
+				GuiService:ToggleFullscreen()
+			end)
+			if not Success and keypress and keyrelease then
+				keypress(0x7A)
+				keyrelease(0x7A)
+			end
+		end)
+	end
+)
+
+MakeBooleanSelector(GamePage, "Performance Stats", GameSettings, "PerformanceStatsVisible")
+
+MakeButtonRow(
+	GamePage,
+	"MicroProfiler",
+	"Open",
+	function()
+		RunAfterMenuCloses(function()
+			SetSetting(GameSettings, "OnScreenProfilerEnabled", true)
+			if keypress and keyrelease then
+				keypress(0x75)
+				keyrelease(0x75)
+			end
+		end)
+	end
+)
+
+QualityLevels = {}
+SavedQualityLevels = {}
+
+-- ============================================================
+-- DYNAMIC ENUM DISCOVERY
+-- ============================================================
+
+Protect(
+	function()
+		for _, Item in ipairs(Enum.QualityLevel:GetEnumItems()) do
+
+			local LevelNumber =
+				tonumber(
+					Item.Name:match("Level(%d+)$")
+				)
+
+			if LevelNumber then
+				QualityLevels[LevelNumber] = Item
+			end
+
+		end
+	end
+)
+
+Protect(
+	function()
+		for _, Item in ipairs(Enum.SavedQualitySetting:GetEnumItems()) do
+
+			local LevelNumber =
+				tonumber(
+					Item.Name:match("QualityLevel(%d+)$")
+				)
+
+			if LevelNumber then
+				SavedQualityLevels[LevelNumber] = Item
+			end
+
+		end
+	end
+)
+
+GetAvailableSavedQualityLevels =
+	function()
+
+		local Available = {}
+
+		for Index, Item in pairs(SavedQualityLevels) do
+			if Item then
+				Insert(
+					Available,
+					{
+						Index = Index,
+						Item = Item,
+					}
+				)
+			end
+		end
+
+		table.sort(
+			Available,
+			function(A, B)
+				return A.Index < B.Index
+			end
+		)
+
+		return Available
+
+	end
+
+GetSavedQualityForValue =
+	function(Value)
+
+		Value = tonumber(Value) or 1
+
+		if SavedQualityLevels[Value] then
+			return SavedQualityLevels[Value]
+		end
+
+		local Available =
+			GetAvailableSavedQualityLevels()
+
+		if #Available == 0 then
+			return nil
+		end
+
+		local Alpha =
+			(Value - 1)
+			/
+			math.max(maxSteps - 1, 1)
+
+		local Mapped =
+			1 + (Alpha * (#Available - 1))
+
+		local Selected =
+			Clamp(
+				math.floor(Mapped + 0.5),
+				1,
+				#Available
+			)
+
+		return Available[Selected].Item
+
+	end
+
+GetGraphicsSliderStart =
+	function()
+
+		if maxSteps == 21 then
+
+			local CurrentRenderQuality = nil
+
+			Protect(function()
+				CurrentRenderQuality = RenderingSettings.QualityLevel
+			end)
+
+			if CurrentRenderQuality == Enum.QualityLevel.Automatic then
+				return 11
+			end
+
+			if type(CurrentRenderQuality) == "number" then
+				return Clamp(CurrentRenderQuality, 1, 21)
+			end
+
+			for Index, Quality in pairs(QualityLevels) do
+				if CurrentRenderQuality == Quality then
+					return Clamp(Index, 1, 21)
+				end
+			end
+
+			local SavedValue = nil
+			Protect(function()
+				SavedValue = GameSettings.SavedQualityLevel
+			end)
+
+			if type(SavedValue) == "number" then
+				if SavedValue <= 0 then
+					return 11
+				end
+				return Clamp(SavedValue, 1, 21)
+			end
+
+			local SavedIndex =
+				type(SavedValue) == "EnumItem"
+				and tonumber(tostring(SavedValue):match("QualityLevel(%d+)$"))
+				or tonumber(tostring(SavedValue):match("QualityLevel(%d+)$"))
+
+			return Clamp(SavedIndex or 11, 1, 21)
+
+		end
+
+		if type(GameSettings.SavedQualityLevel) == "number" then
+			if GameSettings.SavedQualityLevel <= 0 then
+				return 5
+			end
+			return Clamp(GameSettings.SavedQualityLevel, 1, 10)
+		end
+
+		if GameSettings.SavedQualityLevel == Enum.SavedQualitySetting.Automatic
+			or RenderingSettings.QualityLevel == Enum.QualityLevel.Automatic
+		then
+			return 5
+		end
+
+		for Index, Quality in pairs(QualityLevels) do
+			if RenderingSettings.QualityLevel == Quality then
+				return Clamp(Index, 1, 10)
+			end
+		end
+
+		local SavedIndex =
+			tonumber(tostring(GameSettings.SavedQualityLevel):match("QualityLevel(%d+)$"))
+
+		return Clamp(SavedIndex or 5, 1, 10)
+
+	end
+
+GraphicsSlider = nil
+GraphicsMode = nil
+
+Protect(function()
+	RenderingSettings.EnableFRM = true
+end)
+
+GetEnumItemByValue =
+	function(EnumType, Value)
+
+		local Items = {}
+
+		Protect(function()
+			Items = EnumType:GetEnumItems()
+		end)
+
+		for _, Item in ipairs(Items) do
+			if Item.Value == Value then
+				return Item
+			end
+		end
+
+		return nil
+
+	end
+
+SetGraphicsQuality =
+	function(NewValue, AutomaticSettingAllowed)
+
+		NewValue = tonumber(NewValue) or 0
+
+		local MaxQualityLevel = 21
+
+		Protect(function()
+			MaxQualityLevel = RenderingSettings:GetMaxQualityLevel()
+		end)
+
+		local NewQualityLevel = 0
+
+		if NewValue > 0 or not AutomaticSettingAllowed then
+
+			if maxSteps == 21 then
+
+				NewQualityLevel =
+					Clamp(
+						NewValue,
+						1,
+						21
+					)
+
+			else
+
+				local Percentage = NewValue / 10
+
+				NewQualityLevel =
+					Floor(
+						(MaxQualityLevel - 1)
+						* Percentage
+					)
+
+				if NewQualityLevel == 20 then
+					NewQualityLevel = 21
+				elseif NewValue == 1 then
+					NewQualityLevel = 1
+				elseif NewValue < 1 and not AutomaticSettingAllowed then
+					NewValue = 1
+					NewQualityLevel = 1
+				elseif NewQualityLevel > MaxQualityLevel then
+					NewQualityLevel = MaxQualityLevel - 1
+				end
+
+			end
+
+		end
+
+		local SavedQuality = nil
+
+		if NewValue <= 0 and AutomaticSettingAllowed then
+			SavedQuality = Enum.SavedQualitySetting.Automatic
+		else
+			SavedQuality = GetSavedQualityForValue(NewValue)
+		end
+
+		local RenderQuality =
+			(
+				NewValue <= 0
+				and AutomaticSettingAllowed
+				and Enum.QualityLevel.Automatic
+			)
+			or GetEnumItemByValue(
+				Enum.QualityLevel,
+				NewQualityLevel
+			)
+			or QualityLevels[NewValue]
+
+		Protect(function()
+			GameSettings.SavedQualityLevel = SavedQuality
+		end)
+
+		if RenderQuality then
+			Protect(function()
+				RenderingSettings.QualityLevel = RenderQuality
+			end)
+			Protect(function()
+				RenderingSettings.EditQualityLevel = RenderQuality
+			end)
+		end
+
+		Protect(function()
+			RenderingSettings.AutoFRMLevel = NewQualityLevel
+		end)
+
+	end
+
+SetGraphicsToAuto =
+	function()
+		if GraphicsSlider then
+			GraphicsSlider:SetInteractable(false)
+		end
+		SetGraphicsQuality(0, true)
+	end
+
+SetGraphicsToManual =
+	function(Value)
+		Value = Clamp(
+			Value or GetGraphicsSliderStart(),
+			1,
+			maxSteps
+		)
+
+		if GraphicsSlider then
+			GraphicsSlider:SetInteractable(true)
+			GraphicsSlider:SetValue(Value)
+		end
+
+		SetGraphicsQuality(Value, false)
+	end
+
+GraphicsMode =
+	MakeSelector(
+		GamePage,
+		"Graphics Mode",
+		{"Automatic", "Manual"},
+		1,
+		function(Index)
+			if Index == 1 then
+				SetGraphicsToAuto()
+			else
+				SetGraphicsToManual(
+					(GraphicsSlider and GraphicsSlider:GetValue())
+					or GetGraphicsSliderStart()
+				)
+			end
+		end
+	)
+
+GraphicsSlider =
+	MakeSlider(
+		GamePage,
+		"Graphics Quality",
+		maxSteps,
+		GetGraphicsSliderStart(),
+		function(Value)
+			Value = Clamp(Value, 1, maxSteps)
+			GraphicsMode:SetSelectionIndex(2, false)
+			GraphicsSlider:SetInteractable(true)
+			SetGraphicsQuality(Value, false)
+		end,
+		1
+	)
+
+-- ============================================================
+-- 21-BAR COMPRESSION
+-- ============================================================
+
+if
+	maxSteps == 21
+	and GraphicsSlider
+	and GraphicsSlider.SliderFrame
+then
+
+	local Holder =
+		GraphicsSlider.SliderFrame
+
+	local Segments = {}
+	local LeftButton = nil
+	local RightButton = nil
+	local Capture = nil
+
+	for _, Child in ipairs(Holder:GetChildren()) do
+
+		if Child:IsA("ImageButton") then
+
+			local HasLeftImage = false
+			local HasRightImage = false
+
+			for _, SubChild in ipairs(Child:GetChildren()) do
+
+				if SubChild:IsA("ImageLabel") then
+
+					if SubChild.Image == SLIDER_LEFT_IMAGE then
+						HasLeftImage = true
+					elseif SubChild.Image == SLIDER_RIGHT_IMAGE then
+						HasRightImage = true
+					end
+
+				end
+
+			end
+
+			if HasLeftImage then
+				LeftButton = Child
+			elseif HasRightImage then
+				RightButton = Child
+			else
+				Insert(Segments, Child)
+			end
+
+		elseif Child:IsA("TextButton") then
+
+			Capture = Child
+
+		end
+
+	end
+
+	table.sort(
+		Segments,
+		function(A, B)
+			return A.Position.X.Offset < B.Position.X.Offset
+		end
+	)
+
+	local SliderStartX = 60
+	local SliderEndX = 411
+	local SliderRange = SliderEndX - SliderStartX
+	local StepSpacing = SliderRange / 20
+	local BarWidth = math.max(12, math.floor(StepSpacing - 2))
+
+	for Index, Segment in ipairs(Segments) do
+
+		if Index <= 21 then
+
+			local X =
+				SliderStartX
+				+ ((Index - 1) * StepSpacing)
+
+			Segment.Size =
+				UDim2.new(
+					0,
+					BarWidth,
+					0,
+					25
+				)
+
+			Segment.Position =
+				UDim2.new(
+					0,
+					math.floor(X + 0.5),
+					0.5,
+					-12
+				)
+
+		end
+
+	end
+
+	if LeftButton then
+
+		LeftButton.AnchorPoint =
+			Vector2.new(1, 0.5)
+
+		LeftButton.Position =
+			UDim2.new(
+				0,
+				SliderStartX - 8,
+				0.5,
+				0
+			)
+
+	end
+
+	if RightButton then
+
+		RightButton.AnchorPoint =
+			Vector2.new(0, 0.5)
+
+		RightButton.Position =
+			UDim2.new(
+				0,
+				SliderEndX + BarWidth + 8,
+				0.5,
+				0
+			)
+
+	end
+
+	if Capture then
+
+		Capture.Position =
+			UDim2.new(
+				0,
+				SliderStartX - 8,
+				0,
+				0
+			)
+
+		Capture.Size =
+			UDim2.new(
+				0,
+				SliderRange + BarWidth + 16,
+				1,
+				0
+			)
+
+		Capture.ZIndex =
+			SETTINGS_BASE_ZINDEX + 5
+
+	end
+
+end
+
+if
+	GameSettings.SavedQualityLevel == Enum.SavedQualitySetting.Automatic
+	or RenderingSettings.QualityLevel == Enum.QualityLevel.Automatic
+	or GameSettings.SavedQualityLevel == 0
+	or RenderingSettings.QualityLevel == 0
+then
+	SetGraphicsToAuto()
+else
+	SetGraphicsToManual(GetGraphicsSliderStart())
+end
+
+MakeSelector(
+	GamePage,
+	"Haptics",
+	{"On", "Off"},
+	(
+		(
+			GetSetting(GameSettings, "HapticStrength", 1) or 0
+		)
+		> 0
+		and 1
+	)
+	or 2,
+	function(Index)
+		SetSetting(GameSettings, "HapticStrength", Index == 1 and 1 or 0)
+	end
+)
+
+MakeBooleanSelector(GamePage, "Reduce Motion", GameSettings, "ReducedMotion")
+
+FpsValues = {"60", "120", "144", "160", "165", "180", "200", "240"}
+FpsStart = 1
+CurrentFps = tostring(GetSetting(GameSettings, "FramerateCap", 60))
+
+for Index, Value in next, FpsValues do
+	if Value == CurrentFps then
+		FpsStart = Index
+	end
+end
+
+MakeSelector(
+	GamePage,
+	"Maximum Frame Rate",
+	FpsValues,
+	FpsStart,
+	function(_, Value)
+		local Cap = tonumber(Value) or 60
+		SetSetting(GameSettings, "FramerateCap", Cap)
+		if setfpscap then
+			Protect(function() setfpscap(Cap) end)
+		end
+	end
+)
+
+MakeBooleanSelector(GamePage, "VR", GameSettings, "VREnabled")
+
+-- ============================================================
+-- REPORT PAGE
+-- ============================================================
+
+ReportPage = MakePage("ReportAbuse")
+AddPage(ReportPage, "Report", "rbxasset://textures/ui/Settings/MenuBarIcons/ReportAbuseTab.png", 150)
+
+TypeOfAbuse = nil
+WhichPlayer = nil
+NameToPlayer = {}
+PlayerNames = {}
+Submit = nil
+SubmitLabel = nil
+Description = nil
+ReportMode = nil
+
+SetSubmitActive =
+	function(Active)
+		if not Submit or not SubmitLabel then
+			return
+		end
+		Submit.Selectable = Active
+		Submit.ImageTransparency = Active and 0 or 0.65
+		Submit.ZIndex = SETTINGS_BASE_ZINDEX + (Active and 3 or 1)
+		SubmitLabel.ZIndex = Submit.ZIndex + 1
+		SubmitLabel.TextTransparency = Active and 0 or 0.55
+	end
+
+GetReportDescription =
+	function()
+		local Text = Description and Description.Text or ""
+		if Text == "" or Text == DESCRIPTION_PLACEHOLDER then
+			return REPORT_DESCRIPTION_FALLBACK
+		end
+		return Text
+	end
+
+CanSubmitReport =
+	function(Mode)
+		if not TypeOfAbuse or not Mode then return false end
+		if not TypeOfAbuse:GetSelectedIndex() then return false end
+		if Mode:GetSelectedIndex() == 2 and (not WhichPlayer or not WhichPlayer:GetSelectedValue()) then
+			return false
+		end
+		return true
+	end
+
+RefreshSubmitState = function(Mode)
+	SetSubmitActive(CanSubmitReport(Mode))
+end
+
+ReportMode =
+	MakeSelector(
+		ReportPage,
+		"Game or Player?",
+		{"Game", "Player"},
+		1,
+		function()
+			if not TypeOfAbuse or not WhichPlayer then return end
+			WhichPlayer:ResetSelectionIndex()
+			TypeOfAbuse:ResetSelectionIndex()
+			if ReportMode:GetSelectedIndex() == 1 then
+				TypeOfAbuse:UpdateDropDownList(ABUSE_TYPES_GAME)
+				WhichPlayer:SetInteractable(false)
+			else
+				TypeOfAbuse:UpdateDropDownList(ABUSE_TYPES_PLAYER)
+				WhichPlayer:SetInteractable(#PlayerNames > 0)
+			end
+			RefreshSubmitState(ReportMode)
+		end
+	)
+
+ReportMode:SetSize(UDim2.new(0, 400, 0, 50))
+ReportMode:SetPosition(UDim2.new(1, -400, 0.5, -25))
+
+WhichPlayer =
+	MakeDropDown(
+		ReportPage,
+		"Which Player?",
+		PlayerNames,
+		nil,
+		function() RefreshSubmitState(ReportMode) end
+	)
+
+WhichPlayer:SetInteractable(false)
+
+RefreshReportPlayers =
+	function()
+		PlayerNames = {}
+		NameToPlayer = {}
+		for _, Player in next, Players:GetPlayers() do
+			if Player ~= LocalPlayer and (Player.UserId or Player.userId or 0) > 0 then
+				Insert(PlayerNames, Player.Name)
+				NameToPlayer[Player.Name] = Player
+			end
+		end
+		if WhichPlayer then
+			WhichPlayer:UpdateDropDownList(PlayerNames)
+			WhichPlayer:SetInteractable(ReportMode:GetSelectedIndex() == 2 and #PlayerNames > 0)
+		end
+		if #PlayerNames == 0 and ReportMode:GetSelectedIndex() == 2 then
+			ReportMode:SetSelectionIndex(1, true)
+		end
+		RefreshSubmitState(ReportMode)
+	end
+
+OpenReportPlayer =
+	function(Player)
+		if not Player or Player == LocalPlayer then return end
+		RefreshReportPlayers()
+		ReportMode:SetSelectionIndex(2, true)
+		WhichPlayer:SetSelectionByValue(Player.Name, true)
+		if Hub.Visible then
+			SwitchToPage(ReportPage)
+		else
+			SetVisibility(true, false, ReportPage)
+		end
+	end
+
+TypeOfAbuse =
+	MakeDropDown(
+		ReportPage,
+		"Type Of Abuse",
+		ABUSE_TYPES_GAME,
+		nil,
+		function() RefreshSubmitState(ReportMode) end
+	)
+
+DescriptionRow = MakeRow(ReportPage, "")
+Description = Create(
+	"TextBox",
+	{
+		Parent = DescriptionRow,
+		BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+		BackgroundTransparency = 0.5,
+		BorderSizePixel = 0,
+		ClearTextOnFocus = false,
+		Font = Enum.Font.SourceSans,
+		TextSize = 24,
+		TextColor3 = Color3.fromRGB(49, 49, 49),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		TextWrapped = true,
+		Text = DESCRIPTION_PLACEHOLDER,
+		Size = UDim2.new(1, -20, 0, 100),
+		Position = UDim2.new(0, 10, 0, 0),
+		ZIndex = SETTINGS_BASE_ZINDEX + 3,
+	}
+)
+
+Connect(Description.Focused, function()
+	if Description.Text == DESCRIPTION_PLACEHOLDER then
+		Description.Text = ""
+	end
+end)
+
+Connect(Description.FocusLost, function()
+	if Description.Text == "" then
+		Description.Text = DESCRIPTION_PLACEHOLDER
+	end
+end)
+
+DescriptionRow.Size = UDim2.new(1, 0, 0, 110)
+ReportPage.Frame.Size = UDim2.new(1, 0, 0, ReportPage.Frame.Size.Y.Offset + 60)
+
+Submit, SubmitLabel =
+	MakeStyledButton(
+		"SubmitButton",
+		"Submit",
+		UDim2.new(0, 198, 0, 50),
+		function()
+			if not CanSubmitReport(ReportMode) then return end
+
+			local IsPlayerReport = ReportMode:GetSelectedIndex() == 2
+			local Reason = ((IsPlayerReport and ABUSE_TYPES_PLAYER) or ABUSE_TYPES_GAME)[TypeOfAbuse:GetSelectedIndex()]
+			local TargetPlayer = IsPlayerReport and NameToPlayer[WhichPlayer:GetSelectedValue()] or nil
+			local DescriptionText = GetReportDescription()
+
+			local Success = Protect(function()
+				Players.ReportAbuse(LocalPlayer, TargetPlayer, Reason, DescriptionText)
+			end)
+
+			if not Success then
+				Success = Protect(function()
+					Players:ReportAbuse(TargetPlayer, Reason, DescriptionText)
+				end)
+			end
+
+			local AlertText = "Thanks for your report! Our moderators will review the chat logs and evaluate what happened."
+			if Reason == "Cheating/Exploiting" then
+				AlertText = "Thanks for your report! We've recorded your report for evaluation."
+			elseif Reason == "Inappropriate Username" then
+				AlertText = "Thanks for your report! Our moderators will evaluate the username."
+			elseif Reason == "Bad Model or Script" or Reason == "Inappropriate Content" or Reason == "Offsite Link" or Reason == "Offsite Links" then
+				AlertText = "Thanks for your report! Our moderators will review the place and make a determination."
+			end
+			if not Success then
+				AlertText = "Report could not be submitted in this environment."
+			end
+
+			ShowAlert(AlertText, "Ok", function()
+				ReportMode:SetSelectionIndex(1, true)
+				WhichPlayer:ResetSelectionIndex()
+				TypeOfAbuse:ResetSelectionIndex()
+				Description.Text = DESCRIPTION_PLACEHOLDER
+				SetVisibility(false)
+			end)
+		end
+	)
+
+Submit.Parent = ReportPage.Frame
+Submit.Position = UDim2.new(0.5, -99, 0, ReportPage.Frame.Size.Y.Offset + 10)
+ReportPage.Frame.Size = UDim2.new(1, 0, 0, ReportPage.Frame.Size.Y.Offset + 70)
+SetSubmitActive(false)
+RefreshReportPlayers()
+Connect(Players.PlayerAdded, RefreshReportPlayers)
+Connect(Players.PlayerRemoving, function() task.defer(RefreshReportPlayers) end)
+
+-- ============================================================
+-- HELP PAGE
+-- ============================================================
+
+HelpPage = MakePage("Help")
+AddPage(HelpPage, "Help", "rbxasset://textures/ui/Settings/MenuBarIcons/HelpTab.png", 130)
+
+CreateHelpGroup =
+	function(Title, Bindings, Position)
+		local Group = Create(
+			"Frame",
+			{
+				Parent = HelpPage.Frame,
+				Name = "PCGroupFrame" .. Title,
+				BackgroundTransparency = 1,
+				Position = Position,
+				Size = UDim2.new(1 / 3, -4, 0, 0),
+				ZIndex = SETTINGS_BASE_ZINDEX + 2,
+			}
+		)
+
+		Create("TextLabel", {
+			Parent = Group,
+			BackgroundTransparency = 1,
+			Text = Title,
+			Font = Enum.Font.SourceSansBold,
+			TextSize = 18,
+			TextColor3 = Color3.new(1, 1, 1),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size = UDim2.new(1, -9, 0, 30),
+			Position = UDim2.new(0, 9, 0, 0),
+			ZIndex = SETTINGS_BASE_ZINDEX + 3,
+		})
+
+		for Index, Binding in ipairs(Bindings) do
+			local Row = Create("Frame", {
+				Parent = Group,
+				BackgroundColor3 = Color3.new(0, 0, 0),
+				BackgroundTransparency = 0.65,
+				BorderSizePixel = 0,
+				Size = UDim2.new(1, 0, 0, 42),
+				Position = UDim2.new(0, 0, 0, 30 + ((Index - 1) * 44)),
+				ZIndex = SETTINGS_BASE_ZINDEX + 2,
+			})
+			Create("TextLabel", {
+				Parent = Row,
+				BackgroundTransparency = 1,
+				Text = Binding[1],
+				Font = Enum.Font.SourceSansBold,
+				TextSize = 18,
+				TextColor3 = Color3.new(1, 1, 1),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0.45, -9, 1, 0),
+				Position = UDim2.new(0, 9, 0, 0),
+				ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			})
+			Create("TextLabel", {
+				Parent = Row,
+				BackgroundTransparency = 1,
+				Text = Binding[2],
+				Font = Enum.Font.SourceSans,
+				TextSize = 18,
+				TextColor3 = Color3.new(1, 1, 1),
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Size = UDim2.new(0.55, 0, 1, 0),
+				Position = UDim2.new(0.5, -4, 0, 0),
+				ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			})
+		end
+
+		Group.Size = UDim2.new(Group.Size.X.Scale, Group.Size.X.Offset, 0, 30 + (#Bindings * 44))
+		return Group
+	end
+
+IsOSX = UserInputService:GetPlatform() == Enum.Platform.OSX
+
+CharMoveFrame = CreateHelpGroup("Character Movement", {
+	{"Move Forward", "W/Up Arrow"},
+	{"Move Backward", "S/Down Arrow"},
+	{"Move Left", "A/Left Arrow"},
+	{"Move Right", "D/Right Arrow"},
+	{"Jump", "Space"},
+}, UDim2.new(0, 0, 0, 0))
+
+CreateHelpGroup("Accessories", {
+	{"Equip Tools", "1,2,3..."},
+	{"Unequip Tools", "1,2,3..."},
+	{"Drop Tool", "Backspace"},
+	{"Use Tool", "Left Mouse Button"},
+	{"Drop Hats", "+"},
+}, UDim2.new(1 / 3, 4, 0, 0))
+
+CreateHelpGroup("Misc", {
+	{"Screenshot", "Print Screen"},
+	{"Record Video", IsOSX and "F12/fn + F12" or "F12"},
+	{"Dev Console", IsOSX and "F9/fn + F9" or "F9"},
+	{"Mouselock", "Shift"},
+	{"Graphics Level", IsOSX and "F10/fn + F10" or "F10"},
+	{"Fullscreen", IsOSX and "F11/fn + F11" or "F11"},
+}, UDim2.new(2 / 3, 8, 0, 0))
+
+CreateHelpGroup("Camera Movement", {
+	{"Rotate", "Right Mouse Button"},
+	{"Zoom In/Out", "Mouse Wheel"},
+	{"Zoom In", "I"},
+	{"Zoom Out", "O"},
+}, UDim2.new(0, 0, 0, CharMoveFrame.Size.Y.Offset + 50))
+
+MenuFrame = CreateHelpGroup("Menu Items", {
+	{"ROBLOX Menu", "ESC"},
+	{"Backpack", "~"},
+	{"Playerlist", "TAB"},
+	{"Chat", "/"},
+}, UDim2.new(1 / 3, 4, 0, CharMoveFrame.Size.Y.Offset + 50))
+
+HelpPage.Frame.Size = UDim2.new(1, 0, 0, MenuFrame.Position.Y.Offset + MenuFrame.Size.Y.Offset)
+
+-- ============================================================
+-- MOBILE HELP / REPORT LAYOUT
+-- ============================================================
+
+ApplyMobileReportLayout = function()
+	if not IsMobile or not ReportPage then return end
+	ReportPage.Frame.Size = UDim2.new(1, 0, 0, 269)
+	local Layout = ReportPage.Frame:FindFirstChild("RowListLayout")
+	if Layout then Layout.Parent = nil end
+	local Rows = {
+		{ReportMode and ReportMode.RowFrame, 0},
+		{WhichPlayer and WhichPlayer.RowFrame, 50},
+		{TypeOfAbuse and TypeOfAbuse.RowFrame, 100},
+		{DescriptionRow, 155},
+	}
+	for _, Info in ipairs(Rows) do
+		local Row = Info[1]
+		if Row then
+			Row.Position = UDim2.new(0, 0, 0, Info[2])
+			Row.Size = UDim2.new(1, 0, 0, 50)
+			Row.LayoutOrder = Info[2]
+		end
+	end
+	for _, Selector in ipairs({ReportMode, WhichPlayer, TypeOfAbuse}) do
+		if Selector and Selector.SelectorFrame then
+			Selector.SelectorFrame.Size = UDim2.new(0.6, 0, 0, 50)
+			Selector.SelectorFrame.Position = UDim2.new(1, 0, 0.5, 0)
+			Selector.SelectorFrame.AnchorPoint = Vector2.new(1, 0.5)
+		end
+	end
+	if DescriptionRow and Description then
+		DescriptionRow.Position = UDim2.new(0, 0, 0, 155)
+		DescriptionRow.Size = UDim2.new(1, 0, 0, 50)
+		Description.Position = UDim2.new(1, 0, 0.5, 5)
+		Description.Size = UDim2.new(0.6, 0, 1, 0)
+		Description.AnchorPoint = Vector2.new(1, 0.5)
+		Description.TextSize = 24
+	end
+	if Submit then
+		Submit.Position = UDim2.new(0.5, 0, 0, 214)
+		Submit.Size = UDim2.new(0, 198, 0, 50)
+		Submit.AnchorPoint = Vector2.new(0.5, 0)
+	end
+end
+
+BuildMobileHelpPage = function()
+	if not IsMobile or not HelpPage or HelpPage.Frame:FindFirstChild("HelpFrameTouch") then return end
+	for _, Child in ipairs(HelpPage.Frame:GetChildren()) do
+		if Child.Name:sub(1, 12) == "PCGroupFrame" then Child.Visible = false end
+	end
+	local HelpFrame = Create("Frame", {
+		Name = "HelpFrameTouch", Parent = HelpPage.Frame, BackgroundTransparency = 1, BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 238), Position = UDim2.new(0, 0, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 1,
+	})
+	local function MakeTouchHint(Name, Text, Position, Size, Image, ImagePosition, ImageSize)
+		local Frame = Create("TextLabel", {
+			Name = Name .. "Frame", Parent = HelpFrame, BackgroundTransparency = 1, BorderSizePixel = 0,
+			Text = "Label", TextSize = 8, TextColor3 = Color3.fromRGB(27, 42, 53), Font = Enum.Font.Legacy,
+			Size = Size, Position = Position, ZIndex = SETTINGS_BASE_ZINDEX + 1,
+		})
+		Create("ImageLabel", {
+			Name = Name .. "BackgroundImage", Parent = Frame, BackgroundTransparency = 1,
+			Image = "rbxasset://textures/ui/Settings/Radial/RadialLabel.png", Size = UDim2.new(1.25, 0, 1.25, 0),
+			Position = UDim2.new(-0.125, 0, -0.065, 0), ScaleType = Enum.ScaleType.Slice,
+			SliceCenter = Rect.new(12, 2, 65, 21), ZIndex = SETTINGS_BASE_ZINDEX + 2,
+		})
+		if Image then
+			Create("ImageLabel", {Name = Name .. "Image", Parent = Frame, BackgroundTransparency = 1, Image = Image,
+				Size = ImageSize or UDim2.fromOffset(38, 52), Position = ImagePosition or UDim2.new(0.5, -19, 1, 3),
+				ScaleType = Enum.ScaleType.Stretch, ZIndex = SETTINGS_BASE_ZINDEX + 2})
+		end
+		local Label = Create("TextLabel", {Name = Name .. "Label", Parent = Frame, BackgroundTransparency = 1, Text = Text,
+			Font = Enum.Font.SourceSansBold, TextSize = 14, TextColor3 = Color3.new(1, 1, 1), TextWrapped = true, TextScaled = true,
+			TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, Size = UDim2.new(1, 0, 1, 0),
+			Position = UDim2.new(0, 0, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 3})
+		Create("UITextSizeConstraint", {Parent = Label, MinTextSize = 10, MaxTextSize = 18})
+	end
+	MakeTouchHint("Zoom In/Out", "Zoom In/Out", UDim2.new(0.15, -60, 0.02, 0), UDim2.fromOffset(120, 25),
+		"rbxasset://textures/ui/Settings/Help/ZoomGesture.png", UDim2.new(0.5, -26, 1, 3), UDim2.fromOffset(53, 59))
+	MakeTouchHint("Rotate Camera", "Rotate Camera", UDim2.new(0.85, -60, 0.02, 0), UDim2.fromOffset(120, 25),
+		"rbxasset://textures/ui/Settings/Help/RotateCameraGesture.png", UDim2.new(0.5, -32, 1, 3), UDim2.fromOffset(65, 48))
+	MakeTouchHint("Use Tool", "Use Tool", UDim2.new(0.5, -60, 0.5, -60), UDim2.fromOffset(120, 25),
+		"rbxasset://textures/ui/Settings/Help/UseToolGesture.png")
+	MakeTouchHint("Move", "Move", UDim2.new(0.15, -38, 0.85, -25), UDim2.fromOffset(77, 25),
+		"rbxasset://textures/ui/Settings/Help/RotateCameraGesture.png", UDim2.new(0.5, -32, 1, 3), UDim2.fromOffset(65, 48))
+	MakeTouchHint("Jump", "Jump", UDim2.new(0.85, -60, 0.85, -25), UDim2.fromOffset(77, 25),
+		"rbxasset://textures/ui/Settings/Help/UseToolGesture.png")
+	MakeTouchHint("Equip/Unequip Tools", "Equip/Unequip Tools", UDim2.new(0.5, -60, 0.64, 0), UDim2.fromOffset(120, 25), nil)
+	HelpPage.Frame.Size = UDim2.new(1, 0, 0, 238)
+end
+
+-- ============================================================
+-- RBXM SUITE CUSTOM RECORDER OVERLAY (PC ONLY)
+-- ============================================================
+
+RecorderGui = getgenv().Settings2016RecorderGui
+RecorderActualButton = nil
+RecorderTimeLabel = nil
+RecorderRunning = false
+RecorderStartedAt = 0
+RecorderThread = nil
+IgnoreRecorderF12Until = 0
+RecorderPageButton = nil
+RecorderPageButtonLabel = nil
+PositionRecorderGui = nil
+
+UpdateRecorderPageButton =
+	function()
+		if not RecorderPageButton or not RecorderPageButtonLabel then
+			return
+		end
+		RecorderPageButtonLabel.Text =
+			RecorderRunning
+			and "Stop Recording"
+			or "Record Video"
+	end
+
+LoadRecorderGui =
+	function()
+
+		if IsMobile then
+			return nil
+		end
+
+		if RecorderGui and RecorderGui.Parent then
+			RecorderGui.Enabled = false
+			return RecorderGui
+		end
+
+		local Suite = getgenv().Suite
+
+		if not Suite then
+			local Success, Result =
+				pcall(function()
+					return
+						loadstring(
+							game:HttpGet(
+								"https://raw.githubusercontent.com/yeku/forks/refs/heads/main/Scripts/RBXMSuite.luau"
+							)
+						)()
+				end)
+
+			if not Success then
+				warn(
+						"Settings2016: failed to load RBXM Suite:",
+						Result
+					)
+				return nil
+			end
+
+			Suite = Result
+			getgenv().Suite = Suite
+		end
+
+		local Success, Result =
+			pcall(function()
+				return
+					Suite.launch(
+						"rbxassetid://140196633617691",
+						{
+							runscripts = false,
+							deferred = true,
+							nocache = false,
+							nocirculardeps = true,
+							debug = false,
+							verbose = false,
+						}
+					)
+			end)
+
+		if not Success then
+			warn(
+					"Settings2016: failed to load recorder RBXM:",
+					Result
+				)
+			return nil
+		end
+
+		RecorderGui = Result
+
+		if not RecorderGui then
+			warn("Settings2016: RBXM Suite returned no recorder instance.")
+			return nil
+		end
+
+		local ParentSuccess =
+			pcall(function()
+				RecorderGui.Parent = CoreGui
+			end)
+
+		if not ParentSuccess then
+			warn("Settings2016: failed to parent recorder ScreenGui to CoreGui.")
+			return nil
+		end
+
+		if not RecorderGui:IsA("ScreenGui") then
+			warn("Settings2016: recorder asset is not a ScreenGui.")
+			return nil
+		end
+
+		RecorderGui.Enabled = false
+		RecorderGui.DisplayOrder = 10001
+		getgenv().Settings2016RecorderGui = RecorderGui
+
+		return RecorderGui
+
+	end
+
+FindRecorderControls =
+	function()
+
+		local Gui = LoadRecorderGui()
+
+		if not Gui then
+			return false
+		end
+
+		local Button =
+			Gui:FindFirstChild(
+				"Button",
+				true
+			)
+
+		local ActualButton =
+			Button
+			and Button:FindFirstChild(
+				"ActualButton",
+				true
+			)
+
+		if
+			not ActualButton
+			or not ActualButton:IsA("GuiButton")
+		then
+			ActualButton =
+				Gui:FindFirstChild(
+					"ActualButton",
+					true
+				)
+		end
+
+		local TextLabel =
+			ActualButton
+			and ActualButton:FindFirstChild(
+				"TextLabel",
+				true
+			)
+
+		if
+			not TextLabel
+			or not TextLabel:IsA("TextLabel")
+		then
+			TextLabel =
+				Gui:FindFirstChild(
+					"TextLabel",
+					true
+				)
+		end
+
+		RecorderActualButton = ActualButton
+		RecorderTimeLabel = TextLabel
+
+		-- Do not position the recorder from inside control discovery.
+		-- PositionRecorderGui is declared/assigned separately and all callers
+		-- invoke it only after this function has returned.
+
+		if RecorderTimeLabel then
+			RecorderTimeLabel.Text = "0:00"
+		end
+
+		return
+			RecorderActualButton ~= nil
+			and RecorderTimeLabel ~= nil
+
+	end
+
+PositionRecorderGui =
+	function()
+
+		if IsMobile or not RecorderGui or not RecorderGui.Parent then
+			return
+		end
+
+		if not SystemMenuButton or not SystemMenuButton.Parent then
+			return
+		end
+
+		local Button =
+			RecorderGui:FindFirstChild(
+				"Button",
+				true
+			)
+
+		if not Button or not Button:IsA("GuiObject") then
+			return
+		end
+
+		local Width = Button.AbsoluteSize.X
+		if Width <= 0 then Width = 1 end
+
+		local SystemPosition = SystemMenuButton.AbsolutePosition
+		local Parent = Button.Parent
+		local ParentPosition =
+			(Parent and Parent:IsA("GuiObject") and Parent.AbsolutePosition)
+			or Vector2.new(0, 0)
+
+		local TargetX =
+			SystemPosition.X
+			- Width
+			+ RECORDER_OFFSET_X
+
+		local TargetY =
+			SystemPosition.Y
+			+ RECORDER_OFFSET_Y
+
+		-- When the custom ESC menu is closed, the 40x40
+		-- SystemMenuButton itself moves 4 px left/up.
+		-- Compensate the recorder by 4 px right/down so
+		-- the recorder stays in the same screen position.
+		if not Hub.Visible then
+			TargetX = TargetX + 4
+			TargetY = TargetY + 4
+		end
+
+		Button.Position =
+			UDim2.fromOffset(
+				TargetX - ParentPosition.X,
+				TargetY - ParentPosition.Y
+			)
+
+	end
+
+ToggleNativeRecording =
+	function()
+
+		IgnoreRecorderF12Until =
+			tick() + 0.5
+
+		local Success =
+			Protect(function()
+				StarterGui:SetCore(
+					"ToggleRecording"
+				)
+			end)
+
+		if Success then
+			return true
+		end
+
+		if keypress and keyrelease then
+			return Protect(function()
+				keypress(KEY_F12)
+				keyrelease(KEY_F12)
+			end)
+		end
+
+		return false
+
+	end
+
+FormatRecorderTime =
+	function(Seconds)
+
+		Seconds =
+			math.max(
+				0,
+				Floor(Seconds or 0)
+			)
+
+		local Minutes =
+			Floor(Seconds / 60)
+
+		local Remaining =
+			Seconds
+			- (Minutes * 60)
+
+		return
+			tostring(Minutes)
+			.. ":"
+			.. string.format("%02d", Remaining)
+
+	end
+
+StopCustomRecording =
+	function(ToggleNative)
+
+		if not RecorderRunning then
+			if RecorderGui then
+				RecorderGui.Enabled = false
+			end
+			return
+		end
+
+		RecorderRunning = false
+		RecorderThread = nil
+
+		if RecorderGui then
+			RecorderGui.Enabled = false
+		end
+
+		if RecorderTimeLabel then
+			RecorderTimeLabel.Text = "0:00"
+		end
+
+		UpdateRecorderPageButton()
+
+		if ToggleNative then
+			ToggleNativeRecording()
+		end
+
+	end
+
+StartCustomRecording =
+	function(ToggleNative)
+
+		if IsMobile then
+			return false
+		end
+
+		if RecorderRunning then
+			return true
+		end
+
+		if not FindRecorderControls() then
+			warn(
+				"Settings2016: recorder requires ScreenGui -> Button -> ActualButton -> TextLabel."
+			)
+			return false
+		end
+
+		if not RecorderGui or not RecorderTimeLabel then
+			warn("Settings2016: recorder controls became unavailable.")
+			return false
+		end
+
+		-- The custom RBXM recorder UI must not depend on the legacy/native
+		-- Roblox recording API existing. The overlay is our recording state UI.
+		if ToggleNative then
+			ToggleNativeRecording()
+		end
+
+		RecorderRunning = true
+		RecorderStartedAt = tick()
+		PositionRecorderGui()
+		RecorderGui.Enabled = true
+		RecorderTimeLabel.Text = "0:00"
+		UpdateRecorderPageButton()
+
+		RecorderThread =
+			Spawn(function()
+
+				while
+					RecorderRunning
+					and RecorderGui
+					and RecorderGui.Parent
+				do
+
+					if RecorderTimeLabel then
+						RecorderTimeLabel.Text =
+							FormatRecorderTime(
+								tick()
+								- RecorderStartedAt
+							)
+					end
+
+					Wait(1)
+
+				end
+
+			end)
+
+		return true
+
+	end
+
+ToggleCustomRecording =
+	function()
+
+		if RecorderRunning then
+			StopCustomRecording(true)
+		else
+			StartCustomRecording(true)
+		end
+
+	end
+
+if not IsMobile then
+
+	FindRecorderControls()
+
+	if RecorderActualButton then
+
+		Connect(
+			RecorderActualButton.MouseButton1Click,
+			function()
+				if RecorderRunning then
+					StopCustomRecording(true)
+				end
+			end
+		)
+
+		Connect(
+			RecorderActualButton.Activated,
+			function()
+				if RecorderRunning then
+					StopCustomRecording(true)
+				end
+			end
+		)
+
+	end
+
+end
+
+-- ============================================================
+-- END RBXM SUITE CUSTOM RECORDER OVERLAY
+-- ============================================================
+
+-- ============================================================
+-- RECORD PAGE
+-- ============================================================
+
+Protect(function()
+	local Platform = UserInputService:GetPlatform()
+	if Platform == Enum.Platform.Windows or Platform == Enum.Platform.OSX then
+		RecordPage = MakePage("Record")
+		AddPage(RecordPage, "Record", "rbxasset://textures/ui/Settings/MenuBarIcons/RecordTab.png", 130)
+
+		local ScreenshotTitle = MakeText(
+			RecordPage.Frame,
+			"Screenshot",
+			UDim2.new(1, 0, 0, 36),
+			UDim2.new(0, 10, 0.05, 0)
+		)
+		ScreenshotTitle.TextSize = 36
+		ScreenshotTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+		local ScreenshotBody = MakeText(
+			ScreenshotTitle,
+			"By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer.",
+			UDim2.new(1, -10, 0, 70),
+			UDim2.new(0, 0, 1, 0)
+		)
+		ScreenshotBody.Font = Enum.Font.SourceSans
+		ScreenshotBody.TextSize = 24
+		ScreenshotBody.TextXAlignment = Enum.TextXAlignment.Left
+		ScreenshotBody.TextYAlignment = Enum.TextYAlignment.Top
+
+		local ScreenshotButton = MakeStyledButton(
+			"ScreenshotButton",
+			"Take Screenshot",
+			UDim2.new(0, 300, 0, 44),
+			function()
+				RunAfterMenuCloses(function()
+					pcall(function()
+						if keypress and keyrelease then
+							keypress(KEY_PRINT_SCREEN)
+							keyrelease(KEY_PRINT_SCREEN)
+						else
+							StarterGui:SetCore("TakeScreenshot")
+						end
+					end)
+				end)
+			end
+		)
+		ScreenshotButton.Parent = ScreenshotBody
+		ScreenshotButton.Position = UDim2.new(0, 400, 1, 0)
+
+		local VideoTitle = MakeText(
+			RecordPage.Frame,
+			"Video",
+			UDim2.new(1, 0, 0, 36),
+			UDim2.new(0, 10, 0.5, 0)
+		)
+		VideoTitle.TextSize = 36
+		VideoTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+		local VideoBody = MakeText(
+			VideoTitle,
+			"Click the 'Record Video' button to start recording. Click it again to stop recording.",
+			UDim2.new(1, -10, 0, 70),
+			UDim2.new(0, 0, 1, 0)
+		)
+		VideoBody.Font = Enum.Font.SourceSans
+		VideoBody.TextSize = 24
+		VideoBody.TextXAlignment = Enum.TextXAlignment.Left
+		VideoBody.TextYAlignment = Enum.TextYAlignment.Top
+
+		local LastRow = RecordPage.Rows[#RecordPage.Rows]
+		if LastRow then
+			LastRow.Position = UDim2.new(0, 0, 0, 270)
+		end
+
+		local RecordButton, RecordButtonLabel = MakeStyledButton(
+			"RecordButton",
+			RecorderRunning and "Stop Recording" or "Record Video",
+			UDim2.new(0, 300, 0, 44),
+			function()
+				if RecorderRunning then
+					StopCustomRecording(true)
+					return
+				end
+
+				RunAfterMenuCloses(function()
+					StartCustomRecording(true)
+				end)
+			end
+		)
+
+		RecorderPageButton = RecordButton
+		RecorderPageButtonLabel = RecordButtonLabel
+		UpdateRecorderPageButton()
+
+		RecordButton.Parent = LastRow or RecordPage.Frame
+		RecordButton.Position =
+			LastRow
+			and UDim2.new(0, 410, 1, 10)
+			or UDim2.new(0, 410, 0, 330)
+
+		RecordPage.Frame.Size = UDim2.new(1, 0, 0, 400)
+	end
+end)
+
+-- ============================================================
+-- CONFIRMATION PAGES
+-- ============================================================
+
+ResetPage = MakePage("ResetCharacter")
+AddPage(ResetPage)
+
+ResetMessage = MakeText(
+	ResetPage.Frame,
+	"Are you sure you want to reset your character?",
+	UDim2.new(1, -20, 0, 100),
+	UDim2.new(0, 10, 0, 78)
+)
+ResetMessage.TextSize = 36
+
+LeaveMessage = nil
+
+GetResetButtonAllowed = function()
+	local Allowed = true
+	Protect(function()
+		if StarterGui:GetCore("ResetButtonCallback") == false then
+			Allowed = false
+		end
+	end)
+	return Allowed
+end
+
+ApplyResetButtonAvailability = function()
+	local Allowed = GetResetButtonAllowed()
+	local NormalColor = Color3.new(1, 1, 1)
+	local DisabledColor = Color3.fromRGB(135, 135, 135)
+
+	if ResetButton then
+		ResetButton.Active = Allowed
+		ResetButton.Selectable = Allowed
+		ResetButton.AutoButtonColor = false
+		ResetButton.ImageColor3 = Allowed and NormalColor or DisabledColor
+		if ResetButtonLabel then
+			ResetButtonLabel.TextColor3 = Allowed and NormalColor or DisabledColor
+		end
+	end
+
+	if MobileActionButtons and MobileActionButtons.Reset then
+		local Button = MobileActionButtons.Reset
+		Button.Active = Allowed
+		Button.Selectable = Allowed
+		Button.AutoButtonColor = false
+		Button.ImageColor3 = Allowed and NormalColor or DisabledColor
+		for _, Child in next, Button:GetDescendants() do
+			if Child:IsA("ImageLabel") or Child:IsA("ImageButton") then
+				Child.ImageColor3 = Allowed and NormalColor or DisabledColor
+			elseif Child:IsA("TextLabel") or Child:IsA("TextButton") then
+				Child.TextColor3 = Allowed and NormalColor or DisabledColor
+			end
+		end
+	end
+
+	return Allowed
+end
+
+ResetCharacter =
+	function()
+		if not GetResetButtonAllowed() then
+			ApplyResetButtonAvailability()
+			return
+		end
+		local Character = LocalPlayer.Character
+		local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+		if Humanoid then
+			Humanoid.Health = 0
+		end
+		SetVisibility(false, true)
+	end
+
+LeaveGame =
+	function()
+		game:shutdown()
+	end
+
+ResetButton, ResetButtonLabel =
+	MakeStyledButton(
+		"ResetCharacter",
+		"Reset",
+		UDim2.new(0, 200, 0, 50),
+		ResetCharacter,
+		true
+	)
+ResetButton.Parent = ResetPage.Frame
+ApplyResetButtonAvailability()
+
+DontResetButton =
+	MakeStyledButton(
+		"DontResetCharacter",
+		"Don't Reset",
+		UDim2.new(0, 200, 0, 50),
+		function()
+			Hub.InConfirmation = false
+			Hub.HubBar.Visible = true
+			Hub.PageClipper.Visible = true
+			Hub.BottomButtonFrame.Visible = true
+			if HomeButton then
+				HomeButton.Visible = HomeButtonEnabled and not IsMobile
+			end
+			SwitchToPage(Hub.MenuStack[#Hub.MenuStack] or GamePage, true, true)
+			ResizeHub()
+		end
+	)
+DontResetButton.Parent = ResetPage.Frame
+ResetPage.Frame.Size = UDim2.new(1, 0, 0, 280)
+
+LeavePage = MakePage("LeaveGame")
+AddPage(LeavePage)
+LeaveMessage = MakeText(
+	LeavePage.Frame,
+	"Are you sure you want to leave the game?",
+	UDim2.new(1, -20, 0, 100),
+	UDim2.new(0, 10, 0, 78)
+)
+LeaveMessage.TextSize = 36
+
+LeaveButton = MakeStyledButton("LeaveGame", "Leave", UDim2.new(0, 200, 0, 50), LeaveGame, true)
+LeaveButton.Parent = LeavePage.Frame
+
+DontLeaveButton = MakeStyledButton(
+	"DontLeaveGame",
+	"Don't Leave",
+	UDim2.new(0, 200, 0, 50),
+	function()
+		Hub.InConfirmation = false
+		Hub.HubBar.Visible = true
+		Hub.PageClipper.Visible = true
+		Hub.BottomButtonFrame.Visible = true
+		if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
+		SwitchToPage(Hub.MenuStack[#Hub.MenuStack] or GamePage, true, true)
+		ResizeHub()
+	end
+)
+DontLeaveButton.Parent = LeavePage.Frame
+LeavePage.Frame.Size = UDim2.new(1, 0, 0, 280)
+
+PositionDesktopConfirmationButtons =
+	function()
+		if IsMobile then
+			return
+		end
+
+		for _, Info in next,
+			{
+				{
+					ResetPage.Frame,
+					ResetButton,
+					DontResetButton,
+				},
+				{
+					LeavePage.Frame,
+					LeaveButton,
+					DontLeaveButton,
+				},
+			}
+		do
+
+			local LeftButton = Info[2]
+			local RightButton = Info[3]
+
+			local ButtonWidth = 200
+
+			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
+			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
+			LeftButton.Visible = true
+			RightButton.Visible = true
+			LeftButton.Active = true
+			RightButton.Active = true
+			LeftButton.Selectable = true
+			RightButton.Selectable = true
+			LeftButton.ZIndex = SETTINGS_BASE_ZINDEX + 3
+			RightButton.ZIndex = SETTINGS_BASE_ZINDEX + 3
+
+			LeftButton.Position = UDim2.new(0.5, -206, 0, 268)
+
+			RightButton.Position = UDim2.new(0.5, 6, 0, 268)
+
+		end
+
+	end
+
+PositionMobileConfirmationButtons =
+	function()
+		if not IsMobile then return end
+		local Viewport = ScreenGui.AbsoluteSize
+		if Viewport.X <= 0 or Viewport.Y <= 0 then
+			local Camera = workspace.CurrentCamera
+			Viewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
+		end
+		local AvailableWidth = math.max(280, Viewport.X - 20)
+		local ButtonWidth = Clamp((AvailableWidth - 12) / 2, 130, 200)
+		for _, Info in next, {
+			{ResetPage.Frame, ResetButton, DontResetButton},
+			{LeavePage.Frame, LeaveButton, DontLeaveButton},
+		} do
+			local Frame, LeftButton, RightButton = Info[1], Info[2], Info[3]
+			local Message = Frame:FindFirstChildWhichIsA("TextLabel")
+			if Message then
+				Message.Size = UDim2.new(1, -20, 0, 88)
+				Message.Position = UDim2.new(0, 10, 0, 12)
+			end
+			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
+			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
+			LeftButton.Position = UDim2.new(0.5, -(ButtonWidth + 6), 0, 158)
+			RightButton.Position = UDim2.new(0.5, 6, 0, 158)
+		end
+	end
+
+-- ============================================================
+-- ALERT
+-- ============================================================
+
+ActiveAlert = nil
+
+ShowAlert =
+	function(AlertMessage, OkButtonText, Cleanup)
+		if ActiveAlert then
+			ActiveAlert:Destroy()
+			ActiveAlert = nil
+		end
+
+		Hub.HubBar.Visible = false
+		Hub.PageClipper.Visible = false
+		Hub.BottomButtonFrame.Visible = false
+
+		local Alert = Create(
+			"ImageLabel",
+			{
+				Name = "AlertViewBacking",
+				Parent = Hub.Shield,
+				Image = BUTTON_IMAGE,
+				ScaleType = Enum.ScaleType.Slice,
+				SliceCenter = Rect.new(8, 6, 46, 44),
+				BackgroundTransparency = 1,
+				Size = UDim2.new(0, 400, 0, 350),
+				Position = UDim2.new(0.5, -200, 0.5, -175),
+				ZIndex = SETTINGS_BASE_ZINDEX + 30,
+			}
+		)
+		ActiveAlert = Alert
+
+		Create("TextLabel", {
+			Name = "AlertViewText",
+			Parent = Alert,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0.95, 0, 0.6, 0),
+			Position = UDim2.new(0.025, 0, 0.05, 0),
+			Font = Enum.Font.SourceSansBold,
+			TextSize = 36,
+			Text = AlertMessage,
+			TextWrapped = true,
+			TextColor3 = Color3.new(1, 1, 1),
+			TextXAlignment = Enum.TextXAlignment.Center,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			ZIndex = SETTINGS_BASE_ZINDEX + 31,
+		})
+
+		local Button, ButtonText = MakeStyledButton(
+			"AlertViewButton",
+			OkButtonText or "Ok",
+			UDim2.new(0, 200, 0, 50),
+			function()
+				if ActiveAlert then
+					ActiveAlert:Destroy()
+					ActiveAlert = nil
+				end
+				if Cleanup then
+					Cleanup()
+				else
+					Hub.HubBar.Visible = true
+					Hub.PageClipper.Visible = true
+					Hub.BottomButtonFrame.Visible = true
+				end
+			end
+		)
+		Button.Parent = Alert
+		Button.Position = UDim2.new(0.5, -100, 0.65, 0)
+		Button.ZIndex = SETTINGS_BASE_ZINDEX + 31
+		ButtonText.ZIndex = SETTINGS_BASE_ZINDEX + 32
+	end
+
+-- ============================================================
+-- CONFIRMATION PAGE NAVIGATION
+-- ============================================================
+
+PushPage =
+	function(Page)
+		if not Page then return end
+		Insert(Hub.MenuStack, Hub.CurrentPage)
+		Hub.InConfirmation = Page == ResetPage or Page == LeavePage
+		Hub.InInviteMenu = false
+		Hub.HubBar.Visible = false
+		Hub.BottomButtonFrame.Visible = false
+		if HomeButton then HomeButton.Visible = false end
+		Hub.PageClipper.Visible = true
+		Hub.PageView.ScrollBarThickness = 0
+		SwitchToPage(Page, true, true)
+		if Hub.InConfirmation then
+			if IsMobile then
+				PositionMobileConfirmationButtons()
+			else
+				PositionDesktopConfirmationButtons()
+			end
+		end
+	end
+
+-- ============================================================
+-- MOBILE BOTTOM BUTTONS
+-- ============================================================
+
+MakeBottomButton =
+	function(Name, Text, Icon, Position, Clicked, Size)
+		local Button=MakeStyledButton(Name.."Button",Text,Size or UDim2.new(0,260,0,70),Clicked)
+		Button.Parent=Hub.BottomButtonFrame
+		Button.Position=Position
+		local Hint=Create("ImageLabel",{Name=Name.."Hint",ZIndex=SETTINGS_BASE_ZINDEX+2,BackgroundTransparency=1,Image=Icon,Parent=Button})
+		Hint.AnchorPoint=Vector2.new(0.5,0.5)
+		Hint.Size=UDim2.new(0,50,0,50)
+		Hint.Position=UDim2.new(0.15,0,0.475,0)
+		local Label=Button:FindFirstChild(Name.."ButtonTextLabel")
+		if Label then
+			Label.TextSize=24
+			Label.TextWrapped=false
+			Label.TextScaled=false
+			Label.TextXAlignment=Enum.TextXAlignment.Center
+			Label.TextYAlignment=Enum.TextYAlignment.Center
+			Label.Size=UDim2.new(0.75,0,0.9,0)
+			Label.Position=UDim2.new(0.25,0,0,0)
+		end
+		return Button
+	end
+
+MobileButtonsContainer = nil
+MobileActionButtons = {}
+BottomButtonSize = UDim2.new(0,260,0,70)
+
+MobileActionButtons.Reset = MakeBottomButton(
+	"ResetCharacter",
+	"Reset Character",
+	"rbxasset://textures/ui/Settings/Help/ResetIcon.png",
+	UDim2.new(0, 4, 0.5, -32),
+	function()
+			if GetResetButtonAllowed() then
+				PushPage(ResetPage)
+			else
+				ApplyResetButtonAvailability()
+			end
+		end,
+	BottomButtonSize
+)
+
+MobileActionButtons.Leave = MakeBottomButton(
+	"LeaveGame",
+	"Leave Game",
+	"rbxasset://textures/ui/Settings/Help/LeaveIcon.png",
+	UDim2.new(0, 270, 0.5, -32),
+	function() PushPage(LeavePage) end,
+	BottomButtonSize
+)
+
+MobileActionButtons.Resume = MakeBottomButton(
+	"Resume",
+	"Resume Game",
+	"rbxasset://textures/ui/Settings/Help/EscapeIcon.png",
+	UDim2.new(0, 536, 0.5, -32),
+	function() SetVisibility(false) end,
+	BottomButtonSize
+)
+
+VoiceChatButton = MakeBottomButton(
+	"VoiceChat",
+	"",
+	VOICE_MIC_ROOT .. "Unmuted0@3x.png",
+	UDim2.new(0, 716, 0.5, -32),
+	function()
+		if not VoiceChatEnabled or not LocalVoiceEnabled then return end
+		local CurrentMuted = GetLocalVoiceMuted()
+		SetLocalVoiceMuted(not CurrentMuted)
+		LocalVoiceMuted = not CurrentMuted
+		if VoiceChatIcon then
+			VoiceChatIcon.Image = LocalVoiceMuted and VOICE_MIC_ROOT .. "Muted@3x.png" or FindNativeVoiceIcon(LocalPlayer) or VOICE_MIC_ROOT .. "Unmuted0@3x.png"
+		end
+	end,
+	UDim2.new(0, 64, 0, 64)
+)
+VoiceChatButton.Visible = LocalVoiceEnabled and VoiceChatEnabled
+
+VoiceChatIcon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
+if VoiceChatIcon then
+	VoiceChatIcon.Size = UDim2.fromOffset(44, 44)
+	VoiceChatIcon.Position = UDim2.new(0.5, -22, 0.5, -22)
+end
+
+ConfigureMobileActionButtons = function()
+	local VoiceActive = LocalVoiceEnabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport
+	local UiScale = GetMobileUiScale()
+	local ActionHeight = 62
+	local Gap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
+
+	local UseFourColumnLayout = VoiceActive and not IsMobile
+
+	if IsMobile then
+		if IsTablet then
+			MobileActionButtons.Reset.Parent = Hub.BottomButtonFrame
+			MobileActionButtons.Leave.Parent = Hub.BottomButtonFrame
+			MobileActionButtons.Resume.Parent = Hub.BottomButtonFrame
+			VoiceChatButton.Parent = Hub.BottomButtonFrame
+			for _, Button in next, {MobileActionButtons.Leave, MobileActionButtons.Reset, MobileActionButtons.Resume} do
+				Button.Visible = true
+				Button.ZIndex = SETTINGS_BASE_ZINDEX + 7
+			end
+			Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
+			Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 6
+		elseif PlayersPage and PlayersPage.Frame then
+			if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
+				MobileButtonsContainer = Create("Frame", {
+					Name = "ButtonsContainer", Parent = PlayersPage.Frame,
+					BackgroundTransparency = 1, BorderSizePixel = 0,
+					Size = UDim2.new(1, 0, 0, 62), Position = UDim2.new(0, 0, 0, 0),
+					ZIndex = SETTINGS_BASE_ZINDEX + 1,
+				})
+			end
+			MobileButtonsContainer.Size = UDim2.new(1, 0, 0, 62)
+			MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
+			MobileActionButtons.Reset.Parent = MobileButtonsContainer
+			MobileActionButtons.Leave.Parent = MobileButtonsContainer
+			MobileActionButtons.Resume.Parent = MobileButtonsContainer
+			VoiceChatButton.Parent = PlayersPage.Frame
+		end
+	end
+
+	if IsMobile then
+		local ButtonCount = UseFourColumnLayout and 4 or 3
+		local Fraction = 1 / ButtonCount
+		local ButtonWidthOffset = -Gap
+		MobileActionButtons.Leave.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+		MobileActionButtons.Reset.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+		MobileActionButtons.Resume.Size = UDim2.new(Fraction, ButtonWidthOffset, 0, ActionHeight)
+		MobileActionButtons.Leave.AnchorPoint = Vector2.new(0, 0)
+		MobileActionButtons.Reset.AnchorPoint = Vector2.new(0.5, 0)
+		MobileActionButtons.Resume.AnchorPoint = Vector2.new(1, 0)
+		MobileActionButtons.Leave.Position = UDim2.new(0, 0, 0, 0)
+		MobileActionButtons.Reset.Position = UDim2.new(0.5, 0, 0, 0)
+		MobileActionButtons.Resume.Position = UDim2.new(1, 0, 0, 0)
+		if IsTablet then
+			Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
+			Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, ActionHeight)
+			Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -ActionHeight)
+			Hub.BottomButtonFrame.ZIndex = SETTINGS_BASE_ZINDEX + 6
+			Hub.BottomButtonFrame.ClipsDescendants = false
+		end
+
+		for _, Button in next, {MobileActionButtons.Reset, MobileActionButtons.Leave, MobileActionButtons.Resume} do
+			Button.Visible = true
+			Button.ZIndex = IsTablet and (SETTINGS_BASE_ZINDEX + 7) or (SETTINGS_BASE_ZINDEX + 4)
+			for _, Child in next, Button:GetChildren() do
+				if Child:IsA("ImageLabel") then Child.Visible = false end
+			end
+			local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
+			if Label then
+				Label.TextSize = 20
+				Label.TextWrapped = false
+				Label.TextScaled = false
+				Label.TextXAlignment = Enum.TextXAlignment.Center
+				Label.TextYAlignment = Enum.TextYAlignment.Center
+				Label.Position = UDim2.new(0, 0, 0, 0)
+				Label.Size = UDim2.new(1, 0, 1, 0)
+			end
+		end
+		VoiceChatButton.Visible = false
+	else
+		-- PC desktop: the three fixed 260x70 buttons live in BottomButtonFrame.
+		MobileActionButtons.Reset.Size = UDim2.new(0,260,0,70)
+		MobileActionButtons.Leave.Size = UDim2.new(0,260,0,70)
+		MobileActionButtons.Resume.Size = UDim2.new(0,260,0,70)
+		MobileActionButtons.Reset.Position = UDim2.new(0,0,0.5,-35)
+		MobileActionButtons.Leave.Position = UDim2.new(0,270,0.5,-35)
+		MobileActionButtons.Resume.Position = UDim2.new(0,540,0.5,-35)
+		MobileActionButtons.Reset.Visible = true
+		MobileActionButtons.Leave.Visible = true
+		MobileActionButtons.Resume.Visible = true
+		VoiceChatButton.Visible = false
+	end
+end
+
+-- ============================================================
+-- RESET BUTTON AVAILABILITY WATCH
+-- ============================================================
+Spawn(function()
+	while ScreenGui and ScreenGui.Parent do
+		ApplyResetButtonAvailability()
+		Wait(0.25)
+	end
+end)
+
+-- ============================================================
+-- VOICE CHAT UI UPDATES
+-- ============================================================
+
+-- PeakLevel changes much faster than the GUI refresh loop. Keep the bottom
+-- microphone icon on a fast sampling loop so it follows live microphone peaks.
+Spawn(function()
+	while ScreenGui and ScreenGui.Parent do
+		if VoiceChatEnabled and LocalVoiceEnabled and VoiceChatButton and VoiceChatButton.Parent then
+			LocalVoiceMuted = GetLocalVoiceMuted()
+			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
+			if Icon then
+				local Image = GetVoiceIcon(LocalPlayer, LocalVoiceMuted)
+				if Icon.Image ~= Image then Icon.Image = Image end
+			end
+		end
+		Wait(0.033)
+	end
+end)
+
+Spawn(function()
+	while ScreenGui and ScreenGui.Parent do
+		if VoiceChatEnabled then
+			RefreshLocalVoiceState()
+			if NativeVoiceScanStamp == 0 or (os.clock() - NativeVoiceScanStamp) > 2 then
+				RefreshNativeVoiceMirrorCache(true)
+			end
+			local Changed = RefreshVoiceParticipants()
+			if Changed and RebuildPlayersPage then RebuildPlayersPage() end
+		end
+
+		if VoiceChatButton and VoiceChatButton.Parent then
+			local VoiceActive = LocalVoiceEnabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport
+			VoiceChatButton.Visible = VoiceActive
+			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
+			if Icon and VoiceActive then
+				local Image = GetVoiceIcon(LocalPlayer, LocalVoiceMuted)
+				if Icon.Image ~= Image then Icon.Image = Image end
+			end
+		end
+
+		if VoiceChatEnabled then
+			for _, Player in next, Players:GetPlayers() do
+				if Player ~= LocalPlayer then
+					local UserId = tonumber(Player.UserId or Player.userId) or 0
+					local Row = PlayersPage.Frame:FindFirstChild("PlayerLabel" .. Player.Name)
+					local VoiceButton = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
+					local BeforeVoice = VoiceEnabledCache[UserId] == true
+					CheckVoiceForPlayer(Player)
+					local HasVoice = VoiceEnabledCache[UserId] == true
+					if BeforeVoice ~= HasVoice or HasVoice ~= (VoiceButton ~= nil) then
+						if RebuildPlayersPage then RebuildPlayersPage() end
+						break
+					elseif VoiceButton then
+						local VoiceIcon = VoiceButton:FindFirstChild("VoiceIcon")
+						if VoiceIcon then
+							local Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true)
+							if VoiceIcon.Image ~= Image then VoiceIcon.Image = Image end
+						end
+					end
+				end
+			end
+		end
+
+		ConfigureMobileActionButtons()
+		Wait(1.0)
+	end
+end)
+
+Connect(LocalPlayer.ChildAdded, function(Child)
+	if Child:IsA("AudioDeviceInput") then
+		GetAudioDeviceInputCache[LocalPlayer] = Child
+		EnsureVoiceAnalyzer(LocalPlayer)
+	end
+end)
+
+for _, Player in next, Players:GetPlayers() do
+	if Player ~= LocalPlayer then
+		Connect(Player.ChildAdded, function(Child)
+			if Child:IsA("AudioDeviceInput") then
+				GetAudioDeviceInputCache[Player] = Child
+				VoiceEnabledCache[Player.UserId] = true
+				if RebuildPlayersPage then RebuildPlayersPage() end
+			end
+		end)
+	end
+end
+
+Connect(Players.PlayerAdded, function(Player)
+	Connect(Player.ChildAdded, function(Child)
+		if Child:IsA("AudioDeviceInput") then
+			GetAudioDeviceInputCache[Player] = Child
+			VoiceEnabledCache[Player.UserId] = true
+			if RebuildPlayersPage then RebuildPlayersPage() end
+		end
+	end)
+end)
+
+if VoiceChatInternal then
+	Protect(function()
+		Connect(VoiceChatInternal.ParticipantsStateChanged, function()
+			if not VoiceChatEnabled then return end
+			RefreshVoiceParticipants()
+			if RebuildPlayersPage then RebuildPlayersPage() end
+		end)
+	end)
+	Protect(function()
+		Connect(VoiceChatInternal.PlayerMicActivitySignalChange, function(ActivityInfo)
+			if not VoiceChatEnabled then return end
+			VoiceProcessActivityInfo(ActivityInfo)
+		end)
+	end)
+end
+
+Connect(CoreGui.DescendantAdded, function(Descendant)
+	if not VoiceChatEnabled then return end
+	if Descendant:IsA("ImageLabel") or Descendant:IsA("ImageButton") then
+		local Image = tostring(Descendant.Image or "")
+		if Image:find("VoiceChat", 1, true) then
+			ScheduleNativeVoiceMirrorRefresh()
+		end
+	end
+end)
+
+-- ============================================================
+-- NATIVE SETTINGS HIDING
+-- ============================================================
+
+HideNativeSettingsMenu =
+	function()
+		local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+		local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
+		if Shield then
+			local HideGuiObject = function(Object)
+				if not Object:IsA("GuiObject") then return end
+				pcall(function() Object.Visible = false end)
+				pcall(function() Object.Active = false end)
+				pcall(function() Object.Selectable = false end)
+				pcall(function() Object.AutoButtonColor = false end)
+				pcall(function() Object.BackgroundTransparency = 1 end)
+				pcall(function() Object.ImageTransparency = 1 end)
+				pcall(function() Object.TextTransparency = 1 end)
+			end
+			HideGuiObject(Shield)
+			for _, Child in next, Shield:GetDescendants() do
+				HideGuiObject(Child)
+			end
+		end
+	end
+
+-- ============================================================
+-- INPUT LOCK
+-- ============================================================
+
+INPUT_LOCK_ACTION = "Settings2016InputLock"
+InputLockBound = false
+InputLockInputs = {}
+InputLockActions = {}
+SavedMouseBehavior = nil
+WasRightMouseDownOnLock = false
+
+AddInputLock =
+	function(EnumName, Name)
+		Protect(function()
+			local EnumType = Enum[EnumName]
+			local Item = EnumType and EnumType[Name]
+			if Item then Insert(InputLockInputs, Item) end
+		end)
+	end
+
+AddInputLock("PlayerActions", "CharacterForward")
+AddInputLock("PlayerActions", "CharacterBackward")
+AddInputLock("PlayerActions", "CharacterLeft")
+AddInputLock("PlayerActions", "CharacterRight")
+AddInputLock("PlayerActions", "CharacterJump")
+AddInputLock("KeyCode", "W")
+AddInputLock("KeyCode", "A")
+AddInputLock("KeyCode", "S")
+AddInputLock("KeyCode", "D")
+AddInputLock("KeyCode", "Space")
+AddInputLock("KeyCode", "LeftShift")
+AddInputLock("KeyCode", "RightShift")
+AddInputLock("KeyCode", "Thumbstick1")
+AddInputLock("KeyCode", "Thumbstick2")
+AddInputLock("UserInputType", "MouseButton2")
+
+IsRightMouseDown =
+	function()
+		local IsDown = false
+		Protect(function()
+			IsDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+		end)
+		return IsDown
+	end
+
+ReleaseRightMouseCapture =
+	function()
+		Protect(function()
+			if mouse2release then mouse2release() end
+		end)
+		Protect(function()
+			if VirtualInputManager then
+				local MouseLocation = UserInputService:GetMouseLocation()
+				VirtualInputManager:SendMouseButtonEvent(MouseLocation.X, MouseLocation.Y, 1, false, game, 0)
+			end
+		end)
+	end
+
+SinkGameplayInput =
+	function()
+		local FocusedTextBox
+		Protect(function() FocusedTextBox = UserInputService:GetFocusedTextBox() end)
+		if FocusedTextBox then return Enum.ContextActionResult.Pass end
+		return Enum.ContextActionResult.Sink
+	end
+
+SetGameplayInputLocked =
+	function(Locked)
+		if InputLockBound == Locked then return end
+		InputLockBound = Locked
+		if Locked then
+			Protect(function()
+				WasRightMouseDownOnLock = IsRightMouseDown()
+				SavedMouseBehavior = UserInputService.MouseBehavior
+				UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+				UserInputService.MouseIconEnabled = true
+			end)
+			ReleaseRightMouseCapture()
+			InputLockActions = {}
+			for Index, Input in next, InputLockInputs do
+				local ActionName = INPUT_LOCK_ACTION .. tostring(Index)
+				local Bound = Protect(function()
+					ContextActionService:BindCoreActionAtPriority(ActionName, SinkGameplayInput, false, 10000, Input)
+				end)
+				if not Bound then
+					Bound = Protect(function()
+						ContextActionService:BindCoreAction(ActionName, SinkGameplayInput, false, Input)
+					end)
+				end
+				if not Bound then
+					Bound = Protect(function()
+						ContextActionService:BindActionAtPriority(ActionName, SinkGameplayInput, false, 10000, Input)
+					end)
+				end
+				if Bound then Insert(InputLockActions, ActionName) end
+			end
+		else
+			for _, ActionName in next, InputLockActions do
+				Protect(function() ContextActionService:UnbindCoreAction(ActionName) end)
+				Protect(function() ContextActionService:UnbindAction(ActionName) end)
+			end
+			InputLockActions = {}
+			Protect(function()
+				if SavedMouseBehavior and not (WasRightMouseDownOnLock and SavedMouseBehavior == Enum.MouseBehavior.LockCurrentPosition) then
+					UserInputService.MouseBehavior = SavedMouseBehavior
+				else
+					UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+				end
+				SavedMouseBehavior = nil
+				WasRightMouseDownOnLock = false
+			end)
+		end
+	end
+
+-- ============================================================
+-- SET VISIBILITY
+-- ============================================================
+
+SetVisibility =
+	function(Visible, NoAnimation, CustomPage)
+		if Hub.Visible == Visible and not CustomPage then return end
+
+		Hub.Visible = Visible
+		Hub.Modal.Visible = Visible
+
+		if not Visible then
+			Hub.InInviteMenu = false
+			Hub.InConfirmation = false
+			if InviteHeader then InviteHeader.Visible = false end
+			if InviteList then InviteList.Visible = false end
+			if SearchBox then
+				pcall(function() SearchBox:ReleaseFocus() end)
+			end
+		end
+
+		SetGameplayInputLocked(Visible)
+
+		if Visible then
+			HideNativeSettingsMenu()
+			SetTopbarCoreGuiEnabled(false)
+			Hub.Shield.Visible = true
+			Hub.HubBar.Visible = not Hub.InInviteMenu and not Hub.InConfirmation
+			Hub.PageClipper.Visible = true
+			Hub.BottomButtonFrame.Visible = ((not IsMobile) or IsTablet) and not Hub.InInviteMenu and not Hub.InConfirmation
+			if HomeButton then
+				HomeButton.Visible = HomeButtonEnabled and not IsMobile and not Hub.InInviteMenu and not Hub.InConfirmation
+			end
+			if SystemMenuButton then
+				SystemMenuButton.Visible = true
+				SystemMenuButton.Size = UDim2.fromOffset(32, 32)
+			end
+
+			if NoAnimation then
+				Hub.Shield.Position = SETTINGS_ACTIVE_POSITION
+			else
+				Hub.Shield.Position = SETTINGS_INACTIVE_POSITION
+				TweenTo(Hub.Shield, SETTINGS_ACTIVE_POSITION, Enum.EasingDirection.InOut, Enum.EasingStyle.Quart, 0.5)
+			end
+
+			RefreshNativeVoiceMirrorCache(true)
+			SwitchToPage(CustomPage or PlayersPage, true)
+			if IsTablet and not Hub.InInviteMenu and not Hub.InConfirmation then
+				Hub.BottomButtonFrame.Visible = true
+				ConfigureMobileActionButtons()
+			end
+			if PendingPlayerListRefresh and PlayersPage then
+				RebuildPlayersPage()
+				LayoutTabs()
+				PendingPlayerListRefresh = false
+			end
+			ConfigureMobileActionButtons()
+			ResizeHub()
+			if IsMobile and not IsTablet then
+				task.defer(function()
+					if not Hub.Visible or not PlayersPage or not PlayersPage.Frame then return end
+					MobileActionButtons.Reset.Parent = PlayersPage.Frame
+					MobileActionButtons.Leave.Parent = PlayersPage.Frame
+					MobileActionButtons.Resume.Parent = PlayersPage.Frame
+					ConfigureMobileActionButtons()
+					ResizeHub()
+				end)
+			end
+		else
+			SetTopbarCoreGuiEnabled(true)
+			Hub.HubBar.Visible = false
+			Hub.BottomButtonFrame.Visible = false
+			Hub.PageClipper.Visible = false
+			if HomeButton then HomeButton.Visible = false end
+			if SystemMenuButton then
+				SystemMenuButton.Visible = true
+				SystemMenuButton.Size = UDim2.fromOffset(40, 40)
+				pcall(function()
+					SystemMenuButton.ImageTransparency = 1
+				end)
+			end
+			if NoAnimation then
+				Hub.Shield.Position = SETTINGS_INACTIVE_POSITION
+				Hub.Shield.Visible = false
+			else
+				TweenTo(Hub.Shield, SETTINGS_INACTIVE_POSITION, Enum.EasingDirection.In, Enum.EasingStyle.Quad, 0.4, function()
+					if not Hub.Visible then Hub.Shield.Visible = false end
+				end)
+			end
+		end
+	end
+
+-- ============================================================
+-- SYSTEM MENU BUTTON
+-- ============================================================
+
+SystemMenuButton =
+	Create(
+		"ImageButton",
+		{
+			Name = "SystemMenuButton",
+			Parent = ScreenGui,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Image = SYSTEM_MENU_ICON,
+
+			ImageTransparency = 0,
+			ScaleType = Enum.ScaleType.Fit,
+			ImageRectOffset = SYSTEM_MENU_ICON_RECT_OFFSET,
+			ImageRectSize = SYSTEM_MENU_ICON_RECT_SIZE,
+			Size = UDim2.fromOffset(SYSTEM_MENU_SIZE.X, SYSTEM_MENU_SIZE.Y),
+			Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X, SYSTEM_MENU_OFFSET_Y),
+			AutoButtonColor = false,
+			Visible = false,
+			Active = true,
+			Selectable = true,
+			ZIndex = SETTINGS_BASE_ZINDEX + 100,
+		}
+	)
+
+Insert(Data.Objects, SystemMenuButton)
+Create("UICorner", {Parent = SystemMenuButton, CornerRadius = UDim.new(0, 8)})
+
+SystemMenuSelection = Create(
+	"ImageLabel",
+	{
+		Name = "SelectionImageObject",
+		Parent = SystemMenuButton,
+		BackgroundTransparency = 1,
+		ImageTransparency = 1,
+		Size = UDim2.new(1, 0, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+		ZIndex = SETTINGS_BASE_ZINDEX + 101,
+	}
+)
+Create("UICorner", {Parent = SystemMenuSelection, CornerRadius = UDim.new(0, 8)})
+SystemMenuButton.SelectionImageObject = SystemMenuSelection
+
+HideNativeSystemMenuButtons =
+	function()
+		for _, Object in next, CoreGui:GetDescendants() do
+			if Object ~= SystemMenuButton and Object.Name == "SystemMenuButton" and Object:IsA("GuiObject") then
+				pcall(function() Object.Visible = false end)
+				pcall(function() Object.Active = false end)
+				pcall(function() Object.Selectable = false end)
+			end
+		end
+	end
+
+AlignSystemMenuButton =
+	function()
+		if not SystemMenuButton then return end
+
+		SystemMenuButton.Visible = true
+
+		if Hub.Visible then
+			SystemMenuButton.Position =
+				UDim2.fromOffset(
+					SYSTEM_MENU_OFFSET_X,
+					SYSTEM_MENU_OFFSET_Y
+				)
+			SystemMenuButton.Size = UDim2.fromOffset(32, 32)
+			pcall(function()
+				SystemMenuButton.ImageTransparency = 0
+			end)
+		else
+			-- Closed state: keep the larger 40x40 clickable hitbox 4px left and 4px up,
+			-- but make the image itself invisible.
+			SystemMenuButton.Position =
+				UDim2.fromOffset(
+					SYSTEM_MENU_OFFSET_X - 4,
+					SYSTEM_MENU_OFFSET_Y - 4
+				)
+			SystemMenuButton.Size = UDim2.fromOffset(40, 40)
+			pcall(function()
+				SystemMenuButton.ImageTransparency = 1
+			end)
+		end
+
+		-- Keep the real/native button hidden on every platform.
+		HideNativeSystemMenuButtons()
+		if PositionRecorderGui then
+			PositionRecorderGui()
+		end
+	end
+
+Connect(SystemMenuButton.MouseButton1Click, function()
+	SetVisibility(not Hub.Visible)
+	AlignSystemMenuButton()
+end)
+AlignSystemMenuButton()
+Connect(CoreGui.ChildAdded, function()
+	task.defer(function()
+		HideNativeSystemMenuButtons()
+		AlignSystemMenuButton()
+		PositionRecorderGui()
+	end)
+end)
+Connect(CoreGui.DescendantAdded, function(Descendant)
+	if Descendant.Name == "SystemMenuButton" and Descendant ~= SystemMenuButton then
+		task.defer(function()
+			pcall(function() Descendant.Visible = false end)
+			pcall(function() Descendant.Active = false end)
+			pcall(function() Descendant.Selectable = false end)
+		end)
+	end
+end)
+Spawn(function()
+	while SystemMenuButton and SystemMenuButton.Parent do
+		AlignSystemMenuButton()
+		PositionRecorderGui()
+		Wait(0.25)
+	end
+end)
+
+-- ============================================================
+-- ESCAPE ACTION
+-- ============================================================
+
+LastEscapeAction = 0
+
+CloseInvitePage =
+	function()
+		local Previous = Hub.PreviousMenuPage or PlayersPage
+		Hub.PreviousMenuPage = nil
+		Hub.InInviteMenu = false
+		if SearchBox then
+			pcall(function() SearchBox:ReleaseFocus() end)
+		end
+		if SearchIcon then SearchIcon.Visible = true end
+		if SearchPlaceholder then SearchPlaceholder.Visible = true end
+		if InviteHeader then InviteHeader.Visible = false end
+		if InviteList then InviteList.Visible = false end
+		Hub.HubBar.Visible = true
+		Hub.PageClipper.Visible = true
+		Hub.BottomButtonFrame.Visible = (not IsMobile) or IsTablet
+		Hub.PageView.ScrollBarThickness = IsMobile and 0 or 12
+		if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
+		SwitchToPage(Previous, true, true)
+		ResizeHub()
+	end
+
+EscapeAction =
+	function(_, State)
+		if State ~= Enum.UserInputState.Begin then return Enum.ContextActionResult.Sink end
+		local Now = tick()
+		if Now - LastEscapeAction < 0.15 then return Enum.ContextActionResult.Sink end
+		LastEscapeAction = Now
+		HideNativeSettingsMenu()
+		HideNativeSystemMenuButtons()
+
+		if Hub.Visible and Hub.InInviteMenu then
+			CloseInvitePage()
+			return Enum.ContextActionResult.Sink
+		end
+
+		if Hub.Visible and Hub.InConfirmation and (Hub.CurrentPage == ResetPage or Hub.CurrentPage == LeavePage) then
+			Hub.InConfirmation = false
+			Hub.HubBar.Visible = true
+			Hub.PageClipper.Visible = true
+			Hub.BottomButtonFrame.Visible = (not IsMobile) or IsTablet
+			if HomeButton then HomeButton.Visible = HomeButtonEnabled and not IsMobile end
+			local Previous = Hub.MenuStack[#Hub.MenuStack] or PlayersPage
+			SwitchToPage(Previous, true, true)
+			Hub.PageView.ScrollBarThickness = IsMobile and 0 or 12
+			ResizeHub()
+			return Enum.ContextActionResult.Sink
+		end
+
+		if Hub.Visible then Hub.SuppressNativeOpenUntil = Now + 0.8 end
+		SetVisibility(not Hub.Visible)
+		AlignSystemMenuButton()
+		Spawn(function()
+			Wait()
+			HideNativeSettingsMenu()
+			HideNativeSystemMenuButtons()
+		end)
+		return Enum.ContextActionResult.Sink
+	end
+
+Protect(function()
+	-- Give our custom ESC handler a higher input priority on desktop so the
+	-- Roblox/native menu cannot swallow the Escape key before we see it.
+	if not IsMobile then
+		pcall(function()
+			ContextActionService:BindActionAtPriority(
+				"Settings2016Escape",
+				function(_, State)
+					if State == Enum.UserInputState.Begin then
+						return EscapeAction(nil, State)
+					end
+					return Enum.ContextActionResult.Sink
+				end,
+				false,
+				20000,
+				Enum.KeyCode.Escape
+			)
+		end)
+	end
+
+	local BoundAtPriority = pcall(function()
+		ContextActionService:BindCoreActionAtPriority("RBXEscapeMainMenu", EscapeAction, false, 10000, Enum.KeyCode.Escape, Enum.KeyCode.ButtonStart)
+	end)
+	if not BoundAtPriority then
+		ContextActionService:BindCoreAction("RBXEscapeMainMenu", EscapeAction, false, Enum.KeyCode.Escape, Enum.KeyCode.ButtonStart)
+	end
+end)
+
+Connect(UserInputService.InputBegan, function(Input, Processed)
+	if Processed and Input.KeyCode ~= Enum.KeyCode.Escape then return end
+	if Input.KeyCode == Enum.KeyCode.Escape then
+		EscapeAction(nil, Enum.UserInputState.Begin)
+	elseif not IsMobile and Input.KeyCode == Enum.KeyCode.F12 then
+		if tick() >= IgnoreRecorderF12Until then
+			ToggleCustomRecording()
+		end
+	elseif Hub.Visible and Input.KeyCode == Enum.KeyCode.R and not Hub.InInviteMenu and not Hub.InConfirmation then
+		if GetResetButtonAllowed() then
+			PushPage(ResetPage)
+		else
+			ApplyResetButtonAvailability()
+		end
+	elseif Hub.Visible and Input.KeyCode == Enum.KeyCode.L and not Hub.InInviteMenu and not Hub.InConfirmation then
+		PushPage(LeavePage)
+	elseif Hub.Visible and (Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter) then
+		if Hub.CurrentPage == ResetPage then
+			ResetCharacter()
+		elseif Hub.CurrentPage == LeavePage then
+			LeaveGame()
+		end
+	end
+end)
+
+-- ============================================================
+-- NATIVE MENU HOOK
+-- ============================================================
+
+HookNativeMenu =
+	function()
+		local HookedNative = {}
+		local GetNativeMenuTarget = function()
+			if Hub.NativeMenuTarget == nil then return true end
+			return Hub.NativeMenuTarget
+		end
+		local NativeMenuOpened = function()
+			HideNativeSettingsMenu()
+			HideNativeSystemMenuButtons()
+			if tick() < Hub.SuppressNativeOpenUntil then return end
+			SetVisibility(GetNativeMenuTarget())
+			Hub.NativeMenuTarget = nil
+		end
+		local HookNativeObject = function(Object)
+			if not Object or HookedNative[Object] or not Object:IsA("GuiObject") then return end
+			HookedNative[Object] = true
+			Connect(Object:GetPropertyChangedSignal("Visible"), function()
+				if Object.Visible then NativeMenuOpened() end
+			end)
+			if Object.Visible then NativeMenuOpened() end
+		end
+		local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+		local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
+		local HookNativeContainer = function(NewShield)
+			if not NewShield then return end
+			Shield = NewShield
+			HideNativeSettingsMenu()
+			for _, Object in next, NewShield:GetDescendants() do HookNativeObject(Object) end
+		end
+		HookNativeContainer(Shield)
+		if RobloxGui then
+			Connect(RobloxGui.DescendantAdded, function(Descendant)
+				if Descendant.Name == "SettingsClippingShield" and Descendant.Parent == RobloxGui then
+					HookNativeContainer(Descendant)
+				elseif Shield and Descendant:IsDescendantOf(Shield) then
+					HookNativeObject(Descendant)
+					if Descendant:IsA("GuiObject") and Descendant.Visible then NativeMenuOpened() end
+				end
+			end)
+		end
+		local TopBarApp = CoreGui:FindFirstChild("TopBarApp")
+		TopBarApp = TopBarApp and TopBarApp:FindFirstChild("TopBarApp")
+		local Holder = TopBarApp and TopBarApp:FindFirstChild("MenuIconHolder")
+		local Trigger = Holder and Holder:FindFirstChild("TriggerPoint")
+		local Hit = Trigger and Trigger:FindFirstChild("IconHitArea")
+		if Hit and Hit:IsA("GuiButton") then
+			Connect(Hit.MouseButton1Click, function()
+				local Target = not Hub.Visible
+				Hub.NativeMenuTarget = Target
+				Spawn(function()
+					Wait()
+					SetVisibility(Target)
+					if Hub.NativeMenuTarget == Target then Hub.NativeMenuTarget = nil end
+				end)
+			end)
+		end
+	end
+
+if IsMobile then
+	BuildMobileHelpPage()
+	ApplyMobileReportLayout()
+end
+ApplyGraphicsMinusPlus()
+
+-- ============================================================
+-- INITIAL STATE
+-- ============================================================
+
+SwitchToPage(GamePage, true, true)
+ConfigureMobileActionButtons()
+ResizeHub()
+ConfigureMobileActionButtons()
+AlignSystemMenuButton()
+if not IsMobile then
+	FindRecorderControls()
+	PositionRecorderGui()
+end
+HideNativeSystemMenuButtons()
+Spawn(HookNativeMenu)
+
+-- ============================================================
+-- API
+-- ============================================================
+
+Api = {}
+
+function Api:SetVisibility(Visible, NoAnimation, CustomPage)
+	SetVisibility(Visible, NoAnimation, CustomPage)
+	AlignSystemMenuButton()
+	if HomeButton then
+		HomeButton.Visible = Hub.Visible and HomeButtonEnabled and not IsMobile and not Hub.InInviteMenu and not Hub.InConfirmation
+	end
+	HideNativeSystemMenuButtons()
+end
+
+function Api:ToggleVisibility()
+	SetVisibility(not Hub.Visible)
+end
+
+function Api:GetVisibility()
+	return Hub.Visible
+end
+
+function Api:ReportPlayer(Player)
+	if OpenReportPlayer then OpenReportPlayer(Player) end
+end
+
+Api.Instance = Hub
+getgenv().Settings2016 = Api
+return Api
