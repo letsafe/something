@@ -16,7 +16,7 @@
 -- PlayerList:
 --   * CoreGui stays ENABLED
 --   * Native Tab remains functional
---   * LeaderboardOpen is intentionally INVERTED: true=CLOSED, false=OPEN.
+--   * LeaderboardOpen matches the actual PlayerList state: true=OPEN, false=CLOSED.
 --   * Actual PlayerListMaster.Visible is monitored
 --   * PlayerList is event-driven instead of continuously scanning CoreGui.
 --   * No manual permanent CoreGui disable
@@ -1865,6 +1865,7 @@ end
 --============================================================
 
 local function UpdateMainIconStates()
+    -- Leaderboard icon intentionally uses the opposite visual state.
 
     SetRect(
         ChatIcon,
@@ -3348,7 +3349,7 @@ local function ReadNativePlayerListState(IgnoreLock)
         })
 
     if CoreState ~= nil then
-        return not CoreState
+        return CoreState
     end
 
     local PlayerListMaster = FindPlayerListMaster()
@@ -3360,7 +3361,7 @@ local function ReadNativePlayerListState(IgnoreLock)
         end)
 
         if Success and type(Visible) == "boolean" then
-            return not Visible
+            return Visible
         end
 
     end
@@ -4371,7 +4372,7 @@ local function ToggleLeaderboardNative()
                     "PlayerListOpen",
                     "PlayerListIsOpen"
                 },
-                not Desired
+                Desired
             )
 
         if CoreActivated then
@@ -4391,7 +4392,7 @@ local function ToggleLeaderboardNative()
         if PlayerListFrame then
             pcall(function()
                 PlayerListFrame.Visible =
-                    not Desired
+                    Desired
             end)
 
             return
@@ -4400,7 +4401,7 @@ local function ToggleLeaderboardNative()
         pcall(function()
             StarterGui:SetCoreGuiEnabled(
                 Enum.CoreGuiType.PlayerList,
-                not Desired
+                Desired
             )
         end)
 
@@ -4493,6 +4494,29 @@ local function SetNativeBackpack(
     return true
 end
 
+local function RestoreMobileTouchControls()
+
+    if not UserInputService.TouchEnabled then
+        return
+    end
+
+    -- The native Backpack can briefly take over mobile input.
+    -- Restore the gameplay thumbstick/jump controls after closing it.
+    pcall(function()
+        GuiService.TouchControlsEnabled = true
+    end)
+
+    task.delay(0.15, function()
+        if not UserInputService.TouchEnabled then
+            return
+        end
+
+        pcall(function()
+            GuiService.TouchControlsEnabled = true
+        end)
+    end)
+end
+
 local function ToggleInventoryNative()
 
     local Desired =
@@ -4513,6 +4537,14 @@ local function ToggleInventoryNative()
     SetNativeBackpack(
         Desired
     )
+
+    if not Desired then
+        RestoreMobileTouchControls()
+
+        task.delay(0.08, function()
+            RestoreMobileTouchControls()
+        end)
+    end
 
     UpdateMainIconStates()
 
@@ -7060,13 +7092,12 @@ then
 end
 
 -- The startup sequence above closes PlayerList when it is visibly open.
--- Do not immediately trust stale native state and flip our icon back on.
 LeaderboardOpen =
-    true
+    false
 
 SetActionLocalState(
     "leaderboard",
-    true,
+    false,
     0
 )
 
@@ -7098,12 +7129,11 @@ EscapeVisualOpen =
     GuiService.MenuIsOpen
 
 -- Actual native state.
--- LeaderboardOpen is intentionally inverted: TRUE=CLOSED, FALSE=OPEN.
 ChatOpen =
     ReadNativeChatState()
 
 LeaderboardOpen =
-    true
+    ReadNativePlayerListState(true)
 
 InventoryOpen =
     ReadNativeInventoryState()
@@ -7463,7 +7493,7 @@ print(
 
 print(
     "PlayerList:",
-    (not LeaderboardOpen)
+    LeaderboardOpen
         and "OPEN"
         or "CLOSED"
 )
