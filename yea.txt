@@ -1877,7 +1877,7 @@ local function UpdateMainIconStates()
     SetRect(
         LeaderboardIcon,
         0,
-        not LeaderboardOpen
+        LeaderboardOpen
             and 380
             or 114
     )
@@ -3548,33 +3548,19 @@ end
 -- STATE SYNC
 --============================================================
 
-local function SyncNativeState(ForceNativeRead)
+local function SyncNativeState(ForceNativeRead, SyncLeaderboard)
 
     local NewChatOpen =
         ReadNativeChatState()
 
-    local NewLeaderboardOpen
+    local NewLeaderboardOpen =
+        LeaderboardOpen
 
-    -- Mobile opens PlayerList through the Experience Controls menu, not
-    -- the desktop Tab shortcut. On touch devices the native GUI visibility
-    -- therefore already represents the real open state and must not use
-    -- the desktop inversion used by the previous V21 fix.
-    if UserInputService.TouchEnabled
-        and not UserInputService.KeyboardEnabled
-    then
-
-        NewLeaderboardOpen =
-            ReadNativePlayerListState(
-                ForceNativeRead == true
-            )
-
-    else
-
+    if SyncLeaderboard == true then
         NewLeaderboardOpen =
             not ReadNativePlayerListState(
                 ForceNativeRead == true
             )
-
     end
 
     -- Backpack open/closed is tracked from the real Backquote input
@@ -3590,7 +3576,9 @@ local function SyncNativeState(ForceNativeRead)
         ChatOpen = NewChatOpen
     end
 
-    if not IsActionLocked("leaderboard") then
+    if SyncLeaderboard == true
+        and not IsActionLocked("leaderboard")
+    then
         LeaderboardOpen = NewLeaderboardOpen
     end
 
@@ -3703,10 +3691,11 @@ end)
 -- NATIVE HOTKEY STATE WATCH
 --============================================================
 
-local function SyncAfterNativeHotkey()
+local function SyncAfterNativeHotkey(SyncLeaderboard)
     -- Respect the short local-state lock; do not force-read stale native state.
+    -- Only a real Leaderboard action may resync LeaderboardOpen.
     task.defer(function()
-        SyncNativeState()
+        SyncNativeState(false, SyncLeaderboard == true)
     end)
 end
 
@@ -3776,7 +3765,7 @@ UserInputService.InputBegan:Connect(
             NativeHotkeyOverrideUntil.leaderboard = os.clock() + 0.75
             SetActionLocalState("leaderboard", LeaderboardOpen, 0.75)
             UpdateMainIconStates()
-            SyncAfterNativeHotkey()
+            SyncAfterNativeHotkey(true)
 
         elseif Input.KeyCode ==
             Enum.KeyCode.Slash
@@ -6214,7 +6203,7 @@ function OldChrome2024CreatePinnedIcon(
         SetRect(
             Icon,
             0,
-            not LeaderboardOpen
+            LeaderboardOpen
             and 380
             or 114
         )
@@ -6533,7 +6522,7 @@ function OldChrome2024SyncPinned()
             SetRect(
                 Icon,
                 0,
-                not LeaderboardOpen
+                LeaderboardOpen
                 and 380
                 or 114
             )
