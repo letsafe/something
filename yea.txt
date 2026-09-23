@@ -1,6 +1,7 @@
 --============================================================
 -- OLD CHROME 2024
 -- EXECUTOR SCRIPT
+-- LEADERBOARD STATE INVERTED BUILD
 --============================================================
 --
 -- NATIVE COREUI ARCHITECTURE
@@ -15,6 +16,7 @@
 -- PlayerList:
 --   * CoreGui stays ENABLED
 --   * Native Tab remains functional
+--   * LeaderboardOpen is intentionally INVERTED: true=CLOSED, false=OPEN.
 --   * Actual PlayerListMaster.Visible is monitored
 --   * PlayerList is event-driven instead of continuously scanning CoreGui.
 --   * No manual permanent CoreGui disable
@@ -1877,7 +1879,7 @@ local function UpdateMainIconStates()
     SetRect(
         LeaderboardIcon,
         0,
-        LeaderboardOpen
+        not LeaderboardOpen
             and 380
             or 114
     )
@@ -3346,7 +3348,7 @@ local function ReadNativePlayerListState(IgnoreLock)
         })
 
     if CoreState ~= nil then
-        return CoreState
+        return not CoreState
     end
 
     local PlayerListMaster = FindPlayerListMaster()
@@ -3358,7 +3360,7 @@ local function ReadNativePlayerListState(IgnoreLock)
         end)
 
         if Success and type(Visible) == "boolean" then
-            return Visible
+            return not Visible
         end
 
     end
@@ -3558,7 +3560,7 @@ local function SyncNativeState(ForceNativeRead, SyncLeaderboard)
 
     if SyncLeaderboard == true then
         NewLeaderboardOpen =
-            not ReadNativePlayerListState(
+            ReadNativePlayerListState(
                 ForceNativeRead == true
             )
     end
@@ -4369,7 +4371,7 @@ local function ToggleLeaderboardNative()
                     "PlayerListOpen",
                     "PlayerListIsOpen"
                 },
-                Desired
+                not Desired
             )
 
         if CoreActivated then
@@ -4389,7 +4391,7 @@ local function ToggleLeaderboardNative()
         if PlayerListFrame then
             pcall(function()
                 PlayerListFrame.Visible =
-                    Desired
+                    not Desired
             end)
 
             return
@@ -4398,7 +4400,7 @@ local function ToggleLeaderboardNative()
         pcall(function()
             StarterGui:SetCoreGuiEnabled(
                 Enum.CoreGuiType.PlayerList,
-                Desired
+                not Desired
             )
         end)
 
@@ -6203,7 +6205,7 @@ function OldChrome2024CreatePinnedIcon(
         SetRect(
             Icon,
             0,
-            LeaderboardOpen
+            not LeaderboardOpen
             and 380
             or 114
         )
@@ -6522,7 +6524,7 @@ function OldChrome2024SyncPinned()
             SetRect(
                 Icon,
                 0,
-                LeaderboardOpen
+                not LeaderboardOpen
                 and 380
                 or 114
             )
@@ -7060,11 +7062,11 @@ end
 -- The startup sequence above closes PlayerList when it is visibly open.
 -- Do not immediately trust stale native state and flip our icon back on.
 LeaderboardOpen =
-    false
+    true
 
 SetActionLocalState(
     "leaderboard",
-    false,
+    true,
     0
 )
 
@@ -7096,11 +7098,12 @@ EscapeVisualOpen =
     GuiService.MenuIsOpen
 
 -- Actual native state.
+-- LeaderboardOpen is intentionally inverted: TRUE=CLOSED, FALSE=OPEN.
 ChatOpen =
     ReadNativeChatState()
 
 LeaderboardOpen =
-    false
+    true
 
 InventoryOpen =
     ReadNativeInventoryState()
@@ -7460,7 +7463,7 @@ print(
 
 print(
     "PlayerList:",
-    LeaderboardOpen
+    (not LeaderboardOpen)
         and "OPEN"
         or "CLOSED"
 )
