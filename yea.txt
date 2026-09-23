@@ -2373,6 +2373,24 @@ local function FindNativeActionButton(
             continue
         end
 
+        -- Never allow the native-action finder to select one of our
+        -- replacement buttons. The custom TopBarApp is also a CoreGui
+        -- descendant, so checking only the attribute on its root is not
+        -- enough; descendants do not inherit that attribute.
+        local IsOurButton =
+            false
+
+        pcall(function()
+            IsOurButton =
+                Object:IsDescendantOf(
+                    TopBarApp
+                )
+        end)
+
+        if IsOurButton then
+            continue
+        end
+
         local ObjectName =
             string.lower(
                 Object.Name
@@ -2382,23 +2400,23 @@ local function FindNativeActionButton(
             NameScores[ObjectName]
             or 0
 
-        if Score <= 0 then
-            local Text =
-                ""
+        local ObjectText =
+            ""
 
-            pcall(function()
-                Text =
-                    string.lower(
-                        tostring(
-                            Object.Text
-                        )
+        pcall(function()
+            ObjectText =
+                string.lower(
+                    tostring(
+                        Object.Text
                     )
-            end)
+                )
+        end)
 
+        if Score <= 0 then
             for Index, Name in ipairs(Names) do
-                if Text ~= ""
+                if ObjectText ~= ""
                     and string.find(
-                        Text,
+                        ObjectText,
                         Name,
                         1,
                         true
@@ -2407,8 +2425,54 @@ local function FindNativeActionButton(
                     Score =
                         math.max(
                             Score,
-                            550 - Index * 15
+                            600 - Index * 15
                         )
+                end
+            end
+        end
+
+        -- Mobile Experience Controls often put the text in a child
+        -- TextLabel rather than on the GuiButton itself. Read those labels
+        -- so "Leaderboard" / "Inventory" can be found on touch devices.
+        if Score <= 0 then
+            for _, Child in ipairs(
+                Object:GetDescendants()
+            ) do
+
+                if Child:IsA("TextLabel")
+                    or Child:IsA("TextButton")
+                    or Child:IsA("TextBox")
+                then
+
+                    local ChildText =
+                        ""
+
+                    pcall(function()
+                        ChildText =
+                            string.lower(
+                                tostring(
+                                    Child.Text
+                                )
+                            )
+                    end)
+
+                    if ChildText ~= "" then
+                        for Index, Name in ipairs(Names) do
+                            if string.find(
+                                ChildText,
+                                Name,
+                                1,
+                                true
+                            )
+                            then
+                                Score =
+                                    math.max(
+                                        Score,
+                                        800 - Index * 15
+                                    )
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -2473,6 +2537,37 @@ local function FindNativeActionButton(
 
                 Score +=
                     40
+
+            end
+
+            if string.find(
+                AncestorName,
+                "experience",
+                1,
+                true
+            )
+            or string.find(
+                AncestorName,
+                "hamburger",
+                1,
+                true
+            )
+            or string.find(
+                AncestorName,
+                "dropdown",
+                1,
+                true
+            )
+            or string.find(
+                AncestorName,
+                "menu",
+                1,
+                true
+            )
+            then
+
+                Score +=
+                    180
 
             end
 
@@ -3458,8 +3553,29 @@ local function SyncNativeState(ForceNativeRead)
     local NewChatOpen =
         ReadNativeChatState()
 
-    local NewLeaderboardOpen =
-        not ReadNativePlayerListState(ForceNativeRead == true)
+    local NewLeaderboardOpen
+
+    -- Mobile opens PlayerList through the Experience Controls menu, not
+    -- the desktop Tab shortcut. On touch devices the native GUI visibility
+    -- therefore already represents the real open state and must not use
+    -- the desktop inversion used by the previous V21 fix.
+    if UserInputService.TouchEnabled
+        and not UserInputService.KeyboardEnabled
+    then
+
+        NewLeaderboardOpen =
+            ReadNativePlayerListState(
+                ForceNativeRead == true
+            )
+
+    else
+
+        NewLeaderboardOpen =
+            not ReadNativePlayerListState(
+                ForceNativeRead == true
+            )
+
+    end
 
     -- Backpack open/closed is tracked from the real Backquote input
     -- and from our synthetic Backquote click path. Do not overwrite it
@@ -4246,8 +4362,62 @@ local function ToggleLeaderboardNative()
 
     UpdateMainIconStates()
 
-    -- Exactly one native action. The synthetic Tab must not re-toggle our
-    -- local state in the InputBegan handler above.
+    -- Mobile has no Tab shortcut. Use the real Experience Controls
+    -- PlayerList action when it is mounted, then fall back to the native
+    -- PlayerList GUI itself. This opens the same Roblox PlayerList rather
+    -- than making a separate/custom leaderboard.
+    if UserInputService.TouchEnabled
+        and not UserInputService.KeyboardEnabled
+    then
+
+        -- Some current clients expose the native Experience Controls
+        -- action through StarterGui:SetCore even though it is not a public
+        -- API. Try it first when the client provides it.
+        local CoreActivated =
+            SetGetCoreBoolean(
+                {
+                    "PlayerListActive",
+                    "PlayerListOpen",
+                    "PlayerListIsOpen"
+                },
+                Desired
+            )
+
+        if CoreActivated then
+            return
+        end
+
+        if ActivateNativeActionButton(
+            "leaderboard"
+        )
+        then
+            return
+        end
+
+        local PlayerListFrame =
+            FindPlayerListMaster()
+
+        if PlayerListFrame then
+            pcall(function()
+                PlayerListFrame.Visible =
+                    Desired
+            end)
+
+            return
+        end
+
+        pcall(function()
+            StarterGui:SetCoreGuiEnabled(
+                Enum.CoreGuiType.PlayerList,
+                Desired
+            )
+        end)
+
+        return
+    end
+
+    -- Desktop: exactly one native Tab action. The synthetic Tab must not
+    -- re-toggle our local state in the InputBegan handler above.
     SuppressSyntheticTabUntil =
         os.clock() + 0.35
 
@@ -4265,7 +4435,56 @@ local function SetNativeBackpack(
     Desired
 )
 
-    -- Mobile/desktop: use the real native backpack button when it exists.
+    -- Mobile has no Backquote shortcut. First activate the real Inventory
+    -- item from Roblox's native Experience Controls.
+    if UserInputService.TouchEnabled
+        and not UserInputService.KeyboardEnabled
+    then
+
+        local CoreActivated =
+            SetGetCoreBoolean(
+                {
+                    "BackpackActive",
+                    "BackpackOpen",
+                    "BackpackIsOpen"
+                },
+                Desired
+            )
+
+        if CoreActivated then
+            return true
+        end
+
+        if ActivateNativeActionButton(
+            "backpack"
+        )
+        then
+            return true
+        end
+
+        -- Last native fallback: some clients expose the actual Backpack
+        -- inventory frame directly in CoreGui. Visibility changes here are
+        -- still acting on Roblox's own Backpack UI, not our replacement.
+        local BackpackFrame =
+            FindBackpackInventoryFrame()
+
+        if BackpackFrame then
+            pcall(function()
+                BackpackFrame.Visible =
+                    Desired
+            end)
+
+            return true
+        end
+
+        return pcall(function()
+            StarterGui:SetCoreGuiEnabled(
+                Enum.CoreGuiType.Backpack,
+                Desired
+            )
+        end)
+    end
+
     -- Desktop fallback remains the native Backquote toggle.
     if ActivateNativeActionButton(
         "backpack"
@@ -6385,11 +6604,22 @@ function OldChrome2024SyncPinned()
 
             Icon.Visible = true
 
-            Icon.ImageRectSize =
-                Vector2.new(
-                    36,
-                    36
-                )
+            if ActionName ==
+                "emotes"
+            then
+
+                Icon.ImageRectSize =
+                    EMOTES_RECT_SIZE
+
+            else
+
+                Icon.ImageRectSize =
+                    Vector2.new(
+                        36,
+                        36
+                    )
+
+            end
 
             Icon.ImageTransparency =
                 0
