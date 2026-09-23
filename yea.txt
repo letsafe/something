@@ -16,6 +16,7 @@
 --   * CoreGui stays ENABLED
 --   * Native Tab remains functional
 --   * Actual PlayerListMaster.Visible is monitored
+--   * PlayerList is event-driven instead of continuously scanning CoreGui.
 --   * No manual permanent CoreGui disable
 --
 -- Backpack:
@@ -757,6 +758,18 @@ local ScrollingFrame =
         "ScrollingFrame"
     )
 
+pcall(function()
+    if SubMenuHost then
+        SubMenuHost.ClipsDescendants = false
+    end
+    if NineDotMenu then
+        NineDotMenu.ClipsDescendants = true
+    end
+    if ScrollingFrame then
+        ScrollingFrame.ClipsDescendants = true
+    end
+end)
+
 local SubBackpack =
     Path(
         ScrollingFrame,
@@ -951,6 +964,71 @@ end
 -- EXTRA SUBMENU ROWS
 --============================================================
 
+--============================================================
+-- DROPDOWN TEXT WIDTH FIX
+--============================================================
+
+local function FixDropdownLabel(
+    Label,
+    Row
+)
+
+    if not Label then
+        return
+    end
+
+    pcall(function()
+        Label.Text = "Dropdown"
+        Label.TextWrapped = false
+        Label.ClipsDescendants = false
+        Label.TextTruncate = Enum.TextTruncate.None
+        Label.AutomaticSize = Enum.AutomaticSize.X
+        Label.Visible = true
+    end)
+
+    -- Only the label's immediate text host and row may allow overflow.
+    local Parent = Label.Parent
+    if Parent then
+        pcall(function()
+            if Parent:IsA("GuiObject") then
+                Parent.ClipsDescendants = false
+            end
+        end)
+    end
+
+    if Row then
+        pcall(function()
+            Row.ClipsDescendants = false
+        end)
+    end
+
+    -- The submenu containers themselves must always clip.
+    pcall(function()
+        if SubMenuHost then SubMenuHost.ClipsDescendants = false end
+        if NineDotMenu then NineDotMenu.ClipsDescendants = true end
+        if ScrollingFrame then ScrollingFrame.ClipsDescendants = true end
+    end)
+
+    task.defer(function()
+        if not Label or not Label.Parent then
+            return
+        end
+
+        pcall(function()
+            local Bounds = Label.TextBounds.X
+            local OldSize = Label.Size
+            local Width = math.max(78, math.ceil(Bounds + 8))
+
+            Label.Size = UDim2.new(
+                0,
+                Width,
+                OldSize.Y.Scale,
+                OldSize.Y.Offset
+            )
+        end)
+    end)
+end
+
 local function CreateExtraSubmenuRow(
     Source,
     Name,
@@ -993,6 +1071,10 @@ local function CreateExtraSubmenuRow(
             Label.Text =
                 Text
         end)
+
+        if Name == "nine_dot_submenu" then
+            FixDropdownLabel(Label, Row)
+        end
 
     end
 
@@ -1307,6 +1389,7 @@ local ToggleEmotes
 local RepositionUnibar
 local UpdateChromeWidth
 local QueueUnibarReflow
+local RestoreAllPinGlyphs
 
 --============================================================
 -- NATIVE ACTION LOCKS
@@ -1338,6 +1421,7 @@ local NativeHotkeyOverrideUntil = {
 -- arrive at this script's own InputBegan handler. Suppress that one
 -- synthetic event so a click cannot toggle Backpack twice.
 local SuppressSyntheticBackquoteUntil = 0
+local SuppressSyntheticTabUntil = 0
 
 local function SetActionLocalState(
     ActionName,
@@ -1637,47 +1721,72 @@ local function CacheSubmenuText()
         ScrollingFrame:GetChildren()
     ) do
 
-        local Label =
-            Row:FindFirstChild(
-                "StyledTextLabel",
-                true
-            )
+        local Name =
+            string.lower(Row.Name)
 
-        if Label then
+        local DesiredText =
+            SubmenuText[Name]
 
-            local Name =
-                string.lower(
-                    Row.Name
-                )
+        for _, Candidate in ipairs(
+            Row:GetDescendants()
+        ) do
 
-            local DesiredText =
-                SubmenuText[
-                    Name
-                ]
+            if Candidate:IsA("TextLabel")
+                or Candidate:IsA("TextButton")
+                or Candidate:IsA("TextBox")
+            then
 
-            if DesiredText then
+                if DesiredText then
+                    pcall(function()
+                        Candidate.Text = DesiredText
+                    end)
+                end
+
+                SubmenuTextObjects[Candidate] = true
 
                 pcall(function()
+                    Candidate.Visible = true
+                end)
+            end
+        end
+    end
+end
 
-                    Label.Text =
-                        DesiredText
+function ForceSubmenuTextVisible()
 
+    if not ScrollingFrame then
+        return
+    end
+
+    for Label in pairs(
+        SubmenuTextObjects
+    ) do
+
+        if Label
+            and Label.Parent
+        then
+
+            pcall(function()
+                Label.Visible = true
+                Label.TextTransparency = 0
+            end)
+
+            local Parent = Label.Parent
+
+            while Parent
+                and Parent ~= SubMenuHost
+            do
+
+                pcall(function()
+                    if Parent:IsA("CanvasGroup") then
+                        Parent.GroupTransparency = 0
+                    elseif Parent:IsA("GuiObject") then
+                        Parent.Visible = true
+                    end
                 end)
 
+                Parent = Parent.Parent
             end
-
-            SubmenuTextObjects[
-                Label
-            ] =
-                true
-
-            -- Object MUST remain visible.
-            pcall(function()
-
-                Label.Visible =
-                    true
-
-            end)
         end
     end
 end
@@ -1785,6 +1894,10 @@ local function UpdateMainIconStates()
 
     SyncSubmenuIcons()
     SyncOptionalUnibarIcons()
+
+    if type(_G.__OldChrome2024SyncPinned) == "function" then
+        _G.__OldChrome2024SyncPinned()
+    end
 end
 
 --============================================================
@@ -1793,12 +1906,34 @@ end
 
 local function FadeSubmenuClosed()
 
+    -- Text is hidden instantly. Never tween TextTransparency.
+    for Label in pairs(
+        SubmenuTextObjects
+    ) do
+
+        if Label
+            and Label.Parent
+        then
+
+            pcall(function()
+                Label.Visible = true
+                Label.TextTransparency = 1
+            end)
+        end
+    end
+
+    -- Tween only non-text submenu artwork/background properties.
     for Object, Cache in pairs(
         TransparencyCache
     ) do
 
         if Object
             and Object.Parent
+            and not (
+                Object:IsA("TextLabel")
+                or Object:IsA("TextButton")
+                or Object:IsA("TextBox")
+            )
         then
 
             local Goal =
@@ -1813,16 +1948,6 @@ local function FadeSubmenuClosed()
 
             end
 
-            if Object:IsA("TextLabel")
-                or Object:IsA("TextButton")
-                or Object:IsA("TextBox")
-            then
-
-                Goal.TextTransparency =
-                    1
-
-            end
-
             if next(Goal) then
 
                 Tween(
@@ -1835,7 +1960,14 @@ local function FadeSubmenuClosed()
         end
     end
 
-    -- Explicit text tween.
+    if type(_G.__OldChrome2024RestorePinGlyphs) == "function" then
+        _G.__OldChrome2024RestorePinGlyphs()
+    end
+end
+
+local function FadeSubmenuOpen()
+
+    -- Text appears immediately. No text transparency tween exists here.
     for Label in pairs(
         SubmenuTextObjects
     ) do
@@ -1845,48 +1977,24 @@ local function FadeSubmenuClosed()
         then
 
             pcall(function()
-
-                Label.Visible =
-                    true
-
+                Label.Visible = true
+                Label.TextTransparency = 0
             end)
-
-            Tween(
-                Label,
-                SubMenuTweenInfo,
-                {
-                    TextTransparency =
-                        1
-                }
-            )
         end
     end
 
-    if type(_G.__OldChrome2024RestorePinGlyphs) == "function" then
-        _G.__OldChrome2024RestorePinGlyphs()
-    end
-end
-
-local function FadeSubmenuOpen()
-
-    --========================================================
-    -- Every text object starts at exactly 1.
-    --========================================================
-
-    SetAllSubmenuTextTransparency(
-        1
-    )
-
-    --========================================================
-    -- Generic objects.
-    --========================================================
-
+    -- Tween only non-text submenu artwork/background properties.
     for Object, Cache in pairs(
         TransparencyCache
     ) do
 
         if Object
             and Object.Parent
+            and not (
+                Object:IsA("TextLabel")
+                or Object:IsA("TextButton")
+                or Object:IsA("TextBox")
+            )
         then
 
             local Goal =
@@ -1901,16 +2009,6 @@ local function FadeSubmenuOpen()
 
             end
 
-            if Object:IsA("TextLabel")
-                or Object:IsA("TextButton")
-                or Object:IsA("TextBox")
-            then
-
-                Goal.TextTransparency =
-                    0
-
-            end
-
             if next(Goal) then
 
                 Tween(
@@ -1923,62 +2021,7 @@ local function FadeSubmenuOpen()
         end
     end
 
-    --========================================================
-    -- Explicit text tween.
-    --========================================================
-
-    for Label in pairs(
-        SubmenuTextObjects
-    ) do
-
-        if Label
-            and Label.Parent
-        then
-
-            pcall(function()
-
-                Label.Visible =
-                    true
-
-                Label.TextTransparency =
-                    1
-
-            end)
-
-            Tween(
-                Label,
-                SubMenuTweenInfo,
-                {
-                    TextTransparency =
-                        0
-                }
-            )
-
-            -- Hard-final visible state.
-            task.delay(
-                0.22,
-                function()
-
-                    if SubMenuOpen
-                        and Label
-                        and Label.Parent
-                    then
-
-                        pcall(function()
-
-                            Label.Visible =
-                                true
-
-                            Label.TextTransparency =
-                                0
-
-                        end)
-
-                    end
-                end
-            )
-        end
-    end
+    ForceSubmenuTextVisible()
 
     if type(_G.__OldChrome2024RestorePinGlyphs) == "function" then
         _G.__OldChrome2024RestorePinGlyphs()
@@ -1997,19 +2040,31 @@ local function OpenSubmenu()
     if SubMenuHost then
 
         pcall(function()
-
-            SubMenuHost.Visible =
-                true
-
+            SubMenuHost.Visible = true
+            -- The host contains the popup, so it must not clip the popup.
+            SubMenuHost.ClipsDescendants = false
         end)
 
     end
 
+    if NineDotMenu then
+        pcall(function()
+            NineDotMenu.ClipsDescendants = true
+            NineDotMenu.Visible = true
+        end)
+    end
+
+    if ScrollingFrame then
+        pcall(function()
+            ScrollingFrame.ClipsDescendants = true
+            ScrollingFrame.Visible = true
+        end)
+    end
+
     CacheSubmenuText()
-
     SyncSubmenuIcons()
-
     FadeSubmenuOpen()
+    ForceSubmenuTextVisible()
 
     ShowHighlight(
         NineDotSelected,
@@ -2034,26 +2089,19 @@ local function CloseSubmenu()
         NineDotHighlighter
     )
 
+    pcall(function()
+        if SubMenuHost then SubMenuHost.ClipsDescendants = false end
+        if NineDotMenu then NineDotMenu.ClipsDescendants = true end
+        if ScrollingFrame then ScrollingFrame.ClipsDescendants = true end
+    end)
+
     FadeSubmenuClosed()
 
-    task.delay(
-        0.2,
-        function()
-
-            if not SubMenuOpen
-                and SubMenuHost
-            then
-
-                pcall(function()
-
-                    SubMenuHost.Visible =
-                        false
-
-                end)
-
-            end
-        end
-    )
+    if SubMenuHost then
+        pcall(function()
+            SubMenuHost.Visible = false
+        end)
+    end
 
     RestoreAllPinGlyphs()
 end
@@ -2237,6 +2285,310 @@ local function PrepareButton(
             true
 
     end)
+end
+
+--============================================================
+-- NATIVE ACTION BUTTON FINDER (ONLY 3 ACTIONS)
+--============================================================
+--
+-- Used only when one of the three custom action buttons is clicked.
+-- This is intentionally NOT a watcher/poller and does not touch the
+-- rest of the Chrome UI.
+--============================================================
+
+local NativeActionButtonCache = {}
+
+local NativeActionButtonNames = {
+    leaderboard = {
+        "playerlistbutton",
+        "playerlist",
+        "leaderboardbutton",
+        "leaderboard",
+        "playersbutton"
+    },
+    backpack = {
+        "backpackbutton",
+        "backpack",
+        "inventorybutton",
+        "inventory"
+    },
+    emotes = {
+        "emotesbutton",
+        "emotesmenubutton",
+        "emotesmenu",
+        "emotes"
+    }
+}
+
+local function FindNativeActionButton(
+    ActionName
+)
+
+    local Cached =
+        NativeActionButtonCache[ActionName]
+
+    if Cached
+        and Cached.Parent
+        and Cached:IsA("GuiButton")
+    then
+
+        return Cached
+
+    end
+
+    local Names =
+        NativeActionButtonNames[ActionName]
+
+    if not Names then
+        return nil
+    end
+
+    local Best =
+        nil
+
+    local BestScore =
+        -math.huge
+
+    local NameScores =
+        {}
+
+    for Index, Name in ipairs(Names) do
+        NameScores[Name] =
+            1000 - Index * 20
+    end
+
+    for _, Object in ipairs(
+        CoreGui:GetDescendants()
+    ) do
+
+        if not Object:IsA("GuiButton") then
+            continue
+        end
+
+        if Object:GetAttribute(
+            "__OldChrome2024"
+        ) == true
+        then
+
+            continue
+        end
+
+        local ObjectName =
+            string.lower(
+                Object.Name
+            )
+
+        local Score =
+            NameScores[ObjectName]
+            or 0
+
+        if Score <= 0 then
+            local Text =
+                ""
+
+            pcall(function()
+                Text =
+                    string.lower(
+                        tostring(
+                            Object.Text
+                        )
+                    )
+            end)
+
+            for Index, Name in ipairs(Names) do
+                if Text ~= ""
+                    and string.find(
+                        Text,
+                        Name,
+                        1,
+                        true
+                    )
+                then
+                    Score =
+                        math.max(
+                            Score,
+                            550 - Index * 15
+                        )
+                end
+            end
+        end
+
+        if Score <= 0 then
+            continue
+        end
+
+        local Ancestor =
+            Object.Parent
+
+        for _ = 1, 6 do
+
+            if not Ancestor then
+                break
+            end
+
+            local AncestorName =
+                string.lower(
+                    Ancestor.Name
+                )
+
+            if string.find(
+                AncestorName,
+                "topbar",
+                1,
+                true
+            )
+            or string.find(
+                AncestorName,
+                "top_bar",
+                1,
+                true
+            )
+            then
+
+                Score +=
+                    250
+
+            end
+
+            if string.find(
+                AncestorName,
+                "right",
+                1,
+                true
+            )
+            then
+
+                Score +=
+                    60
+
+            end
+
+            if string.find(
+                AncestorName,
+                "chrome",
+                1,
+                true
+            )
+            then
+
+                Score +=
+                    40
+
+            end
+
+            Ancestor =
+                Ancestor.Parent
+        end
+
+        if Object.Visible then
+            Score += 20
+        end
+
+        if Score > BestScore then
+            BestScore =
+                Score
+
+            Best =
+                Object
+        end
+    end
+
+    NativeActionButtonCache[ActionName] =
+        Best
+
+    return Best
+end
+
+local function ActivateNativeActionButton(
+    ActionName
+)
+
+    local Button =
+        FindNativeActionButton(
+            ActionName
+        )
+
+    if not Button then
+        return false
+    end
+
+    PrepareButton(
+        Button
+    )
+
+    local FireSignal =
+        firesignal
+
+    if type(FireSignal) ==
+        "function"
+    then
+
+        local Fired =
+            pcall(function()
+
+                FireSignal(
+                    Button.Activated
+                )
+
+            end)
+
+        if Fired then
+            return true
+        end
+    end
+
+    local Activated =
+        pcall(function()
+
+            Button:Activate()
+
+        end)
+
+    return Activated
+end
+
+--============================================================
+-- ROBUST MAIN BUTTON CLICK CATCHER
+--============================================================
+-- Some RBXM versions expose a named hit area that is a GuiButton but
+-- can be underneath another transparent GUI object. A transparent
+-- catcher on the actual action row gives the visible action a reliable
+-- mouse/touch target without changing the artwork.
+--============================================================
+
+function CreateMainClickCatcher(
+    Row,
+    Name
+)
+
+    if not Row or not Row:IsA("GuiObject") then
+        return nil
+    end
+
+    local Existing = Row:FindFirstChild(Name)
+
+    if Existing and Existing:IsA("GuiButton") then
+        PrepareButton(Existing)
+        return Existing
+    end
+
+    local Button = Instance.new("ImageButton")
+
+    Button.Name = Name
+    Button.BackgroundTransparency = 1
+    Button.BorderSizePixel = 0
+    Button.Image = ""
+    Button.ImageTransparency = 1
+    Button.AutoButtonColor = false
+    Button.Active = true
+    Button.Selectable = true
+    Button.ClipsDescendants = false
+    Button.Size = UDim2.fromScale(1, 1)
+    Button.Position = UDim2.fromScale(0, 0)
+    Button.ZIndex = 10000
+    Button.Parent = Row
+
+    return Button
 end
 
 --============================================================
@@ -2743,7 +3095,7 @@ local function WatchPinButtonPosition(Button)
     end)
 end
 
-local function RestoreAllPinGlyphs()
+RestoreAllPinGlyphs = function()
 
     for ActionName, Button in pairs(_G.__OldChrome2024PinButtons or {}) do
         if Button and Button.Parent then
@@ -2888,20 +3240,9 @@ local function ReadNativePlayerListState(IgnoreLock)
         return LeaderboardOpen
     end
 
-    -- Read the actual native PlayerList tree first. CoreScript GetCore
-    -- values can lag behind a real Tab toggle on some clients.
-    local PlayerListMaster = FindPlayerListMaster()
-
-    if PlayerListMaster then
-        local Success, Visible = pcall(function()
-            return IsGuiTreeVisible(PlayerListMaster)
-        end)
-        if Success and type(Visible) == "boolean" then
-            return Visible
-        end
-    end
-
-    -- Fallback to clients that expose PlayerList state through GetCore.
+    -- GetCore is the authoritative CoreScript state for PlayerList on the
+    -- clients this replacement is targeting. Use the GUI tree only as a
+    -- fallback because PlayerListMaster can remain mounted while hidden.
     local CoreState =
         ReadGetCoreBoolean({
             "PlayerListActive",
@@ -2913,6 +3254,20 @@ local function ReadNativePlayerListState(IgnoreLock)
         return CoreState
     end
 
+    local PlayerListMaster = FindPlayerListMaster()
+
+    if PlayerListMaster then
+
+        local Success, Visible = pcall(function()
+            return IsGuiTreeVisible(PlayerListMaster)
+        end)
+
+        if Success and type(Visible) == "boolean" then
+            return Visible
+        end
+
+    end
+
     return LeaderboardOpen
 end
 
@@ -2922,19 +3277,8 @@ local function ReadNativeEmotesState(IgnoreLock)
         return EmotesOpen
     end
 
-    -- Prefer the client's GetCore state first, just like Backpack.
-    local CoreState =
-        ReadGetCoreBoolean({
-            "EmotesMenuActive",
-            "EmotesActive",
-            "EmotesMenuOpen",
-            "EmotesOpen"
-        })
-
-    if CoreState ~= nil then
-        return CoreState
-    end
-
+    -- GuiService is the actual menu state. GetCore can report the previous
+    -- state for a short time after a click, which caused the two-click bug.
     local Success,
         Open =
         pcall(function()
@@ -2948,6 +3292,18 @@ local function ReadNativeEmotesState(IgnoreLock)
     then
 
         return Open
+    end
+
+    local CoreState =
+        ReadGetCoreBoolean({
+            "EmotesMenuActive",
+            "EmotesActive",
+            "EmotesMenuOpen",
+            "EmotesOpen"
+        })
+
+    if CoreState ~= nil then
+        return CoreState
     end
 
     return EmotesOpen
@@ -3103,7 +3459,7 @@ local function SyncNativeState(ForceNativeRead)
         ReadNativeChatState()
 
     local NewLeaderboardOpen =
-        ReadNativePlayerListState(ForceNativeRead == true)
+        not ReadNativePlayerListState(ForceNativeRead == true)
 
     -- Backpack open/closed is tracked from the real Backquote input
     -- and from our synthetic Backquote click path. Do not overwrite it
@@ -3151,6 +3507,8 @@ end
 --============================================================
 
 local function ReopenChatFromSlash()
+
+    ChatOpen = true
 
     pcall(function()
 
@@ -3203,45 +3561,6 @@ local function ReopenChatFromSlash()
 end
 
 --============================================================
--- PLAYERLIST VISIBILITY WATCHER
---============================================================
-
-local PlayerListMasterWatched =
-    nil
-
-local function WatchPlayerListMaster()
-
-    local Frame =
-        FindPlayerListMaster()
-
-    if not Frame
-        or Frame ==
-            PlayerListMasterWatched
-    then
-        return
-    end
-
-    PlayerListMasterWatched =
-        Frame
-
-    pcall(function()
-
-        Frame:GetPropertyChangedSignal(
-            "Visible"
-        ):Connect(
-            function()
-
-                task.defer(
-                    SyncNativeState
-                )
-
-            end
-        )
-
-    end)
-end
-
---============================================================
 -- CHAT STATE WATCH
 --============================================================
 
@@ -3269,14 +3588,10 @@ end)
 --============================================================
 
 local function SyncAfterNativeHotkey()
-    -- Roblox updates these CoreScript UIs on the same input cycle, so
-    -- one immediate read can race the native visibility change. Retry
-    -- briefly while bypassing our own local action lock.
-    for _, DelayTime in ipairs({0.03, 0.10, 0.20, 0.40, 0.65}) do
-        task.delay(DelayTime, function()
-            SyncNativeState(true)
-        end)
-    end
+    -- Respect the short local-state lock; do not force-read stale native state.
+    task.defer(function()
+        SyncNativeState()
+    end)
 end
 
 UserInputService.InputBegan:Connect(
@@ -3289,19 +3604,26 @@ UserInputService.InputBegan:Connect(
             Enum.KeyCode.Period
         then
 
-            task.delay(
-                0.05,
-                SyncNativeState
+            EmotesOpen =
+                not EmotesOpen
+
+            SetActionLocalState(
+                "emotes",
+                EmotesOpen,
+                0.75
             )
+
+            NativeHotkeyOverrideUntil.emotes =
+                os.clock() + 0.75
+
+            UpdateMainIconStates()
+            SyncAfterNativeHotkey()
 
         elseif Input.KeyCode ==
             Enum.KeyCode.Escape
         then
 
-            task.delay(
-                0.05,
-                SyncNativeState
-            )
+            task.defer(SyncNativeState)
 
         elseif Input.KeyCode ==
             Enum.KeyCode.Backquote
@@ -3327,6 +3649,13 @@ UserInputService.InputBegan:Connect(
             Enum.KeyCode.Tab
         then
 
+            if os.clock() < SuppressSyntheticTabUntil then
+
+                SuppressSyntheticTabUntil = 0
+
+                return
+            end
+
             LeaderboardOpen = not LeaderboardOpen
             NativeHotkeyOverrideUntil.leaderboard = os.clock() + 0.75
             SetActionLocalState("leaderboard", LeaderboardOpen, 0.75)
@@ -3337,18 +3666,26 @@ UserInputService.InputBegan:Connect(
             Enum.KeyCode.Slash
         then
 
-            if not GameProcessed then
+            ReopenChatFromSlash()
 
-                ReopenChatFromSlash()
+            ChatOpen = true
 
-            end
-
-            task.delay(
-                0.05,
-                SyncNativeState
+            SetActionLocalState(
+                "chat",
+                true,
+                0.8
             )
 
+            NativeHotkeyOverrideUntil.chat =
+                os.clock() + 0.8
+
+            UpdateMainIconStates()
+
+            task.defer(function()
+                ReopenChatFromSlash()
+            end)
         end
+
     end
 )
 
@@ -3356,35 +3693,6 @@ UserInputService.InputEnded:Connect(
     function(Input)
         -- Tab/backquote state is predicted on InputBegan; do not issue
         -- another read here because the native key release can race it.
-    end
-)
-
---============================================================
--- NATIVE OBJECT REACQUISITION
---============================================================
---
--- This does NOT manipulate the CoreGui.
--- It only reconnects our Visible listeners when Roblox
--- recreates its native frames.
---============================================================
-
-task.spawn(
-    function()
-
-        while TopBarApp
-            and TopBarApp.Parent
-        do
-
-            WatchPlayerListMaster()
-
-            SyncNativeState()
-
-            task.wait(
-                0.1
-            )
-
-        end
-
     end
 )
 
@@ -3606,17 +3914,21 @@ local function AddInventoryIcon()
 
     end
 
-    if HitArea then
-
-        PrepareButton(
-            HitArea
+    local InventoryClickCatcher =
+        CreateMainClickCatcher(
+            InventoryRoot,
+            "__OldChrome2024InventoryClickCatcher"
         )
 
-        HitArea.Activated:Connect(
+    PrepareButton(
+        InventoryClickCatcher
+    )
+
+    if InventoryClickCatcher then
+
+        InventoryClickCatcher.Activated:Connect(
             function()
-
                 ToggleInventory()
-
             end
         )
 
@@ -3731,17 +4043,21 @@ local function AddEmotesIcon()
         Selected
     )
 
-    if HitArea then
-
-        PrepareButton(
-            HitArea
+    local EmotesClickCatcher =
+        CreateMainClickCatcher(
+            EmotesRoot,
+            "__OldChrome2024EmotesClickCatcher"
         )
 
-        HitArea.Activated:Connect(
+    PrepareButton(
+        EmotesClickCatcher
+    )
+
+    if EmotesClickCatcher then
+
+        EmotesClickCatcher.Activated:Connect(
             function()
-
                 ToggleEmotes()
-
             end
         )
 
@@ -3775,7 +4091,7 @@ local function OpenRealChat()
     SetActionLocalState(
         "chat",
         true,
-        0.45
+        0.15
     )
 
     pcall(function()
@@ -3834,25 +4150,11 @@ local function OpenRealChat()
     end
 
     FocusChat()
+    task.defer(FocusChat)
 
-    task.delay(
-        0.05,
-        FocusChat
-    )
-
-    task.delay(
-        0.15,
-        FocusChat
-    )
-
-    task.delay(
-        0.25,
-        function()
-
-            UpdateMainIconStates()
-
-        end
-    )
+    if type(_G.__OldChrome2024SyncPinned) == "function" then
+        _G.__OldChrome2024SyncPinned()
+    end
 end
 
 --============================================================
@@ -3864,7 +4166,7 @@ local function CloseRealChat()
     SetActionLocalState(
         "chat",
         false,
-        0.45
+        0.15
     )
 
     local TextBox =
@@ -3903,17 +4205,9 @@ local function CloseRealChat()
 
     UpdateMainIconStates()
 
-    task.delay(
-        0.1,
-        function()
-
-            if not ChatOpen then
-
-                UpdateMainIconStates()
-
-            end
-        end
-    )
+    if type(_G.__OldChrome2024SyncPinned) == "function" then
+        _G.__OldChrome2024SyncPinned()
+    end
 end
 
 local function ToggleChat()
@@ -3933,51 +4227,31 @@ end
 -- LEADERBOARD TOGGLE
 --============================================================
 
-local function SetNativePlayerList(Desired)
-    -- Native PlayerList uses Tab for the open/close action.
-    SendTab()
-    return true
-end
-
 local function ToggleLeaderboardNative()
 
-    local Current = LeaderboardOpen
-    local Master = FindPlayerListMaster()
+    local Desired =
+        not LeaderboardOpen
 
-    if Master then
-        local Success, Value = pcall(function()
-            return IsGuiTreeVisible(Master)
-        end)
+    LeaderboardOpen =
+        Desired
 
-        if Success and type(Value) == "boolean" then
-            Current = Value
-        end
-    end
+    NativeHotkeyOverrideUntil.leaderboard =
+        os.clock() + 0.75
 
-    local Desired = not Current
+    SetActionLocalState(
+        "leaderboard",
+        Desired,
+        0.75
+    )
 
-    LeaderboardOpen = Desired
-    NativeHotkeyOverrideUntil.leaderboard = os.clock() + 0.75
-    SetActionLocalState("leaderboard", Desired, 0.75)
-
-    -- Exactly one native Tab toggle.
-    SendTab()
     UpdateMainIconStates()
 
-    task.delay(0.20, function()
-        local ActualMaster = FindPlayerListMaster()
+    -- Exactly one native action. The synthetic Tab must not re-toggle our
+    -- local state in the InputBegan handler above.
+    SuppressSyntheticTabUntil =
+        os.clock() + 0.35
 
-        if ActualMaster then
-            local Success, Value = pcall(function()
-                return IsGuiTreeVisible(ActualMaster)
-            end)
-
-            if Success and type(Value) == "boolean" then
-                LeaderboardOpen = Value
-                UpdateMainIconStates()
-            end
-        end
-    end)
+    SendTab()
 end
 
 ToggleLeaderboard =
@@ -3991,10 +4265,19 @@ local function SetNativeBackpack(
     Desired
 )
 
-    -- Use the real native Backquote toggle. SetCore/BackpackActive can
-    -- report the availability/enabled state instead of the current open
-    -- state on this client, which made custom clicks appear stuck.
-    SuppressSyntheticBackquoteUntil = os.clock() + 0.35
+    -- Mobile/desktop: use the real native backpack button when it exists.
+    -- Desktop fallback remains the native Backquote toggle.
+    if ActivateNativeActionButton(
+        "backpack"
+    )
+    then
+
+        return true
+    end
+
+    SuppressSyntheticBackquoteUntil =
+        os.clock() + 0.35
+
     SendBackquote()
 
     return true
@@ -4002,19 +4285,20 @@ end
 
 local function ToggleInventoryNative()
 
-    -- The custom button is itself a native Backquote request. Track the
-    -- desired state locally first, then send exactly one Backquote. The
-    -- synthetic input is suppressed in the InputBegan handler above.
     local Desired =
         not InventoryOpen
 
     SetActionLocalState(
         "backpack",
         Desired,
-        0.75
+        1.0
     )
 
-    NativeHotkeyOverrideUntil.backpack = os.clock() + 0.75
+    NativeHotkeyOverrideUntil.backpack =
+        os.clock() + 1.0
+
+    InventoryOpen =
+        Desired
 
     SetNativeBackpack(
         Desired
@@ -4022,9 +4306,15 @@ local function ToggleInventoryNative()
 
     UpdateMainIconStates()
 
-    task.delay(0.08, function()
-        UpdateMainIconStates()
-    end)
+    if type(
+        _G.__OldChrome2024SyncPinned
+    ) == "function"
+    then
+
+        _G.__OldChrome2024SyncPinned()
+
+    end
+
 end
 
 ToggleInventory =
@@ -4038,33 +4328,6 @@ local function SetNativeEmotes(
     Desired
 )
 
-    -- Again, use GetCore/SetCore first when the client exposes the
-    -- corresponding CoreScript state.
-    local SetSuccess =
-        SetGetCoreBoolean({
-            "EmotesMenuActive",
-            "EmotesActive",
-            "EmotesMenuOpen",
-            "EmotesOpen"
-        }, Desired)
-
-    if SetSuccess then
-
-        task.wait(0.03)
-
-        local Actual =
-            ReadGetCoreBoolean({
-                "EmotesMenuActive",
-                "EmotesActive",
-                "EmotesMenuOpen",
-                "EmotesOpen"
-            })
-
-        if Actual == Desired then
-            return true
-        end
-    end
-
     pcall(function()
 
         StarterGui:SetCoreGuiEnabled(
@@ -4074,30 +4337,37 @@ local function SetNativeEmotes(
 
     end)
 
-    pcall(function()
+    local Success =
+        pcall(function()
 
-        GuiService:SetEmotesMenuOpen(
-            Desired
-        )
+            GuiService:SetEmotesMenuOpen(
+                Desired
+            )
 
-    end)
+        end)
 
-    return true
+    return Success
 end
 
 local function ToggleEmotesNative()
 
     local Current =
-        ReadNativeEmotesState()
+        ReadNativeEmotesState(true)
 
     local Desired =
         not Current
 
+    EmotesOpen =
+        Desired
+
     SetActionLocalState(
         "emotes",
         Desired,
-        0.45
+        0.8
     )
+
+    NativeHotkeyOverrideUntil.emotes =
+        os.clock() + 0.8
 
     SetNativeEmotes(
         Desired
@@ -4105,23 +4375,11 @@ local function ToggleEmotesNative()
 
     UpdateMainIconStates()
 
-    task.delay(
-        0.22,
-        function()
-
-            if IsActionLocked("emotes") then
-                UpdateMainIconStates()
-                return
-            end
-
-            EmotesOpen =
-                ReadNativeEmotesState()
-
-            UpdateMainIconStates()
-
-        end
-    )
+    if type(_G.__OldChrome2024SyncPinned) == "function" then
+        _G.__OldChrome2024SyncPinned()
+    end
 end
+
 
 ToggleEmotes =
     ToggleEmotesNative
@@ -4443,21 +4701,15 @@ local function OpenTrust()
 
     PressEscape()
 
-    task.delay(
-        0.15,
-        function()
-
-            if TrustActive
-                and GuiService.MenuIsOpen
-            then
-
-                TryOpenReport()
-
-            end
-        end
-    )
+    if GuiService.MenuIsOpen then
+        task.defer(TryOpenReport)
+    end
 
     UpdateMainIconStates()
+
+    if type(_G.__OldChrome2024SyncPinned) == "function" then
+        _G.__OldChrome2024SyncPinned()
+    end
 end
 
 local function CloseTrust()
@@ -4476,6 +4728,10 @@ local function CloseTrust()
     )
 
     UpdateMainIconStates()
+
+    if type(_G.__OldChrome2024SyncPinned) == "function" then
+        _G.__OldChrome2024SyncPinned()
+    end
 end
 
 local function ToggleTrust()
@@ -4532,7 +4788,7 @@ local function SetEscapeVisual(
     end
 end
 
-local function EscapeStateChanged()
+function EscapeStateChanged()
 
     local Open =
         GuiService.MenuIsOpen
@@ -4544,21 +4800,7 @@ local function EscapeStateChanged()
     if Open then
 
         if TrustActive then
-
-            task.delay(
-                0.1,
-                function()
-
-                    if TrustActive
-                        and GuiService.MenuIsOpen
-                    then
-
-                        TryOpenReport()
-
-                    end
-                end
-            )
-
+            task.defer(TryOpenReport)
         end
 
     else
@@ -4601,7 +4843,7 @@ end)
 -- REPOSITION UNIBAR
 --============================================================
 
-local FixedUnibarOrder = {
+FixedUnibarOrder = {
 
     chrome_toggle =
         1,
@@ -4628,7 +4870,7 @@ local FixedUnibarOrder = {
         8
 }
 
-local function ShiftUDim2(
+function ShiftUDim2(
     Position,
     XOffset
 )
@@ -4645,7 +4887,7 @@ local function ShiftUDim2(
     )
 end
 
-local function GetOrderedOptionalIcons()
+function GetOrderedOptionalIcons()
 
     local Result =
         {}
@@ -4680,9 +4922,9 @@ local function GetOrderedOptionalIcons()
     return Result
 end
 
-local UnibarLayoutDetached = false
+UnibarLayoutDetached = false
 
-local function DetachDirectUnibarLayouts()
+function DetachDirectUnibarLayouts()
 
     if UnibarLayoutDetached or not Frame3 then
         return
@@ -4932,34 +5174,8 @@ QueueUnibarReflow = function()
         return
     end
 
-    -- The RBXM can have a UIListLayout which resolves on the next
-    -- render/layout step. Re-run the same geometry after insertion
-    -- without waiting for the Chrome panel to be reopened.
-    task.defer(function()
-
-        RepositionUnibar()
-        UpdateChromeWidth()
-
-    end)
-
-    task.defer(function()
-
-        RunService.Heartbeat:Wait()
-
-        RepositionUnibar()
-        UpdateChromeWidth()
-
-    end)
-
-    task.defer(function()
-
-        RunService.Heartbeat:Wait()
-        RunService.Heartbeat:Wait()
-
-        RepositionUnibar()
-        UpdateChromeWidth()
-
-    end)
+    RepositionUnibar()
+    UpdateChromeWidth()
 end
 
 --============================================================
@@ -4969,7 +5185,7 @@ end
 pcall(function()
     Frame3.ChildAdded:Connect(function(Child)
         if Child:IsA("GuiObject") then
-            task.defer(QueueUnibarReflow)
+            QueueUnibarReflow()
         end
     end)
 end)
@@ -4977,7 +5193,7 @@ end)
 pcall(function()
     Frame3.ChildRemoved:Connect(function(Child)
         if Child:IsA("GuiObject") then
-            task.defer(QueueUnibarReflow)
+            QueueUnibarReflow()
         end
     end)
 end)
@@ -5050,7 +5266,6 @@ UpdateChromeWidth = function()
         Width =
             44 +
             PinnedCount * 44
-
     end
 
     Tween(
@@ -5066,34 +5281,10 @@ UpdateChromeWidth = function()
     )
 end
 
--- Roblox may perform one or more late UI layout passes after a cloned
--- optional icon is inserted. Keep our physical positions authoritative
--- while Chrome is open, without repeatedly restarting the width tween.
-task.spawn(function()
-    local LastCount = -1
-
-    while Frame3 and Frame3.Parent do
-        local Count = 0
-
-        if InventoryRoot and InventoryRoot.Parent == Frame3 then
-            Count += 1
-        end
-
-        if EmotesRoot and EmotesRoot.Parent == Frame3 then
-            Count += 1
-        end
-
-        if Count ~= LastCount then
-            LastCount = Count
-            RepositionUnibar()
-            UpdateChromeWidth()
-        elseif ChromeOpen then
-            RepositionUnibar()
-        end
-
-        task.wait(0.05)
-    end
-end)
+-- Layout is refreshed only on actual UI changes. The old 0.05-second
+-- polling loop repeatedly restarted the 0.5-second closed-strip tween,
+-- which is why pinned icons could take about two seconds to appear and
+-- why the script consumed unnecessary frame time.
 
 --============================================================
 -- COLLAPSED UNIBAR VISIBILITY
@@ -5104,7 +5295,7 @@ end)
 -- extra 44px slots.
 --============================================================
 
-local function SyncCollapsedUnibarVisibility()
+function SyncCollapsedUnibarVisibility()
 
     if not Frame3 then
         return
@@ -5140,181 +5331,140 @@ end
 -- MAIN BUTTONS
 --============================================================
 
-if ChromeHit then
+PrepareButton(ChromeHit)
+PrepareButton(NineDotHit)
+PrepareButton(ChatHit)
+PrepareButton(LeaderboardHit)
+PrepareButton(TrustHit)
 
-    ChromeHit.Activated:Connect(
-        function()
+function ToggleChromeFromClick()
 
-            CloseSubmenu()
+    CloseSubmenu()
 
-            ChromeOpen =
-                not ChromeOpen
+    ChromeOpen =
+        not ChromeOpen
 
-            SyncCollapsedUnibarVisibility()
-            RepositionUnibar()
+    OldChrome2024RepositionPinned()
+    SyncCollapsedUnibarVisibility()
+    RepositionUnibar()
+    UpdateChromeWidth()
 
-            if Frame3 then
+    if Frame3 then
 
-                pcall(function()
+        pcall(function()
+            Frame3.ClipsDescendants = true
+        end)
 
-                    Frame3.ClipsDescendants =
-                        true
+    end
 
-                end)
+    if ChromeOpen then
 
-            end
-
-            UpdateChromeWidth()
-
-            if ChromeOpen then
-
-                if ChromeCube then
-
-                    ChromeCube.ImageTransparency =
-                        1
-
-                end
-
-                if ChromeX1 then
-
-                    ChromeX1.Visible =
-                        true
-
-                end
-
-                if ChromeX2 then
-
-                    ChromeX2.Visible =
-                        true
-
-                end
-
-                ShowHighlight(
-                    ChromeSelected,
-                    0.9
-                )
-
-            else
-
-                if ChromeCube then
-
-                    ChromeCube.ImageTransparency =
-                        0
-
-                end
-
-                if ChromeX1 then
-
-                    ChromeX1.Visible =
-                        false
-
-                end
-
-                if ChromeX2 then
-
-                    ChromeX2.Visible =
-                        false
-
-                end
-
-                HideHighlight(
-                    ChromeSelected
-                )
-
-            end
-
-            RepositionUnibar()
-            UpdateChromeWidth()
+        if ChromeCube then
+            ChromeCube.ImageTransparency = 1
         end
-    )
 
+        if ChromeX1 then
+            ChromeX1.Visible = true
+        end
+
+        if ChromeX2 then
+            ChromeX2.Visible = true
+        end
+
+        ShowHighlight(ChromeSelected, 0.9)
+
+    else
+
+        if ChromeCube then
+            ChromeCube.ImageTransparency = 0
+        end
+
+        if ChromeX1 then
+            ChromeX1.Visible = false
+        end
+
+        if ChromeX2 then
+            ChromeX2.Visible = false
+        end
+
+        HideHighlight(ChromeSelected)
+
+    end
+
+    SyncCollapsedUnibarVisibility()
+    RepositionUnibar()
+    UpdateChromeWidth()
+
+end
+
+function ToggleNineDotFromClick()
+
+    if SubMenuOpen then
+        CloseSubmenu()
+    else
+        OpenSubmenu()
+    end
+end
+
+function ToggleChatFromClick()
+
+    CloseSubmenu()
+    ToggleChat()
+end
+
+if ChromeHit then
+    ChromeHit.Activated:Connect(ToggleChromeFromClick)
 end
 
 if NineDotHit then
-
-    NineDotHit.Activated:Connect(
-        function()
-
-            if SubMenuOpen then
-
-                CloseSubmenu()
-
-            else
-
-                OpenSubmenu()
-
-            end
-
-        end
-    )
-
+    NineDotHit.Activated:Connect(ToggleNineDotFromClick)
 end
 
 if ChatHit then
-
-    ChatHit.Activated:Connect(
-        function()
-
-            CloseSubmenu()
-
-            ToggleChat()
-
-        end
-    )
-
+    ChatHit.Activated:Connect(ToggleChatFromClick)
 end
 
 if LeaderboardHit then
-
     LeaderboardHit.Activated:Connect(
         function()
-
             CloseSubmenu()
-
-            ToggleLeaderboard()
-
+            ToggleLeaderboardNative()
         end
     )
-
 end
 
 if TrustHit then
-
     TrustHit.Activated:Connect(
         function()
-
             CloseSubmenu()
-
             ToggleTrust()
-
         end
     )
-
 end
 
 --============================================================
 -- SUBMENU BUTTONS
 --============================================================
 
-local SubBackpackButton =
+SubBackpackButton =
     FindSubmenuActionButton(
         SubBackpack,
         "backpack"
     )
 
-local SubChatButton =
+SubChatButton =
     FindSubmenuActionButton(
         SubChat,
         "chat"
     )
 
-local SubEmotesButton =
+SubEmotesButton =
     FindSubmenuActionButton(
         SubEmotes,
         "emotes"
     )
 
-local SubLeaderboardButton =
+SubLeaderboardButton =
     FindSubmenuActionButton(
         SubLeaderboard,
         "leaderboard"
@@ -5549,7 +5699,7 @@ table.clear(
 -- PIN GLYPH
 --============================================================
 
-local function SetPinGlyph(
+function SetPinGlyph(
     Button,
     Pinned
 )
@@ -5582,7 +5732,7 @@ end
 -- PIN ON SOURCE ASSET
 --============================================================
 
-local function GetPinOnAsset()
+function GetPinOnAsset()
 
     if ChatIcon then
 
@@ -5673,7 +5823,7 @@ function OldChrome2024GetPinnedSource(
         "nine_dot"
     then
 
-        return NineDot
+        return SubNineDot
     end
 
     return nil
@@ -5692,6 +5842,14 @@ function OldChrome2024CreatePinnedIcon(
         and Existing.Parent
     then
 
+        local ExistingIcon = Existing:FindFirstChild("PinnedIcon")
+        if ExistingIcon then
+            pcall(function()
+                Existing.Visible = not ChromeOpen
+                ExistingIcon.Visible = true
+                ExistingIcon.ImageTransparency = 0
+            end)
+        end
         return Existing
     end
 
@@ -5719,11 +5877,11 @@ function OldChrome2024CreatePinnedIcon(
     end
 
     --========================================================
-    -- CRITICAL:
-    -- Do NOT clone the entire source row.
+    -- CRITICAL PIN RENDER FIX
     --
-    -- The old source contains additional image/highlighter
-    -- objects. Only a clean standalone icon is created here.
+    -- Clone the already-loaded source artwork instead of creating
+    -- a fresh ImageButton whose image can take a separate render
+    -- pass to appear. A separate transparent hitbox handles input.
     --========================================================
 
     local Root =
@@ -5761,21 +5919,10 @@ function OldChrome2024CreatePinnedIcon(
         Frame2
 
     local Icon =
-        Instance.new(
-            "ImageButton"
-        )
+        SourceIcon:Clone()
 
     Icon.Name =
         "PinnedIcon"
-
-    Icon.BackgroundTransparency =
-        1
-
-    Icon.BorderSizePixel =
-        0
-
-    Icon.AutoButtonColor =
-        false
 
     Icon.AnchorPoint =
         Vector2.new(
@@ -5784,11 +5931,9 @@ function OldChrome2024CreatePinnedIcon(
         )
 
     Icon.Position =
-        UDim2.new(
+        UDim2.fromScale(
             0.5,
-            0,
-            0.5,
-            0
+            0.5
         )
 
     Icon.Size =
@@ -5797,33 +5942,33 @@ function OldChrome2024CreatePinnedIcon(
             36
         )
 
+    Icon.BackgroundTransparency =
+        1
+
+    pcall(function()
+        Icon.BorderSizePixel = 0
+    end)
+
     Icon.ZIndex =
         10001
 
-    Icon.Parent =
-        Root
+    Icon.Visible =
+        true
 
     pcall(function()
+        Icon.ImageTransparency = 0
+    end)
 
-        Icon.Image =
-            SourceIcon.Image
-
-        Icon.ImageColor3 =
-            SourceIcon.ImageColor3
-
-        Icon.ImageTransparency =
-            SourceIcon.ImageTransparency
-
-        Icon.ImageRectOffset =
-            SourceIcon.ImageRectOffset
-
+    pcall(function()
         Icon.ImageRectSize =
             Vector2.new(
                 36,
                 36
             )
-
     end)
+
+    Icon.Parent =
+        Root
 
     if ActionName ==
         "backpack"
@@ -5843,61 +5988,149 @@ function OldChrome2024CreatePinnedIcon(
             EmotesOpen
         )
 
+    elseif ActionName ==
+        "leaderboard"
+    then
+
+        SetRect(
+            Icon,
+            0,
+            LeaderboardOpen
+            and 380
+            or 114
+        )
+
     end
+
+    -- Independent input layer. This prevents the visual clone from
+    -- being replaced by a transparent ImageButton and guarantees the
+    -- pinned icon reacts immediately.
+    local Hitbox =
+        Instance.new(
+            "ImageButton"
+        )
+
+    Hitbox.Name =
+        "PinnedIconHitbox"
+
+    Hitbox.BackgroundTransparency =
+        1
+
+    Hitbox.BorderSizePixel =
+        0
+
+    Hitbox.Image =
+        ""
+
+    Hitbox.ImageTransparency =
+        1
+
+    Hitbox.AutoButtonColor =
+        false
+
+    Hitbox.Active =
+        true
+
+    Hitbox.Selectable =
+        true
+
+    Hitbox.Size =
+        UDim2.fromScale(
+            1,
+            1
+        )
+
+    Hitbox.Position =
+        UDim2.fromScale(
+            0,
+            0
+        )
+
+    Hitbox.ZIndex =
+        10002
+
+    Hitbox.Parent =
+        Root
 
     _G.__OldChrome2024PinnedRoots[
         ActionName
     ] =
         Root
 
-    Icon.Activated:Connect(
-        function()
+    local PinnedBusyUntil = 0
 
-            if ActionName ==
-                "backpack"
-            then
+    local function ActivatePinned()
 
-                ToggleInventory()
+        local Now = os.clock()
 
-            elseif ActionName ==
-                "emotes"
-            then
+        if Now < PinnedBusyUntil then
+            return
+        end
 
-                ToggleEmotes()
+        PinnedBusyUntil = Now + 0.12
 
-            elseif ActionName ==
-                "chat"
-            then
+        if ActionName ==
+            "backpack"
+        then
 
-                ToggleChat()
+            ToggleInventory()
 
-            elseif ActionName ==
-                "leaderboard"
-            then
+        elseif ActionName ==
+            "emotes"
+        then
 
-                ToggleLeaderboard()
+            ToggleEmotes()
 
-            elseif ActionName ==
-                "report"
-            then
+        elseif ActionName ==
+            "chat"
+        then
 
-                ToggleTrust()
+            ToggleChat()
 
-            elseif ActionName ==
-                "nine_dot"
-            then
+        elseif ActionName ==
+            "leaderboard"
+        then
 
-                if SubMenuOpen then
-                    CloseSubmenu()
-                else
-                    OpenSubmenu()
-                end
+            ToggleLeaderboard()
+
+        elseif ActionName ==
+            "report"
+        then
+
+            ToggleTrust()
+
+        elseif ActionName ==
+            "nine_dot"
+        then
+
+            if SubMenuOpen then
+                CloseSubmenu()
+            else
+                OpenSubmenu()
             end
         end
-    )
+    end
+
+    pcall(function()
+        Hitbox.Activated:Connect(
+            ActivatePinned
+        )
+    end)
+
+    pcall(function()
+        Hitbox.MouseButton1Click:Connect(
+            ActivatePinned
+        )
+    end)
 
     Root.Visible =
-        false
+        not ChromeOpen
+
+    pcall(function()
+        Icon.Visible = true
+        Icon.ImageTransparency = 0
+        Hitbox.Visible = true
+    end)
 
     return Root
 end
@@ -5934,6 +6167,22 @@ function OldChrome2024RepositionPinned()
 
     if not Frame2 then
         return
+    end
+
+    -- Visibility is applied before position/size work so a pinned icon
+    -- cannot wait for a later layout pass to become visible.
+    if not ChromeOpen then
+        for _, ActionName in ipairs(
+            _G.__OldChrome2024PinnedOrder
+        ) do
+            if _G.__OldChrome2024PinnedActions[ActionName] then
+                local Root =
+                    _G.__OldChrome2024PinnedRoots[ActionName]
+                if Root and Root.Parent == Frame2 then
+                    Root.Visible = true
+                end
+            end
+        end
     end
 
     local Index =
@@ -6133,6 +6382,8 @@ function OldChrome2024SyncPinned()
         end
 
         pcall(function()
+
+            Icon.Visible = true
 
             Icon.ImageRectSize =
                 Vector2.new(
@@ -6359,6 +6610,8 @@ function OldChrome2024CreatePinButton(
             )
 
             OldChrome2024SyncPinned()
+            OldChrome2024RepositionPinned()
+            RepositionUnibar()
             UpdateChromeWidth()
 
         end
@@ -6440,13 +6693,13 @@ CacheSubmenuText()
 -- EXTRA SUBMENU BUTTONS
 --============================================================
 
-local SubReportButton =
+SubReportButton =
     FindSubmenuActionButton(
         SubReport,
         "report"
     )
 
-local SubNineDotButton =
+SubNineDotButton =
     FindSubmenuActionButton(
         SubNineDot,
         "nine_dot"
@@ -6569,12 +6822,12 @@ end)
 -- Backpack.
 if FindBackpackInventoryFrame() then
 
-    ToggleNativeBackpack()
+    SendBackquote()
 
 end
 
 -- PlayerList.
-local InitialPlayerListMaster =
+InitialPlayerListMaster =
     FindPlayerListMaster()
 
 if InitialPlayerListMaster
@@ -6584,6 +6837,17 @@ then
     SendTab()
 
 end
+
+-- The startup sequence above closes PlayerList when it is visibly open.
+-- Do not immediately trust stale native state and flip our icon back on.
+LeaderboardOpen =
+    false
+
+SetActionLocalState(
+    "leaderboard",
+    false,
+    0
+)
 
 -- Emotes.
 pcall(function()
@@ -6617,7 +6881,7 @@ ChatOpen =
     ReadNativeChatState()
 
 LeaderboardOpen =
-    ReadNativePlayerListState()
+    false
 
 InventoryOpen =
     ReadNativeInventoryState()
@@ -6670,6 +6934,33 @@ if Frame3 then
     pcall(function()
 
         Frame3.ClipsDescendants =
+            true
+
+    end)
+
+end
+
+if SubMenuHost then
+
+    pcall(function()
+        SubMenuHost.ClipsDescendants = false
+    end)
+
+end
+
+if NineDotMenu then
+
+    pcall(function()
+        NineDotMenu.ClipsDescendants = true
+    end)
+
+end
+
+if ScrollingFrame then
+
+    pcall(function()
+
+        ScrollingFrame.ClipsDescendants =
             true
 
     end)
