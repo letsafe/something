@@ -1877,7 +1877,7 @@ local function UpdateMainIconStates()
     SetRect(
         LeaderboardIcon,
         0,
-        LeaderboardOpen
+        not LeaderboardOpen
             and 380
             or 114
     )
@@ -6214,7 +6214,7 @@ function OldChrome2024CreatePinnedIcon(
         SetRect(
             Icon,
             0,
-            LeaderboardOpen
+            not LeaderboardOpen
             and 380
             or 114
         )
@@ -6533,7 +6533,7 @@ function OldChrome2024SyncPinned()
             SetRect(
                 Icon,
                 0,
-                LeaderboardOpen
+                not LeaderboardOpen
                 and 380
                 or 114
             )
