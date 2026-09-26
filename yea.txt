@@ -1,3 +1,4 @@
+
 --============================================================
 -- OLD CHROME 2024
 -- EXECUTOR SCRIPT
@@ -10,8 +11,8 @@
 --   * CoreGui stays ENABLED
 --   * TextChatService stays ENABLED
 --   * "/" remains native
---   * Chat textbox focus / ChatWindowConfiguration are used for state
---   * ChatActive is used as a legacy fallback.
+--   * ChatActive is used as the chat open/closed state.
+--   * The chat button does not directly manipulate the chat window/input.
 --
 -- PlayerList:
 --   * CoreGui stays ENABLED
@@ -84,9 +85,6 @@ local TweenService =
 
 local GuiService =
     game:GetService("GuiService")
-
-local TextChatService =
-    game:GetService("TextChatService")
 
 local UserInputService =
     game:GetService("UserInputService")
@@ -3233,7 +3231,9 @@ local function ReadNativeChatState()
         return ChatOpen
     end
 
-    -- ChatActive is the authoritative CoreScripts state when exposed.
+    -- ChatActive is the single chat open/closed state used by the
+    -- Roblox chat button/CoreScripts. Do not inspect the chat window
+    -- or input-box configuration here.
     local CoreState =
         ReadGetCoreBoolean({
             "ChatActive"
@@ -3241,42 +3241,6 @@ local function ReadNativeChatState()
 
     if CoreState ~= nil then
         return CoreState
-    end
-
-    local Success,
-        Focused =
-        pcall(function()
-
-            return
-                TextChatService
-                    .ChatInputBarConfiguration
-                    .IsFocused
-
-        end)
-
-    if Success
-        and Focused
-    then
-
-        return true
-    end
-
-    local WindowSuccess,
-        WindowEnabled =
-        pcall(function()
-
-            return
-                TextChatService
-                    .ChatWindowConfiguration
-                    .Enabled
-
-        end)
-
-    if WindowSuccess
-        and type(WindowEnabled) == "boolean"
-    then
-
-        return WindowEnabled
     end
 
     return ChatOpen
@@ -3607,42 +3571,15 @@ local function SyncNativeState(ForceNativeRead, SyncLeaderboard)
 end
 
 --============================================================
--- NATIVE CHAT REOPEN FROM SLASH
+-- CHAT REOPEN FROM SLASH
 --============================================================
--- The custom close state hides the modern chat window. Preserve the
--- native '/' shortcut by re-enabling the window and focusing its box.
+-- Let the chat implementation/CoreScript handle opening after
+-- ChatActive is set. No direct chat-window/input manipulation.
 --============================================================
 
 local function ReopenChatFromSlash()
 
     ChatOpen = true
-
-    pcall(function()
-
-        StarterGui:SetCoreGuiEnabled(
-            Enum.CoreGuiType.Chat,
-            true
-        )
-
-    end)
-
-    pcall(function()
-
-        TextChatService
-            .ChatWindowConfiguration
-            .Enabled =
-            true
-
-    end)
-
-    pcall(function()
-
-        TextChatService
-            .ChatInputBarConfiguration
-            .Enabled =
-            true
-
-    end)
 
     pcall(function()
 
@@ -3653,42 +3590,7 @@ local function ReopenChatFromSlash()
 
     end)
 
-    local TextBox =
-        TextChatService
-            .ChatInputBarConfiguration
-            .TextBox
-
-    if TextBox then
-
-        pcall(function()
-            TextBox:CaptureFocus()
-        end)
-
-    end
 end
-
---============================================================
--- CHAT STATE WATCH
---============================================================
-
-pcall(function()
-
-    TextChatService
-        .ChatInputBarConfiguration
-        :GetPropertyChangedSignal(
-            "IsFocused"
-        )
-        :Connect(
-            function()
-
-                task.defer(
-                    SyncNativeState
-                )
-
-            end
-        )
-
-end)
 
 --============================================================
 -- NATIVE HOTKEY STATE WATCH
@@ -4202,33 +4104,7 @@ local function OpenRealChat()
         0.15
     )
 
-    pcall(function()
-
-        StarterGui:SetCoreGuiEnabled(
-            Enum.CoreGuiType.Chat,
-            true
-        )
-
-    end)
-
-    pcall(function()
-
-        TextChatService
-            .ChatWindowConfiguration
-            .Enabled =
-            true
-
-    end)
-
-    pcall(function()
-
-        TextChatService
-            .ChatInputBarConfiguration
-            .Enabled =
-            true
-
-    end)
-
+    -- Use the same Core state as the real chat button.
     pcall(function()
 
         StarterGui:SetCore(
@@ -4239,26 +4115,6 @@ local function OpenRealChat()
     end)
 
     UpdateMainIconStates()
-
-    local function FocusChat()
-
-        local TextBox =
-            TextChatService
-                .ChatInputBarConfiguration
-                .TextBox
-
-        if TextBox then
-
-            pcall(function()
-
-                TextBox:CaptureFocus()
-
-            end)
-        end
-    end
-
-    FocusChat()
-    task.defer(FocusChat)
 
     if type(_G.__OldChrome2024SyncPinned) == "function" then
         _G.__OldChrome2024SyncPinned()
@@ -4277,37 +4133,14 @@ local function CloseRealChat()
         0.15
     )
 
-    local TextBox =
-        TextChatService
-            .ChatInputBarConfiguration
-            .TextBox
-
-    if TextBox then
-
-        pcall(function()
-
-            TextBox:ReleaseFocus()
-
-        end)
-    end
-
+    -- Let the active chat implementation close itself from the same
+    -- Core state used by the real chat button.
     pcall(function()
 
         StarterGui:SetCore(
             "ChatActive",
             false
         )
-
-    end)
-
-    -- TextChatService's modern window has a real Enabled property.
-    -- Turning just the window off keeps the chat service itself alive.
-    pcall(function()
-
-        TextChatService
-            .ChatWindowConfiguration
-            .Enabled =
-            false
 
     end)
 
@@ -7038,37 +6871,14 @@ end)
 --============================================================
 
 -- Chat.
-pcall(function()
-
-    local TextBox =
-        TextChatService
-            .ChatInputBarConfiguration
-            .TextBox
-
-    if TextBox
-        and TextBox:IsFocused()
-    then
-
-        TextBox:ReleaseFocus()
-
-    end
-end)
-
+-- Only ChatActive is changed. The active chat implementation owns
+-- its input focus and window state.
 pcall(function()
 
     StarterGui:SetCore(
         "ChatActive",
         false
     )
-
-end)
-
-pcall(function()
-
-    TextChatService
-        .ChatWindowConfiguration
-        .Enabled =
-        false
 
 end)
 
