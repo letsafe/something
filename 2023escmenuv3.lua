@@ -1916,7 +1916,7 @@ ResizeHub = function()
 			or (IsTablet and math.min(TOTAL_HUB_WIDTH, math.max(280, LayoutViewport.X - 48)))
 			or math.max(280, math.floor(Viewport.X * 0.94))
 
-		local ConfirmationHeight = IsPhone and 220 or 280
+		local ConfirmationHeight = IsPhone and 240 or 280
 
 		Hub.HubBar.Visible = false
 		Hub.BottomButtonFrame.Visible = false
@@ -2053,10 +2053,12 @@ ResizeHub = function()
 
 		Hub.PageView.ScrollBarThickness = 0
 
-		-- Match the captured native mobile hierarchy: the menu is 95% of the
-		-- viewport, with a 10px outer reduction for the HubBar/PageClipper.
+		-- Phone-only edge-to-edge layout.  Tablets and desktop use their own
+		-- branches above/below and are deliberately left unchanged.
 		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
-		local Width = math.max(280, math.floor(LayoutViewport.X + 0.5))
+		Hub.MenuContainer.Position = UDim2.new(0, 0, 0, 0)
+		Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
+		local Width = math.max(1, math.floor(LayoutViewport.X - 16 + 0.5))
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
@@ -2073,41 +2075,16 @@ ResizeHub = function()
 		Height =
 			PageHeight
 
-		Hub.HubBar.Size =
-			UDim2.new(
-				0,
-				Width,
-				0,
-				MobileBarHeight
-			)
-
-		Hub.HubBar.Position =
-			UDim2.new(
-				0.5,
-				-Width / 2 + TabletXOffset,
-				0,
-				GroupTop
-			)
+		Hub.HubBar.AnchorPoint = Vector2.new(0, 0)
+		Hub.HubBar.Size = UDim2.new(1, 0, 0, MobileBarHeight)
+		Hub.HubBar.Position = UDim2.new(0, 0, 0, GroupTop)
 
 		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
 		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer end
 
-		Hub.PageClipper.Size =
-			UDim2.new(
-				0,
-				Width,
-				0,
-				PageHeight
-			)
-
-		Hub.PageClipper.Position =
-			UDim2.new(
-				0.5,
-				-Width / 2 + TabletXOffset,
-				0.5,
-				PageCenterYOffset
-			)
+		Hub.PageClipper.Size = UDim2.new(1, -16, 0, PageHeight)
+		Hub.PageClipper.Position = UDim2.new(0, 8, 0.5, PageCenterYOffset)
 
 		-- The fixed PC button frame is NEVER used on mobile.
 		Hub.BottomButtonFrame.Visible = false
@@ -5407,7 +5384,7 @@ Position =
 				"FriendStatus"
 
 			if FriendLabel then
-				FriendLabel.TextSize = IsMobile and 17 or 21
+				FriendLabel.TextSize = 24
 			end
 
 			FriendButton.Parent =
@@ -7421,9 +7398,6 @@ MakeInviteFriendsRow = function(Page)
 		Row=BaseRow("InviteFriendsToJoin", UDim2.new(0,0,0,0), VoiceActive and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62))
 		Create("ImageLabel", {Name="Icon",Parent=Row,BackgroundTransparency=1,Image="rbxassetid://80022950003290",Size=UDim2.fromOffset(24,24),Position=UDim2.new(0,14,0.5,-12),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+3})
 		Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=IsMobile and 17 or 22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-78,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
-		if IsMobile then
-			Create("TextLabel", {Name="MobileChevron",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=28,TextColor3=Color3.fromRGB(220,220,220),Text="›",TextXAlignment=Enum.TextXAlignment.Center,TextYAlignment=Enum.TextYAlignment.Center,Size=UDim2.fromOffset(20,38),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-12,0.5,0),ZIndex=SETTINGS_BASE_ZINDEX+4})
-		end
 	end
 	local MuteRow
 	if VoiceActive then
@@ -8124,12 +8098,12 @@ ConfigureInviteMobileHeader = function()
 		return
 	end
 
-	InviteBackLabel.Text = "←"
-	InviteBackLabel.TextSize = 24
+	InviteBackLabel.Text = "<"
+	InviteBackLabel.TextSize = 30
 	InviteBackLabel.TextXAlignment = Enum.TextXAlignment.Center
 	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
-	InviteBackButton.Size = UDim2.fromOffset(132, 56)
-	InviteBackButton.Position = UDim2.fromOffset(4, -3)
+	InviteBackButton.Size = UDim2.fromOffset(44, 48)
+	InviteBackButton.Position = UDim2.fromOffset(4, 4)
 	InviteBackButton.Image = ""
 
 	local Expanded = INVITE_MOBILE_SEARCH_EXPANDED
@@ -12845,28 +12819,28 @@ PositionMobileConfirmationButtons =
 			Viewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
 		end
 		local AvailableWidth = math.max(250, Viewport.X - 24)
-		local ButtonWidth = math.min(152, math.max(108, (AvailableWidth - 12) / 2))
+		local ButtonWidth = math.min(168, math.max(108, (AvailableWidth - 12) / 2))
 		for _, Info in next, {
 			{ResetPage.Frame, ResetButton, DontResetButton},
 			{LeavePage.Frame, LeaveButton, DontLeaveButton},
 		} do
 			local Frame, LeftButton, RightButton = Info[1], Info[2], Info[3]
-			Frame.Size = UDim2.new(1, 0, 0, 220)
+			Frame.Size = UDim2.new(1, 0, 0, 240)
 			local Message = Frame:FindFirstChildWhichIsA("TextLabel")
 			if Message then
-				Message.Size = UDim2.new(1, -24, 0, 72)
-				Message.Position = UDim2.new(0, 12, 0, 28)
+				Message.Size = UDim2.new(1, -24, 0, 88)
+				Message.Position = UDim2.new(0, 12, 0, 20)
 				Message.TextWrapped = true
-				Message.TextSize = math.min(Message.TextSize, 18)
+				Message.TextSize = 22
 			end
-			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 42)
-			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 42)
-			LeftButton.Position = UDim2.new(0.5, -(ButtonWidth + 6), 0, 132)
-			RightButton.Position = UDim2.new(0.5, 6, 0, 132)
+			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 48)
+			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 48)
+			LeftButton.Position = UDim2.new(0.5, -(ButtonWidth + 6), 0, 150)
+			RightButton.Position = UDim2.new(0.5, 6, 0, 150)
 			for _, Button in ipairs({LeftButton, RightButton}) do
 				local Label = Button:FindFirstChildWhichIsA("TextLabel", true)
 				if Label then
-					Label.TextSize = math.min(Label.TextSize, 16)
+					Label.TextSize = 18
 					Label.TextWrapped = true
 				end
 			end
@@ -13536,7 +13510,7 @@ if VoiceChatInternal then
 				Payload.isSpeaking = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "number" then
 				-- If this client splits level out as argument 2, it is fresher than
-				--any stale/default level value contained in the activity dictionary.
+				-- any stale/default level value contained in the activity dictionary.
 				Payload.peakLevel = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "table" then
 				for Key, Value in next, SpeakingOrInfo do if Payload[Key] == nil then Payload[Key] = Value end end
@@ -14369,42 +14343,13 @@ if IsMobile then
 end
 
 -- ============================================================
--- MOBILE TEXT SCALE
--- Shrink fixed-size labels on mobile without repeatedly shrinking them.
--- Newly-created rows get the same one-time adjustment; desktop restores originals.
-MobileTextBaseSizes = setmetatable({}, {__mode = "k"})
+-- TEXT SIZE PRESERVATION
+-- Intentionally do not apply a global mobile font scale. Only phone
+-- confirmation layouts are sized explicitly by PositionMobileConfirmationButtons.
+-- Keep this compatibility function for the existing ResizeHub call sites.
 ApplyMobileTextSizing = function(Root)
-	if not Root then return end
-	local Objects = {}
-	if Root:IsA("TextLabel") or Root:IsA("TextButton") or Root:IsA("TextBox") then
-		table.insert(Objects, Root)
-	end
-	pcall(function()
-		for _, Object in ipairs(Root:GetDescendants()) do
-			if Object:IsA("TextLabel") or Object:IsA("TextButton") or Object:IsA("TextBox") then
-				table.insert(Objects, Object)
-			end
-		end
-	end)
-	for _, Object in ipairs(Objects) do
-		if Object.TextScaled ~= true then
-			if MobileTextBaseSizes[Object] == nil then MobileTextBaseSizes[Object] = Object.TextSize end
-			local BaseSize = tonumber(MobileTextBaseSizes[Object]) or Object.TextSize
-			if IsMobile then
-				Object.TextSize = math.max(12, math.floor(BaseSize * 0.84 + 0.5))
-			else
-				Object.TextSize = BaseSize
-			end
-		end
-	end
+	return
 end
-Connect(ScreenGui.DescendantAdded, function(Object)
-	if Object:IsA("TextLabel") or Object:IsA("TextButton") or Object:IsA("TextBox") then
-		task.defer(function()
-			if Object and Object.Parent then ApplyMobileTextSizing(Object) end
-		end)
-	end
-end)
 
 -- ============================================================
 -- INITIAL STATE
