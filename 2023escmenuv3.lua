@@ -1751,12 +1751,17 @@ ResizeHub = function()
 		end)
 	end
 
-	-- The original 4:3 aspect constraint makes a portrait phone's menu
-	-- collapse into a narrow/short desktop-shaped box. Disable that constraint
-	-- on phones only; restore it for tablets and desktop so their layout is
-	-- not changed. The phone HubBar can then use the full viewport width.
+	-- UIAspectRatioConstraint has no Enabled property. Detach it on phones
+	-- so the menu can use the full portrait viewport; reattach it on tablets
+	-- and desktop to preserve their original 4:3 layout.
 	if Hub.MenuAspectRatio then
-		Hub.MenuAspectRatio.Enabled = not IsPhone
+		if IsPhone then
+			if Hub.MenuAspectRatio.Parent then
+				Hub.MenuAspectRatio.Parent = nil
+			end
+		elseif Hub.MenuAspectRatio.Parent ~= Hub.MenuContainer then
+			Hub.MenuAspectRatio.Parent = Hub.MenuContainer
+		end
 	end
 	local TabletScale = ApplyTabletResponsiveScale(Viewport)
 	local LayoutViewport = Viewport
@@ -2194,93 +2199,24 @@ ResizeHub = function()
 
 			end
 
-			local UiScale = GetMobileUiScale()
-			local ActionHeight = 62
-			local ActionListGap = 10
-			local InviteOffset = InviteFriends and 72 or 0
-
-			local InviteRow =
-				PlayersPage.Frame:FindFirstChild(
-					"InviteFriendsToJoin"
-				)
-
-			if InviteRow then
-
-				-- Mobile only: move Invite Friends slightly closer
-				-- to the Leave / Reset / Resume action row.
-				InviteRow.Position =
-					UDim2.new(
-						0,
-						0,
-						0,
-						72
-					)
-
-			end
-
 			local PlayerRows = {}
-
 			for _, Child in ipairs(PlayersPage.Frame:GetChildren()) do
-
-				if
-					Child.Name:sub(1, 11) == "PlayerLabel"
-				then
-
+				if Child.Name:sub(1, 11) == "PlayerLabel" then
 					Insert(PlayerRows, Child)
-
 				end
-
 			end
+			table.sort(PlayerRows, function(A, B) return A.Name < B.Name end)
 
-			table.sort(
-				PlayerRows,
-				function(A, B)
-					return A.Name < B.Name
-				end
-			)
-
-			-- Do not touch the PC RebuildPlayersPage positions.
-			-- Mobile gets its own visual offset here.
+			local PlayerStartY =
+				(LayoutPhonePlayerActionRows and LayoutPhonePlayerActionRows(PlayersPage.Frame, 72))
+				or 72
 			for Index, Row in ipairs(PlayerRows) do
-
-				Row.Position =
-					UDim2.new(
-						0,
-						0,
-						0,
-						ActionHeight
-						+ ActionListGap
-						+ InviteOffset
-						+ ((Index - 1) * 72)
-					)
-
+				Row.Position = UDim2.new(0, 0, 0, PlayerStartY + ((Index - 1) * 72))
 			end
 
-			local ContentHeight =
-				PlayersPage.Frame.Position.Y.Offset
-				+ ActionHeight
-				+ ActionListGap
-				+ InviteOffset
-				+ (#PlayerRows * 72)
-
-			PlayersPage.Frame.Size =
-				UDim2.new(
-					1,
-					0,
-					0,
-					math.max(240, ContentHeight, PageHeight)
-				)
-
-			Hub.PageView.CanvasSize =
-				UDim2.new(
-					0,
-					0,
-					0,
-					math.max(
-						ContentHeight,
-						PageHeight
-					)
-				)
+			local ContentHeight = PlayerStartY + (#PlayerRows * 72)
+			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, ContentHeight, PageHeight))
+			Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, math.max(ContentHeight, PageHeight))
 
 		else
 
@@ -2637,7 +2573,7 @@ LayoutTabs = function()
 		if Hub.HubBarContainerLayout then
 			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
 			Hub.HubBarContainerLayout.FillDirection = Enum.FillDirection.Horizontal
-			Hub.HubBarContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			Hub.HubBarContainerLayout.HorizontalAlignment = IsPhone and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Center
 			Hub.HubBarContainerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 			Hub.HubBarContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			Hub.HubBarContainerLayout.Padding = UDim.new(0, 0)
@@ -2650,6 +2586,10 @@ LayoutTabs = function()
 		if Page and Page.Tab then
 			local Tab = Page.Tab
 			local Fraction = 1 / Count
+			Tab.AutomaticSize = Enum.AutomaticSize.None
+			Tab.ClipsDescendants = false
+			-- Equal-width tab hitboxes always fill the HubBar container on phones;
+			-- the UIListLayout then packs them edge-to-edge with zero padding.
 			Tab.Size = UDim2.new(Fraction, 0, 1, 0)
 			if not IsMobile then
 				Tab.Position = UDim2.new((Index - 1) * Fraction, 0, 0, 0)
@@ -5420,7 +5360,7 @@ Position =
 				"FriendStatus"
 
 			if FriendLabel then
-				FriendLabel.TextSize = 24
+				FriendLabel.TextSize = 26
 			end
 
 			FriendButton.Parent =
@@ -7425,41 +7365,111 @@ INVITE_MOBILE_HEADER_DIVIDER = nil
 
 MakeInviteFriendsRow = function(Page)
 	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
-	local RowWidth = VoiceActive and UDim2.new(0.5, -4, 0, 62) or UDim2.new(1, 0, 0, 62)
-	local function BaseRow(Name, Pos)
-		return Create("ImageButton", {Name=Name, Parent=Page.Frame, BackgroundTransparency=1, BorderSizePixel=0, Image="rbxasset://textures/ui/dialog_white.png", ImageTransparency=0.85, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(10,10,10,10), Size=RowWidth, Position=Pos, AutoButtonColor=false, ZIndex=SETTINGS_BASE_ZINDEX+2})
+	local PhoneLayout = IsPhone == true
+	local RowHeight = PhoneLayout and 54 or 62
+	local SideBySide = VoiceActive and InviteFriends and not PhoneLayout
+	local FullRowSize = UDim2.new(1, 0, 0, RowHeight)
+	local HalfRowSize = UDim2.new(0.5, -4, 0, 62)
+	local function BaseRow(Name, Pos, Size)
+		return Create("ImageButton", {
+			Name = Name,
+			Parent = Page.Frame,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Image = "rbxasset://textures/ui/dialog_white.png",
+			ImageTransparency = 0.85,
+			ScaleType = Enum.ScaleType.Slice,
+			SliceCenter = Rect.new(10, 10, 10, 10),
+			Size = Size or FullRowSize,
+			Position = Pos,
+			AutoButtonColor = false,
+			ZIndex = SETTINGS_BASE_ZINDEX + 2,
+		})
 	end
+
 	local Row
 	if InviteFriends then
-		Row=BaseRow("InviteFriendsToJoin", UDim2.new(0,0,0,0), VoiceActive and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62))
-		Create("ImageLabel", {Name="Icon",Parent=Row,BackgroundTransparency=1,Image="rbxassetid://80022950003290",Size=UDim2.fromOffset(24,24),Position=UDim2.new(0,14,0.5,-12),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+3})
-		Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=IsMobile and 17 or 22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-78,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
+		Row = BaseRow("InviteFriendsToJoin", UDim2.new(0, 0, 0, 0), SideBySide and HalfRowSize or FullRowSize)
+		Create("ImageLabel", {
+			Name = "Icon", Parent = Row, BackgroundTransparency = 1,
+			Image = "rbxassetid://80022950003290", Size = UDim2.fromOffset(24, 24),
+			Position = UDim2.new(0, 14, 0.5, -12), ScaleType = Enum.ScaleType.Fit,
+			ZIndex = SETTINGS_BASE_ZINDEX + 3,
+		})
+		Create("TextLabel", {
+			Name = "NameLabel", Parent = Row, BackgroundTransparency = 1,
+			Font = Enum.Font.SourceSans, TextSize = PhoneLayout and 24 or 22,
+			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
+			Text = "Invite friends to join", TextWrapped = false, TextScaled = false,
+			Size = UDim2.new(1, PhoneLayout and -64 or -78, 1, 0),
+			Position = UDim2.new(0, 50, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 3,
+		})
 	end
+
 	local MuteRow
 	if VoiceActive then
-		local MutePosition = InviteFriends and UDim2.new(0.5,4,0,PLAYER_LIST_OFFSET) or UDim2.new(0,0,0,PLAYER_LIST_OFFSET)
-		local MuteSize = InviteFriends and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
-		MuteRow=BaseRow("MuteAllVoiceRow", MutePosition, MuteSize)
-		local Icon=Create("ImageLabel", {Name="Icon",Parent=MuteRow,BackgroundTransparency=1,Image=VOICE_MISC_ROOT..(VoiceMuteAllActive and "UnmuteAll@3x.png" or "MuteAll@3x.png"),Size=UDim2.fromOffset(30,30),Position=UDim2.new(0,14,0.5,-15),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+4})
-		local Label=Create("TextLabel", {Name="MuteAllLabel",Parent=MuteRow,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Mute All",Size=UDim2.new(1,-56,1,0),Position=UDim2.new(0,52,0,0),ZIndex=SETTINGS_BASE_ZINDEX+4})
+		local MutePosition = SideBySide and UDim2.new(0.5, 4, 0, 0) or UDim2.new(0, 0, 0, 0)
+		local MuteSize = SideBySide and HalfRowSize or FullRowSize
+		MuteRow = BaseRow("MuteAllVoiceRow", MutePosition, MuteSize)
+		local Icon = Create("ImageLabel", {
+			Name = "Icon", Parent = MuteRow, BackgroundTransparency = 1,
+			Image = VOICE_MISC_ROOT .. (VoiceMuteAllActive and "UnmuteAll@3x.png" or "MuteAll@3x.png"),
+			Size = UDim2.fromOffset(30, 30), Position = UDim2.new(0, 14, 0.5, -15),
+			ScaleType = Enum.ScaleType.Fit, ZIndex = SETTINGS_BASE_ZINDEX + 4,
+		})
+		local Label = Create("TextLabel", {
+			Name = "MuteAllLabel", Parent = MuteRow, BackgroundTransparency = 1,
+			Font = Enum.Font.SourceSans, TextSize = PhoneLayout and 24 or 22,
+			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
+			Text = "Mute All", TextWrapped = false, TextScaled = false,
+			Size = UDim2.new(1, PhoneLayout and -66 or -56, 1, 0),
+			Position = UDim2.new(0, 52, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 4,
+		})
 		local State = VoiceMuteAllActive == true
 		Label.Text = State and "Unmute All" or "Mute All"
 		Icon.Image = VOICE_MISC_ROOT .. (State and "UnmuteAll@3x.png" or "MuteAll@3x.png")
-		Connect(MuteRow.MouseEnter,function() MuteRow.ImageTransparency=0.65 end)
-		Connect(MuteRow.MouseLeave,function() MuteRow.ImageTransparency=0.85 end)
-		Connect(MuteRow.MouseButton1Click,function()
+		Connect(MuteRow.MouseEnter, function() MuteRow.ImageTransparency = 0.65 end)
+		Connect(MuteRow.MouseLeave, function() MuteRow.ImageTransparency = 0.85 end)
+		Connect(MuteRow.MouseButton1Click, function()
 			State = not State
 			SetMuteAll(State)
 			Label.Text = State and "Unmute All" or "Mute All"
 			Icon.Image = VOICE_MISC_ROOT .. (State and "UnmuteAll@3x.png" or "MuteAll@3x.png")
 		end)
 	end
+
 	if Row then
-		Connect(Row.MouseEnter,function() Row.ImageTransparency=0.65 end)
-		Connect(Row.MouseLeave,function() Row.ImageTransparency=0.85 end)
-		Connect(Row.MouseButton1Click,function() if OpenInviteFriends then OpenInviteFriends() end end)
+		Connect(Row.MouseEnter, function() Row.ImageTransparency = 0.65 end)
+		Connect(Row.MouseLeave, function() Row.ImageTransparency = 0.85 end)
+		Connect(Row.MouseButton1Click, function() if OpenInviteFriends then OpenInviteFriends() end end)
 	end
-	return Row,MuteRow
+	return Row, MuteRow
+end
+
+
+-- Phone-only layout for the Invite Friends and Mute All rows.
+-- Returns the Y offset where player rows should begin.
+LayoutPhonePlayerActionRows = function(Frame, StartY)
+	if not IsPhone or not Frame then return nil end
+	local InviteRow = Frame:FindFirstChild("InviteFriendsToJoin")
+	local MuteRow = Frame:FindFirstChild("MuteAllVoiceRow")
+	local RowHeight = 54
+	local RowGap = 6
+	local Cursor = StartY or 72
+
+	if InviteRow then
+		InviteRow.Size = UDim2.new(1, 0, 0, RowHeight)
+		InviteRow.Position = UDim2.new(0, 0, 0, Cursor)
+		Cursor = Cursor + RowHeight + (MuteRow and RowGap or 10)
+	end
+
+	if MuteRow then
+		MuteRow.Size = UDim2.new(1, 0, 0, RowHeight)
+		MuteRow.Position = UDim2.new(0, 0, 0, Cursor)
+		Cursor = Cursor + RowHeight + 10
+	end
+
+	return Cursor
 end
 
 RebuildPlayersPage = function()
@@ -7520,16 +7530,21 @@ RebuildPlayersPage = function()
 	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
 	if InviteFriends or VoiceActive then
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
-		local RowY = (IsMobile and not IsTablet) and 72 or 0
-		if InviteRow then
-			InviteRow.Position = UDim2.new(0,0,0,RowY)
-			InviteRow.Size = (VoiceActive and InviteFriends) and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
+		if IsPhone then
+			local PlayerRowsStart = LayoutPhonePlayerActionRows(PlayersPage.Frame, 72) or 144
+			InviteOffset = math.max(0, PlayerRowsStart - MobileActionOffset)
+		else
+			local RowY = 0
+			if InviteRow then
+				InviteRow.Position = UDim2.new(0, 0, 0, RowY)
+				InviteRow.Size = (VoiceActive and InviteFriends) and UDim2.new(0.5, -4, 0, 62) or UDim2.new(1, 0, 0, 62)
+			end
+			if MuteRow then
+				MuteRow.Position = (InviteFriends and VoiceActive) and UDim2.new(0.5, 4, 0, RowY) or UDim2.new(0, 0, 0, RowY)
+				MuteRow.Size = (InviteFriends and VoiceActive) and UDim2.new(0.5, -4, 0, 62) or UDim2.new(1, 0, 0, 62)
+			end
+			InviteOffset = 72
 		end
-		if MuteRow then
-			MuteRow.Position = InviteFriends and UDim2.new(0.5,4,0,RowY) or UDim2.new(0,0,0,RowY)
-			MuteRow.Size = InviteFriends and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
-		end
-		InviteOffset = 72
 	end
 
 	for _, Player in next,
@@ -7570,12 +7585,7 @@ RebuildPlayersPage = function()
 			1,
 			0,
 			0,
-			MobileActionOffset
-			+ InviteOffset
-			+ (
-				Count * 72
-			)
-			- 5
+			MobileActionOffset + InviteOffset + (Count * 72)
 		)
 
 	if not IsMobile and Hub and Hub.PageView and Hub.CurrentPage == PlayersPage then
@@ -7583,16 +7593,16 @@ RebuildPlayersPage = function()
 		if PageViewHeight <= 0 and Hub.PageClipper then
 			PageViewHeight = math.max(0, Hub.PageClipper.AbsoluteSize.Y - 20)
 		end
-
 		local PageContentHeight = math.max(0, PlayersPage.Frame.Position.Y.Offset + PlayersPage.Frame.Size.Y.Offset)
 		local NeedsPlayerScrollbar = PageContentHeight > PageViewHeight + 1
 		Hub.PageView.ScrollBarThickness = NeedsPlayerScrollbar and 12 or 0
-		Hub.PageView.VerticalScrollBarInset =
-			NeedsPlayerScrollbar
-			and Enum.ScrollBarInset.ScrollBar
-			or Enum.ScrollBarInset.None
-		Hub.PageView.CanvasSize =
-			UDim2.new(0, 0, 0, math.max(PageContentHeight, PageViewHeight))
+		Hub.PageView.VerticalScrollBarInset = NeedsPlayerScrollbar and Enum.ScrollBarInset.ScrollBar or Enum.ScrollBarInset.None
+		Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, math.max(PageContentHeight, PageViewHeight))
+	elseif IsPhone and Hub and Hub.PageView and Hub.CurrentPage == PlayersPage then
+		local PageViewHeight = Hub.PageView.AbsoluteSize.Y
+		local PageContentHeight = math.max(0, PlayersPage.Frame.Position.Y.Offset + PlayersPage.Frame.Size.Y.Offset)
+		Hub.PageView.ScrollBarThickness = 0
+		Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, math.max(PageContentHeight, PageViewHeight))
 	end
 
 end
