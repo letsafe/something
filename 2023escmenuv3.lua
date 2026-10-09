@@ -13536,7 +13536,7 @@ if VoiceChatInternal then
 				Payload.isSpeaking = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "number" then
 				-- If this client splits level out as argument 2, it is fresher than
-				any stale/default level value contained in the activity dictionary.
+				--any stale/default level value contained in the activity dictionary.
 				Payload.peakLevel = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "table" then
 				for Key, Value in next, SpeakingOrInfo do if Payload[Key] == nil then Payload[Key] = Value end end
