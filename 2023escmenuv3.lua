@@ -1724,6 +1724,13 @@ ResizeHub = function()
 
 	local Height
 	UpdateTabletPlatform(Viewport)
+	-- The original 4:3 aspect constraint makes a portrait phone's menu
+	-- collapse into a narrow/short desktop-shaped box. Disable that constraint
+	-- on phones only; restore it for tablets and desktop so their layout is
+	-- not changed. The phone HubBar can then use the full viewport width.
+	if Hub.MenuAspectRatio then
+		Hub.MenuAspectRatio.Enabled = not IsPhone
+	end
 	local TabletScale = ApplyTabletResponsiveScale(Viewport)
 	local LayoutViewport = Viewport
 	local TabletXOffset = 0
@@ -2058,6 +2065,8 @@ ResizeHub = function()
 		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.MenuContainer.Position = UDim2.new(0, 0, 0, 0)
 		Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
+		-- HubBar is sized against this full-screen phone container; content below
+		-- keeps its separate 8px side inset. Do not use Width to resize the hub.
 		local Width = math.max(1, math.floor(LayoutViewport.X - 16 + 0.5))
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
