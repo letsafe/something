@@ -282,8 +282,9 @@ HOME_WIDTH = 60
 HUBBAR_HEIGHT = 60
 -- The 2016-style phone tab bar is compact; tablet and desktop keep their
 -- own heights below.
-MOBILE_HUBBAR_HEIGHT = 32
+MOBILE_HUBBAR_HEIGHT = 44
 TABLET_HUBBAR_HEIGHT = 48
+
 
 -- Custom SystemMenuButton offsets.
 SYSTEM_MENU_OFFSET_X = 16
