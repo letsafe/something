@@ -3473,37 +3473,78 @@ RefreshNativeVoiceMirrorCache = function(Force)
 			end
 		end
 	end
-	for _, SearchRoot in ipairs(SearchRoots) do
-		pcall(function()
-			for _, Obj in ipairs(SearchRoot:GetDescendants()) do
-				if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton")) and Obj ~= VoiceChatButton and not Obj:IsDescendantOf(ScreenGui) then
-					local Image = tostring(Obj.Image or "")
-					if Image:find("VoiceChat", 1, true) and (Image:find("Unmuted", 1, true) or Image:find("Muted", 1, true) or Image:find("Connecting", 1, true) or Image:find("Error", 1, true)) then
-						local BestPlayer, BestScore, Parent = nil, 0, Obj
-					for _ = 1, 9 do
-						Parent = Parent and Parent.Parent
-						if not Parent then break end
-						local Name = string.lower(tostring(Parent.Name or ""))
-						for _, Player in ipairs(Players:GetPlayers()) do
-							local PlayerName = string.lower(tostring(Player.Name or ""))
-							local Score = 0
-						-- Only accept an exact player-name match or a UserId match here.
-						-- Substring matching made names such as "ice" match generic Voice UI
-						-- ancestors and incorrectly gave non-voice players invisible buttons.
-						if Name == PlayerName then Score = 500 end
-						local Id = tostring(Player.UserId or 0)
-						if tonumber(Id) and tonumber(Id) > 1 and Name:find(Id, 1, true) then Score = math.max(Score, 180) end
-						if Player == LocalPlayer and (Name:find("self", 1, true) or Name:find("local", 1, true)) then Score = math.max(Score, 180) end
-						if Name:find("voice", 1, true) or Name:find("mic", 1, true) or Name:find("speaker", 1, true) then Score += 20 end
-						if Obj.Visible then Score += 10 end
-						if Score > BestScore then BestPlayer = Player; BestScore = Score end
-					end
-					end
-					if BestPlayer and BestScore >= 50 then Found[BestPlayer.UserId] = Obj end
-				end
-			end
-		end)
-	end
+for _, SearchRoot in ipairs(SearchRoots) do
+    pcall(function()
+        for _, Obj in ipairs(SearchRoot:GetDescendants()) do
+            if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton"))
+                and Obj ~= VoiceChatButton
+                and not Obj:IsDescendantOf(ScreenGui) then
+
+                local Image = tostring(Obj.Image or "")
+
+                if Image:find("VoiceChat", 1, true)
+                    and (
+                        Image:find("Unmuted", 1, true)
+                        or Image:find("Muted", 1, true)
+                        or Image:find("Connecting", 1, true)
+                        or Image:find("Error", 1, true)
+                    ) then
+
+                    local BestPlayer, BestScore, Parent = nil, 0, Obj
+
+                    for _ = 1, 9 do
+                        Parent = Parent and Parent.Parent
+                        if not Parent then
+                            break
+                        end
+
+                        local Name = string.lower(tostring(Parent.Name or ""))
+
+                        for _, Player in ipairs(Players:GetPlayers()) do
+                            local PlayerName = string.lower(tostring(Player.Name or ""))
+                            local Score = 0
+
+                            if Name == PlayerName then
+                                Score = 500
+                            end
+
+                            local Id = tostring(Player.UserId or 0)
+                            if tonumber(Id) and tonumber(Id) > 1
+                                and Name:find(Id, 1, true) then
+                                Score = math.max(Score, 180)
+                            end
+
+                            if Player == LocalPlayer
+                                and (Name:find("self", 1, true)
+                                    or Name:find("local", 1, true)) then
+                                Score = math.max(Score, 180)
+                            end
+
+                            if Name:find("voice", 1, true)
+                                or Name:find("mic", 1, true)
+                                or Name:find("speaker", 1, true) then
+                                Score = Score + 20
+                            end
+
+                            if Obj.Visible then
+                                Score = Score + 10
+                            end
+
+                            if Score > BestScore then
+                                BestPlayer = Player
+                                BestScore = Score
+                            end
+                        end
+                    end
+
+                    if BestPlayer and BestScore >= 50 then
+                        Found[BestPlayer.UserId] = Obj
+                    end
+                end
+            end
+        end
+    end)
+end
 	for _, Player in ipairs(Players:GetPlayers()) do
 		local DirectObject = FindNativeVoiceBubbleIconObject(Player)
 		if DirectObject then Found[Player.UserId] = DirectObject end
