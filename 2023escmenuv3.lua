@@ -203,6 +203,7 @@ ABUSE_TYPES_GAME = {
 IsTouchClient = UserInputService.TouchEnabled
 IsMobile = false
 IsTablet = false
+IsPhone = false
 
 UpdateTabletPlatform = function(Viewport)
 	Viewport = Viewport
@@ -240,6 +241,9 @@ UpdateTabletPlatform = function(Viewport)
 
 	IsMobile = PlatformMobile or TouchMobileFallback
 	IsTablet = IsMobile and TabletViewport
+	-- Full-screen layout changes are phone-only. Tablets keep a capped,
+	-- PC-like menu width instead of being expanded edge-to-edge.
+	IsPhone = IsMobile and not IsTablet
 	return IsTablet
 end
 
@@ -1743,11 +1747,10 @@ ResizeHub = function()
 		local Width
 		local PageHeight
 
-		if IsMobile then
+		if IsPhone then
 
-			-- Mobile invite page is intentionally larger than the
-			-- normal ESC menu. Keep only a tiny outer margin so the
-			-- invite list gets almost the entire available screen.
+			-- Phone invite page is intentionally larger than the
+			-- normal ESC menu. Tablets keep a capped, PC-like width.
 
 			Width =
 				math.max(
@@ -1786,13 +1789,21 @@ ResizeHub = function()
 					PageTop
 				)
 
+		elseif IsTablet then
+
+			Width = math.min(TOTAL_HUB_WIDTH, math.max(280, math.floor(LayoutViewport.X - 40 + 0.5)))
+			PageHeight = Clamp(LayoutViewport.Y - 90, 150, 600)
+			Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
+			Hub.PageClipper.Size = UDim2.new(0, Width, 0, PageHeight)
+			Hub.PageClipper.Position = UDim2.new(0.5, -Width / 2, 0.5, -PageHeight / 2)
+
 		else
 
 			local BufferSize =
 				0.05 * Viewport.Y
 
 			Width =
-				TOTAL_HUB_WIDTH
+				math.max(280, math.floor(Viewport.X * 0.94))
 
 			local ExtraSpace =
 				(BufferSize * 2)
@@ -1900,12 +1911,12 @@ ResizeHub = function()
 		-- MOBILE / DESKTOP CONFIRMATION PAGE
 		-- ====================================================
 
-		local Width =
-			IsMobile
+		local Width = IsPhone
 			and math.min(800, math.max(280, LayoutViewport.X - 16))
-			or TOTAL_HUB_WIDTH
+			or (IsTablet and math.min(TOTAL_HUB_WIDTH, math.max(280, LayoutViewport.X - 48)))
+			or math.max(280, math.floor(Viewport.X * 0.94))
 
-		local ConfirmationHeight = 280
+		local ConfirmationHeight = IsPhone and 220 or 280
 
 		Hub.HubBar.Visible = false
 		Hub.BottomButtonFrame.Visible = false
@@ -1914,8 +1925,8 @@ ResizeHub = function()
 		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
 		Hub.PageClipper.Size = UDim2.new(0, Width, 0, ConfirmationHeight)
 		Hub.PageClipper.Position =
-			IsMobile
-			and UDim2.new(0.5, -Width / 2 + TabletXOffset, 0, math.max(70, math.floor((LayoutViewport.Y - ConfirmationHeight) * 0.58)))
+			IsPhone
+			and UDim2.new(0.5, -Width / 2 + TabletXOffset, 0.5, -ConfirmationHeight / 2)
 			or UDim2.new(0.5, -Width / 2, 0.5, -ConfirmationHeight / 2 + 75)
 
 		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
@@ -1925,7 +1936,7 @@ ResizeHub = function()
 		Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, ConfirmationHeight)
 		Hub.PageView.ScrollBarThickness = 0
 
-		if IsMobile then
+		if IsPhone then
 			PositionMobileConfirmationButtons()
 		else
 			PositionDesktopConfirmationButtons()
@@ -1975,7 +1986,7 @@ ResizeHub = function()
 		Hub.PageView.ScrollBarThickness = 12
 		Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
 
-		local Width = math.max(720, math.floor(LayoutViewport.X - 20 + 0.5))
+		local Width = math.min(TOTAL_HUB_WIDTH, math.max(720, math.floor(LayoutViewport.X - 20 + 0.5)))
 		local HubHeight = TABLET_HUBBAR_HEIGHT
 		local BottomHeight = 62
 		local TabletGroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
@@ -2015,7 +2026,7 @@ ResizeHub = function()
 			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, PlayersPage.Frame.Size.Y.Offset))
 		end
 
-	elseif IsMobile then
+	elseif IsPhone then
 
 		if Hub.InInviteMenu and ConfigureInviteMobileHeader then
 			ConfigureInviteMobileHeader()
@@ -2044,11 +2055,8 @@ ResizeHub = function()
 
 		-- Match the captured native mobile hierarchy: the menu is 95% of the
 		-- viewport, with a 10px outer reduction for the HubBar/PageClipper.
-		local Width =
-			math.max(
-				280,
-				math.floor((LayoutViewport.X * 0.95) - 10 + 0.5)
-			)
+		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
+		local Width = math.max(280, math.floor(LayoutViewport.X + 0.5))
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
@@ -2275,78 +2283,74 @@ ResizeHub = function()
 	else
 		-- ====================================================
 		-- PC / 2023 DESKTOP LAYOUT
+		-- HubBar spans the viewport; content rows use nearly the full width.
 		-- ====================================================
-		Hub.MenuContainer.Size=UDim2.new(0.95,0,0.95,0)
-		Hub.MenuContainer.Position=UDim2.new(0.5,0,0.5,0)
-		Hub.MenuContainer.AnchorPoint=Vector2.new(0.5,0.5)
-		local FullScreenHeight=Viewport.Y
-		local BufferSize=(1-0.95)*FullScreenHeight
-		local BarSize=60
-		local ExtraSpace=BufferSize*2+BarSize*2
-		local UsableScreenHeight=FullScreenHeight-ExtraSpace
-		local LargestPageSize=600
-		local MinimumPageSize=150
+		Hub.MenuContainer.Size = UDim2.new(1, 0, 0.95, 0)
+		Hub.MenuContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+		local ContentWidth = math.max(280, math.floor(Viewport.X * 0.94 + 0.5))
+		local FullScreenHeight = Viewport.Y
+		local BufferSize = (1 - 0.95) * FullScreenHeight
+		local BarSize = 60
+		local ExtraSpace = BufferSize * 2 + BarSize * 2
+		local UsableScreenHeight = FullScreenHeight - ExtraSpace
+		local LargestPageSize = 600
+		local MinimumPageSize = 150
 		local UsePageSize
-		Hub.HubBar.Parent=Hub.MenuContainer
-		Hub.HubBar.AnchorPoint=Vector2.new(0.5,0)
-		Hub.HubBar.Size=UDim2.new(0,800,0,60)
+
+		Hub.HubBar.Parent = Hub.MenuContainer
+		Hub.HubBar.AnchorPoint = Vector2.new(0, 0)
+		Hub.HubBar.Size = UDim2.new(1, 0, 0, 60)
 		if LargestPageSize < UsableScreenHeight then
-			UsePageSize=LargestPageSize
-			Hub.HubBar.Position=UDim2.new(0.5,0,0.5,-LargestPageSize/2-BarSize)
-			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,0.5,LargestPageSize/2)
+			UsePageSize = LargestPageSize
+			Hub.HubBar.Position = UDim2.new(0, 0, 0.5, -LargestPageSize / 2 - BarSize)
+			Hub.BottomButtonFrame.Position = UDim2.new(0.5, -ContentWidth / 2, 0.5, LargestPageSize / 2)
 		elseif UsableScreenHeight < MinimumPageSize then
-			UsePageSize=MinimumPageSize
-			Hub.HubBar.Position=UDim2.new(0.5,0,0.5,-MinimumPageSize/2-BarSize)
-			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,0.5,MinimumPageSize/2)
+			UsePageSize = MinimumPageSize
+			Hub.HubBar.Position = UDim2.new(0, 0, 0.5, -MinimumPageSize / 2 - BarSize)
+			Hub.BottomButtonFrame.Position = UDim2.new(0.5, -ContentWidth / 2, 0.5, MinimumPageSize / 2)
 		else
-			UsePageSize=UsableScreenHeight
-			Hub.HubBar.Position=UDim2.new(0.5,0,0,BufferSize)
-			Hub.BottomButtonFrame.Position=UDim2.new(0.5,-400,1,-(BufferSize+BarSize))
+			UsePageSize = UsableScreenHeight
+			Hub.HubBar.Position = UDim2.new(0, 0, 0, BufferSize)
+			Hub.BottomButtonFrame.Position = UDim2.new(0.5, -ContentWidth / 2, 1, -(BufferSize + BarSize))
 		end
-		Hub.HubBar.Image=TAB_BAR_IMAGE
-		Hub.HubBar.ImageTransparency=HomeButtonEnabled and 1 or 0
-		Hub.HubBarContainer.Size=UDim2.new(1,HomeButtonEnabled and -70 or 0,1,0)
-		Hub.HubBarContainer.Position=UDim2.new(0,HomeButtonEnabled and 70 or 0,0,0)
+		Hub.HubBar.Image = TAB_BAR_IMAGE
+		Hub.HubBar.ImageTransparency = HomeButtonEnabled and 1 or 0
+		Hub.HubBarContainer.Size = UDim2.new(1, HomeButtonEnabled and -70 or 0, 1, 0)
+		Hub.HubBarContainer.Position = UDim2.new(0, HomeButtonEnabled and 70 or 0, 0, 0)
 		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
 		if HomeButton then
-			HomeButton.Visible=HomeButtonEnabled
-			HomeButton.Size=UDim2.new(0,60,0,60)
-			HomeButton.Position=UDim2.new(0,0,0,0)
+			HomeButton.Visible = HomeButtonEnabled
+			HomeButton.Size = UDim2.new(0, 60, 0, 60)
+			HomeButton.Position = UDim2.new(0, 0, 0, 0)
 		end
-		Hub.PageClipper.Parent=Hub.MenuContainer
-		Hub.PageClipper.AnchorPoint=Vector2.new(0.5,0)
-		Hub.PageClipper.Size=UDim2.new(0,800,0,UsePageSize)
-		Hub.PageClipper.Position=UDim2.new(0.5,0,0.5,-UsePageSize/2)
-		Hub.PageView.AnchorPoint=Vector2.new(0.5,0.5)
-		Hub.PageView.Position=UDim2.new(0.5,0,0.5,0)
-		Hub.PageView.Size=UDim2.new(1,0,1,-20)
-		Hub.PageView.CanvasPosition=Vector2.new(0,0)
-		Hub.BottomButtonFrame.Parent=Hub.MenuContainer
-		Hub.BottomButtonFrame.Size=UDim2.new(0,800,0,60)
-		if Hub.CurrentPage and Hub.CurrentPage.Frame then
-			Hub.CurrentPage.Frame.Position=UDim2.new(0,0,0,0)
-			local PageContentHeight =
-				math.max(0, Hub.CurrentPage.Frame.Position.Y.Offset + Hub.CurrentPage.Frame.Size.Y.Offset)
-			local PageViewHeight = math.max(0, UsePageSize - 20)
-			local NeedsPlayerScrollbar =
-				Hub.CurrentPage == PlayersPage
-				and PageContentHeight > PageViewHeight + 1
 
+		Hub.PageClipper.Parent = Hub.MenuContainer
+		Hub.PageClipper.AnchorPoint = Vector2.new(0.5, 0)
+		Hub.PageClipper.Size = UDim2.new(0, ContentWidth, 0, UsePageSize)
+		Hub.PageClipper.Position = UDim2.new(0.5, 0, 0.5, -UsePageSize / 2)
+		Hub.PageView.AnchorPoint = Vector2.new(0.5, 0.5)
+		Hub.PageView.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Hub.PageView.Size = UDim2.new(1, 0, 1, -20)
+		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
+		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
+		Hub.BottomButtonFrame.Size = UDim2.new(0, ContentWidth, 0, 70)
+		if Hub.CurrentPage and Hub.CurrentPage.Frame then
+			Hub.CurrentPage.Frame.Position = UDim2.new(0, 0, 0, 0)
+			local PageContentHeight = math.max(0, Hub.CurrentPage.Frame.Position.Y.Offset + Hub.CurrentPage.Frame.Size.Y.Offset)
+			local PageViewHeight = math.max(0, UsePageSize - 20)
+			local NeedsPlayerScrollbar = Hub.CurrentPage == PlayersPage and PageContentHeight > PageViewHeight + 1
 			if Hub.CurrentPage == PlayersPage then
 				Hub.PageView.ScrollBarThickness = NeedsPlayerScrollbar and 12 or 0
-				Hub.PageView.VerticalScrollBarInset =
-					NeedsPlayerScrollbar
-					and Enum.ScrollBarInset.ScrollBar
-					or Enum.ScrollBarInset.None
+				Hub.PageView.VerticalScrollBarInset = NeedsPlayerScrollbar and Enum.ScrollBarInset.ScrollBar or Enum.ScrollBarInset.None
 			else
 				Hub.PageView.ScrollBarThickness = 12
 				Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
 			end
-
-			Hub.PageView.CanvasSize=UDim2.new(0,0,0,math.max(PageContentHeight,PageViewHeight))
+			Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, math.max(PageContentHeight, PageViewHeight))
 		else
-			Hub.PageView.ScrollBarThickness=12
-			Hub.PageView.VerticalScrollBarInset=Enum.ScrollBarInset.ScrollBar
+			Hub.PageView.ScrollBarThickness = 12
+			Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
 		end
 	end
 
@@ -2357,6 +2361,7 @@ ResizeHub = function()
 	if IsMobile then
 		ApplyTabletResponsiveScale(Viewport)
 	end
+	if ApplyMobileTextSizing then ApplyMobileTextSizing(ScreenGui) end
 
 end
 
@@ -3320,7 +3325,7 @@ GetVoiceLevel = function(Player)
 	if not Player then return 0 end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
 	local Stamp = tonumber(VoiceActivityStamp[UserId]) or 0
-	local ActivityIsRecent = Stamp > 0 and (os.clock() - Stamp) <= 1.5
+	local ActivityIsRecent = Stamp > 0 and (os.clock() - Stamp) <= 0.65
 	local ActivityPeak = tonumber(VoiceActivityPeak[UserId]) or 0
 
 	-- When Roblox sends numeric mic peaks, use those directly. An AudioAnalyzer
@@ -3441,24 +3446,21 @@ RefreshNativeVoiceMirrorCache = function(Force)
 	local MinimumInterval = Force and 1.0 or 4.0
 	if NativeVoiceScanStamp > 0 and (Now - NativeVoiceScanStamp) < MinimumInterval then return end
 	NativeVoiceScanStamp = Now
+
 	local Found = {}
-	local SearchRoots, SeenRoots = {}, {}
-	local function AddRoot(Root)
-		if Root and not SeenRoots[Root] then SeenRoots[Root] = true; table.insert(SearchRoots, Root) end
-	end
-	local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
-	AddRoot(TopBarRoot)
-	if TopBarRoot then AddRoot(TopBarRoot:FindFirstChild("TopBarApp")) end
-	AddRoot(CoreGui:FindFirstChild("ExperienceChat"))
-	local RobloxGuiRoot = CoreGui:FindFirstChild("RobloxGui")
-	if RobloxGuiRoot then
-		AddRoot(RobloxGuiRoot:FindFirstChild("TopBarApp"))
-		AddRoot(RobloxGuiRoot:FindFirstChild("ExperienceChat"))
-		local SettingsShield = RobloxGuiRoot:FindFirstChild("SettingsClippingShield")
+	local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+
+	-- Self microphone: search only the native MuteSelfButton subtree.
+	if RobloxGui then
+		local SettingsShield = RobloxGui:FindFirstChild("SettingsClippingShield")
 		local NativeMuteButton = SettingsShield and SettingsShield:FindFirstChild("MuteSelfButton", true)
 		if NativeMuteButton then
 			local Candidates = {NativeMuteButton}
-			pcall(function() for _, Descendant in ipairs(NativeMuteButton:GetDescendants()) do table.insert(Candidates, Descendant) end end)
+			pcall(function()
+				for _, Descendant in ipairs(NativeMuteButton:GetDescendants()) do
+					table.insert(Candidates, Descendant)
+				end
+			end)
 			for _, Candidate in ipairs(Candidates) do
 				local IsImage, Image = false, ""
 				pcall(function()
@@ -3466,89 +3468,25 @@ RefreshNativeVoiceMirrorCache = function(Force)
 					Image = tostring(Candidate.Image or "")
 				end)
 				if IsImage and Image:find("VoiceChat", 1, true)
-					and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)) then
+					and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)
+						or Image:find("Connecting", 1, true) or Image:find("Error", 1, true)) then
 					Found[LocalPlayer.UserId] = Candidate
 					break
 				end
 			end
 		end
 	end
-for _, SearchRoot in ipairs(SearchRoots) do
-    pcall(function()
-        for _, Obj in ipairs(SearchRoot:GetDescendants()) do
-            if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton"))
-                and Obj ~= VoiceChatButton
-                and not Obj:IsDescendantOf(ScreenGui) then
 
-                local Image = tostring(Obj.Image or "")
-
-                if Image:find("VoiceChat", 1, true)
-                    and (
-                        Image:find("Unmuted", 1, true)
-                        or Image:find("Muted", 1, true)
-                        or Image:find("Connecting", 1, true)
-                        or Image:find("Error", 1, true)
-                    ) then
-
-                    local BestPlayer, BestScore, Parent = nil, 0, Obj
-
-                    for _ = 1, 9 do
-                        Parent = Parent and Parent.Parent
-                        if not Parent then
-                            break
-                        end
-
-                        local Name = string.lower(tostring(Parent.Name or ""))
-
-                        for _, Player in ipairs(Players:GetPlayers()) do
-                            local PlayerName = string.lower(tostring(Player.Name or ""))
-                            local Score = 0
-
-                            if Name == PlayerName then
-                                Score = 500
-                            end
-
-                            local Id = tostring(Player.UserId or 0)
-                            if tonumber(Id) and tonumber(Id) > 1
-                                and Name:find(Id, 1, true) then
-                                Score = math.max(Score, 180)
-                            end
-
-                            if Player == LocalPlayer
-                                and (Name:find("self", 1, true)
-                                    or Name:find("local", 1, true)) then
-                                Score = math.max(Score, 180)
-                            end
-
-                            if Name:find("voice", 1, true)
-                                or Name:find("mic", 1, true)
-                                or Name:find("speaker", 1, true) then
-                                Score = Score + 20
-                            end
-
-                            if Obj.Visible then
-                                Score = Score + 10
-                            end
-
-                            if Score > BestScore then
-                                BestPlayer = Player
-                                BestScore = Score
-                            end
-                        end
-                    end
-
-                    if BestPlayer and BestScore >= 50 then
-                        Found[BestPlayer.UserId] = Obj
-                    end
-                end
-            end
-        end
-    end)
-end
+	-- Remote speaker icons are mapped only through each user's actual bubbleChat
+	-- node (BubbleChat_<UserId>/VoiceBubble), never through fuzzy ancestor names.
 	for _, Player in ipairs(Players:GetPlayers()) do
-		local DirectObject = FindNativeVoiceBubbleIconObject(Player)
-		if DirectObject then Found[Player.UserId] = DirectObject end
+		local UserId = tonumber(Player.UserId or Player.userId) or 0
+		if UserId > 1 and Player ~= LocalPlayer then
+			local DirectObject = FindNativeVoiceBubbleIconObject(Player)
+			if DirectObject then Found[UserId] = DirectObject end
+		end
 	end
+
 	for UserId, Connection in pairs(NativeVoiceIconConnections) do
 		local NewObject = Found[UserId]
 		if not NewObject or NewObject ~= NativeVoiceIconConnectedObjects[UserId] then
@@ -3557,6 +3495,7 @@ end
 			NativeVoiceIconConnectedObjects[UserId] = nil
 		end
 	end
+
 	NativeVoiceIconObjects = Found
 	NativeVoiceIconImages = {}
 	for UserId, Obj in pairs(Found) do
@@ -3642,6 +3581,47 @@ FindNativeVoiceIcon = function(Player)
 	return nil
 end
 
+-- Roblox's native voice bubble can keep the same Image asset while changing
+-- ImageRectOffset to show the current speech-meter frame. Read the offset live;
+-- caching Image alone makes every speaker look like the idle Unmuted0 frame.
+GetNativeVoiceMeterLevel = function(Player, NativeImage)
+	if not Player or type(NativeImage) ~= "string" then return nil end
+	if not NativeImage:find("Unmuted", 1, true) then return nil end
+
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	local Object = NativeVoiceIconObjects[UserId]
+	if not (Object and Object.Parent) and Player ~= LocalPlayer then
+		Object = FindNativeVoiceBubbleIconObject(Player)
+	end
+	if not Object then return nil end
+
+	local Offset, RectSize, AbsoluteSize
+	local ReadOk = pcall(function()
+		Offset = Object.ImageRectOffset
+		RectSize = Object.ImageRectSize
+		AbsoluteSize = Object.AbsoluteSize
+	end)
+	if not ReadOk or not Offset or not RectSize then return nil end
+
+	local FrameX, FrameY = 0, 0
+	if Offset.X > 0 then
+		local Cell = RectSize.X
+		if Cell <= 0 then Cell = math.max(1, (AbsoluteSize and AbsoluteSize.X or 16) * 3) end
+		FrameX = math.floor((Offset.X / Cell) + 0.5)
+	end
+	if Offset.Y > 0 then
+		local Cell = RectSize.Y
+		if Cell <= 0 then Cell = math.max(1, (AbsoluteSize and AbsoluteSize.Y or 16) * 3) end
+		FrameY = math.floor((Offset.Y / Cell) + 0.5)
+	end
+
+	-- Voice meter frames are arranged along one axis in the spritesheet. Use
+	-- whichever axis has the larger displacement, then map frames 0..5 to 0..100%.
+	local FrameIndex = math.max(FrameX, FrameY)
+	if FrameIndex <= 0 then return 0 end
+	return Clamp(FrameIndex / 5, 0, 1)
+end
+
 FindNativePlayerVoice = function(Player)
 	local Image = FindNativeVoiceIcon(Player)
 	if not Image then return false end
@@ -3663,7 +3643,11 @@ HasConfirmedPlayerVoice = function(Player)
 	if not Player or Player == LocalPlayer or not VoiceGameSupported then return false end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
 	if UserId <= 1 then return false end
-	if VoiceEnabledCache[UserId] == true or VoiceActivityActive[UserId] == true then return true end
+	-- Participant-state evidence is persistent for this join session; speaking
+	-- activity itself is time-limited separately so the level meter can return to idle.
+	if VoiceEnabledCache[UserId] == true then return true end
+	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
+	if ActivityStamp > 0 and (os.clock() - ActivityStamp) <= 1.25 then return true end
 	if GetAudioDeviceInput(Player) then
 		VoiceEnabledCache[UserId] = true
 		return true
@@ -3679,20 +3663,17 @@ GetVoiceIcon = function(Player, ForcedMuted)
 	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
 	local IsLocal = Player == LocalPlayer
 	local Native = FindNativeVoiceIcon(Player)
-	local Root = IsLocal and VOICE_MIC_ROOT or VOICE_SPEAKER_ROOT
 
-	-- A local listener mute always uses the speaker sprite for this row.
+	-- A local receive-side mute is displayed as a muted SPEAKER for this row.
 	if not IsLocal and (ForcedMuted == true or VoiceMutedPlayers[UserId] == true) then
 		return VOICE_SPEAKER_ROOT .. "Muted@3x.png"
 	end
 
 	if IsLocal then
-		-- Trust the live publishing state, not a stale CoreGui icon image.
 		local StateOk, Muted = pcall(function() return GetLocalVoiceMuted() end)
-		if StateOk then
-			if Muted then return VOICE_MIC_ROOT .. "Muted@3x.png" end
-		else
-			if type(Native) == "string" and Native:find("Muted", 1, true) then return VoiceContrastIcon(Native) end
+		if StateOk and Muted then return VOICE_MIC_ROOT .. "Muted@3x.png" end
+		if not StateOk and type(Native) == "string" and Native:find("Muted", 1, true) then
+			return VoiceContrastIcon(Native)
 		end
 		local Analyzer = GetVoiceAnalyzer(Player)
 		if Analyzer then
@@ -3702,34 +3683,61 @@ GetVoiceIcon = function(Player, ForcedMuted)
 		return VOICE_MIC_ROOT .. "Unmuted0@3x.png"
 	end
 
-	-- The remote row uses a speaker icon family even when Roblox's bubble exposes
-	-- a microphone sprite. Local receive-mute state was handled above.
+	-- Do not trust VoiceActivityActive by itself: older clients can emit one
+	-- positive activity event and never send its matching inactive event.
+	local Now = os.clock()
+	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
+	local ActivityAge = ActivityStamp > 0 and (Now - ActivityStamp) or math.huge
+	local HasRecentActivity = ActivityAge >= 0 and ActivityAge <= 0.65
+	if not HasRecentActivity and VoiceActivityActive[UserId] == true then
+		VoiceActivityActive[UserId] = false
+		VoiceActivityPeak[UserId] = 0
+		VoiceActivityPeakMeasured[UserId] = false
+	end
+
 	local Input = GetAudioDeviceInput(Player)
 	if Input then
 		local InputOk, InputMuted = pcall(function() return Input.Muted == true end)
 		if InputOk and InputMuted then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
 	end
 
-	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
-	local HasRecentActivity = VoiceActivityActive[UserId] == true
-		or (ActivityStamp > 0 and (os.clock() - ActivityStamp) <= 1.5)
 	if HasRecentActivity then
-		return VoiceUnmutedIcon(GetVoiceLevel(Player), true)
+		local Level = GetVoiceLevel(Player)
+		if Level <= 0.00001 and VoiceActivityActive[UserId] == true
+			and VoiceActivityPeakMeasured[UserId] ~= true then
+			Level = 0.35
+		end
+		return VoiceUnmutedIcon(Level, true)
 	end
 
 	local Analyzer = Input and GetVoiceAnalyzer(Player) or nil
 	if Analyzer then
 		local Ok, Level = pcall(function() return tonumber(Analyzer.PeakLevel) end)
-		if Ok and Level and Level > 0.00001 then return VoiceUnmutedIcon(Clamp(Level, 0, 1), true) end
+		if Ok and Level and Level > 0.00001 then
+			return VoiceUnmutedIcon(Clamp(Level, 0, 1), true)
+		end
 	end
 
+	-- Preserve the native bubble's actual meter frame (Unmuted20/40/60/80/100)
+	-- while switching it to the speaker sprite family for this local listener.
 	if type(Native) == "string" and Native ~= "" then
 		if Native:find("Muted", 1, true) then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
 		if Native:find("Connecting", 1, true) then return VOICE_SPEAKER_ROOT .. "Connecting@3x.png" end
 		if Native:find("Error", 1, true) then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
-		if Native:find("Unmuted", 1, true) then return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png" end
+		if Native:find("Unmuted", 1, true) then
+			local NativeLevel = GetNativeVoiceMeterLevel(Player, Native)
+			if NativeLevel and NativeLevel > 0.00001 then
+				return VoiceUnmutedIcon(NativeLevel, true)
+			end
+			local Percent = Native:match("Unmuted(%d+)@3x%.png")
+			if Percent and (Percent == "0" or Percent == "20" or Percent == "40" or Percent == "60" or Percent == "80" or Percent == "100") then
+				return VOICE_SPEAKER_ROOT .. "Unmuted" .. Percent .. "@3x.png"
+			end
+			return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png"
+		end
 	end
-	-- This is a quiet but confirmed voice participant, not an unverified player.
+
+	-- A quiet but positively confirmed voice participant gets the idle frame.
 	return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png"
 end
 
@@ -3827,19 +3835,37 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 		if Peak > 1 and Peak <= 100 then Peak = Peak / 100 end
 		Peak = Clamp(Peak, 0, 1)
 		if Peak > 0.00001 then
+			-- Keep the latest real peak and timestamp. The row refresh loop reads
+			-- this value at 5 Hz and maps it to the 20/40/60/80/100 speaker frames.
 			VoiceActivityPeak[UserId] = Peak
 			VoiceActivityStamp[UserId] = os.clock()
 			VoiceActivityActive[UserId] = true
 			VoiceActivityPeakMeasured[UserId] = true
 			return
 		elseif Speaking == true then
-			-- Some clients send peak=0 alongside active=true; preserve the activity flag.
+			-- Some legacy clients report active=true while peak is zero. Give the
+			-- speaker a modest level rather than pinning it to Unmuted0.
 			VoiceActivityPeak[UserId] = 0.35
 			VoiceActivityStamp[UserId] = os.clock()
 			VoiceActivityActive[UserId] = true
 			VoiceActivityPeakMeasured[UserId] = false
 			return
+		elseif Speaking == false then
+			VoiceActivityPeak[UserId] = 0
+			VoiceActivityStamp[UserId] = 0
+			VoiceActivityActive[UserId] = false
+			VoiceActivityPeakMeasured[UserId] = false
+			return
 		else
+			-- Activity feeds can send zero-level samples between positive peaks.
+			-- Do not erase a just-received real peak immediately; hold it briefly
+			-- so the UI can display the current frame. Zero does NOT refresh time.
+			local PreviousStamp = tonumber(VoiceActivityStamp[UserId]) or 0
+			local PreviousPeak = tonumber(VoiceActivityPeak[UserId]) or 0
+			if PreviousStamp > 0 and PreviousPeak > 0
+				and (os.clock() - PreviousStamp) <= 0.65 then
+				return
+			end
 			VoiceActivityPeak[UserId] = 0
 			VoiceActivityStamp[UserId] = 0
 			VoiceActivityActive[UserId] = false
@@ -5381,7 +5407,7 @@ Position =
 				"FriendStatus"
 
 			if FriendLabel then
-				FriendLabel.TextSize = 26
+				FriendLabel.TextSize = IsMobile and 17 or 21
 			end
 
 			FriendButton.Parent =
@@ -7394,23 +7420,28 @@ MakeInviteFriendsRow = function(Page)
 	if InviteFriends then
 		Row=BaseRow("InviteFriendsToJoin", UDim2.new(0,0,0,0), VoiceActive and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62))
 		Create("ImageLabel", {Name="Icon",Parent=Row,BackgroundTransparency=1,Image="rbxassetid://80022950003290",Size=UDim2.fromOffset(24,24),Position=UDim2.new(0,14,0.5,-12),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+3})
-		Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-54,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
+		Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=IsMobile and 17 or 22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-78,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
+		if IsMobile then
+			Create("TextLabel", {Name="MobileChevron",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=28,TextColor3=Color3.fromRGB(220,220,220),Text="›",TextXAlignment=Enum.TextXAlignment.Center,TextYAlignment=Enum.TextYAlignment.Center,Size=UDim2.fromOffset(20,38),AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-12,0.5,0),ZIndex=SETTINGS_BASE_ZINDEX+4})
+		end
 	end
 	local MuteRow
 	if VoiceActive then
 		local MutePosition = InviteFriends and UDim2.new(0.5,4,0,PLAYER_LIST_OFFSET) or UDim2.new(0,0,0,PLAYER_LIST_OFFSET)
 		local MuteSize = InviteFriends and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
 		MuteRow=BaseRow("MuteAllVoiceRow", MutePosition, MuteSize)
-		local Icon=Create("ImageLabel", {Name="Icon",Parent=MuteRow,BackgroundTransparency=1,Image=VOICE_MISC_ROOT.."UnmuteAll@3x.png",Size=UDim2.fromOffset(30,30),Position=UDim2.new(0,14,0.5,-15),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+4})
+		local Icon=Create("ImageLabel", {Name="Icon",Parent=MuteRow,BackgroundTransparency=1,Image=VOICE_MISC_ROOT..(VoiceMuteAllActive and "UnmuteAll@3x.png" or "MuteAll@3x.png"),Size=UDim2.fromOffset(30,30),Position=UDim2.new(0,14,0.5,-15),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+4})
 		local Label=Create("TextLabel", {Name="MuteAllLabel",Parent=MuteRow,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Mute All",Size=UDim2.new(1,-56,1,0),Position=UDim2.new(0,52,0,0),ZIndex=SETTINGS_BASE_ZINDEX+4})
 		local State = VoiceMuteAllActive == true
 		Label.Text = State and "Unmute All" or "Mute All"
+		Icon.Image = VOICE_MISC_ROOT .. (State and "UnmuteAll@3x.png" or "MuteAll@3x.png")
 		Connect(MuteRow.MouseEnter,function() MuteRow.ImageTransparency=0.65 end)
 		Connect(MuteRow.MouseLeave,function() MuteRow.ImageTransparency=0.85 end)
 		Connect(MuteRow.MouseButton1Click,function()
 			State = not State
 			SetMuteAll(State)
 			Label.Text = State and "Unmute All" or "Mute All"
+			Icon.Image = VOICE_MISC_ROOT .. (State and "UnmuteAll@3x.png" or "MuteAll@3x.png")
 		end)
 	end
 	if Row then
@@ -12813,22 +12844,32 @@ PositionMobileConfirmationButtons =
 			local Camera = workspace.CurrentCamera
 			Viewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
 		end
-		local AvailableWidth = math.max(280, Viewport.X - 20)
-		local ButtonWidth = Clamp((AvailableWidth - 12) / 2, 130, 200)
+		local AvailableWidth = math.max(250, Viewport.X - 24)
+		local ButtonWidth = math.min(152, math.max(108, (AvailableWidth - 12) / 2))
 		for _, Info in next, {
 			{ResetPage.Frame, ResetButton, DontResetButton},
 			{LeavePage.Frame, LeaveButton, DontLeaveButton},
 		} do
 			local Frame, LeftButton, RightButton = Info[1], Info[2], Info[3]
+			Frame.Size = UDim2.new(1, 0, 0, 220)
 			local Message = Frame:FindFirstChildWhichIsA("TextLabel")
 			if Message then
-				Message.Size = UDim2.new(1, -20, 0, 88)
-				Message.Position = UDim2.new(0, 10, 0, 42)
+				Message.Size = UDim2.new(1, -24, 0, 72)
+				Message.Position = UDim2.new(0, 12, 0, 28)
+				Message.TextWrapped = true
+				Message.TextSize = math.min(Message.TextSize, 18)
 			end
-			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
-			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
-			LeftButton.Position = UDim2.new(0.5, -(ButtonWidth + 6), 0, 158)
-			RightButton.Position = UDim2.new(0.5, 6, 0, 158)
+			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 42)
+			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 42)
+			LeftButton.Position = UDim2.new(0.5, -(ButtonWidth + 6), 0, 132)
+			RightButton.Position = UDim2.new(0.5, 6, 0, 132)
+			for _, Button in ipairs({LeftButton, RightButton}) do
+				local Label = Button:FindFirstChildWhichIsA("TextLabel", true)
+				if Label then
+					Label.TextSize = math.min(Label.TextSize, 16)
+					Label.TextWrapped = true
+				end
+			end
 		end
 	end
 
@@ -12849,6 +12890,8 @@ ShowAlert =
 		Hub.PageClipper.Visible = false
 		Hub.BottomButtonFrame.Visible = false
 
+		local AlertWidth = IsPhone and math.max(250, math.min(380, ScreenGui.AbsoluteSize.X - 24)) or 400
+		local AlertHeight = IsPhone and 240 or 350
 		local Alert = Create(
 			"ImageLabel",
 			{
@@ -12858,8 +12901,8 @@ ShowAlert =
 				ScaleType = Enum.ScaleType.Slice,
 				SliceCenter = Rect.new(8, 6, 46, 44),
 				BackgroundTransparency = 1,
-				Size = UDim2.new(0, 400, 0, 350),
-				Position = UDim2.new(0.5, -200, 0.5, -175),
+				Size = UDim2.new(0, AlertWidth, 0, AlertHeight),
+				Position = UDim2.new(0.5, -AlertWidth / 2, 0.5, -AlertHeight / 2),
 				ZIndex = SETTINGS_BASE_ZINDEX + 30,
 			}
 		)
@@ -12872,7 +12915,7 @@ ShowAlert =
 			Size = UDim2.new(0.95, 0, 0.6, 0),
 			Position = UDim2.new(0.025, 0, 0.05, 0),
 			Font = Enum.Font.SourceSansBold,
-			TextSize = 36,
+			TextSize = IsPhone and 20 or 36,
 			Text = AlertMessage,
 			TextWrapped = true,
 			TextColor3 = Color3.new(1, 1, 1),
@@ -12884,7 +12927,7 @@ ShowAlert =
 		local Button, ButtonText = MakeStyledButton(
 			"AlertViewButton",
 			OkButtonText or "Ok",
-			UDim2.new(0, 200, 0, 50),
+			UDim2.new(0, IsPhone and math.min(170, AlertWidth - 32) or 200, 0, IsPhone and 42 or 50),
 			function()
 				if ActiveAlert then
 					ActiveAlert:Destroy()
@@ -12900,7 +12943,9 @@ ShowAlert =
 			end
 		)
 		Button.Parent = Alert
-		Button.Position = UDim2.new(0.5, -100, 0.65, 0)
+		local AlertButtonWidth = IsPhone and math.min(170, AlertWidth - 32) or 200
+		Button.Position = UDim2.new(0.5, -AlertButtonWidth / 2, 0.68, 0)
+		if ButtonText then ButtonText.TextSize = IsPhone and 16 or ButtonText.TextSize end
 		Button.ZIndex = SETTINGS_BASE_ZINDEX + 31
 		ButtonText.ZIndex = SETTINGS_BASE_ZINDEX + 32
 	end
@@ -12922,7 +12967,7 @@ PushPage =
 		Hub.PageView.ScrollBarThickness = 0
 		SwitchToPage(Page, true, true)
 		if Hub.InConfirmation then
-			if IsMobile then
+			if IsPhone then
 				PositionMobileConfirmationButtons()
 			else
 				PositionDesktopConfirmationButtons()
@@ -13489,12 +13534,14 @@ if VoiceChatInternal then
 				or Payload.Peak ~= nil or Payload.level ~= nil or Payload.Level ~= nil
 			if type(SpeakingOrInfo) == "boolean" and not HasSpeakingField then
 				Payload.isSpeaking = SpeakingOrInfo
-			elseif type(SpeakingOrInfo) == "number" and not HasPeakField then
+			elseif type(SpeakingOrInfo) == "number" then
+				-- If this client splits level out as argument 2, it is fresher than
+				any stale/default level value contained in the activity dictionary.
 				Payload.peakLevel = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "table" then
 				for Key, Value in next, SpeakingOrInfo do if Payload[Key] == nil then Payload[Key] = Value end end
 			end
-			if type(PeakValue) == "number" and not HasPeakField then Payload.peakLevel = PeakValue end
+			if type(PeakValue) == "number" then Payload.peakLevel = PeakValue end
 			VoiceProcessActivityInfo(Payload)
 		end)
 	end)
@@ -14322,6 +14369,44 @@ if IsMobile then
 end
 
 -- ============================================================
+-- MOBILE TEXT SCALE
+-- Shrink fixed-size labels on mobile without repeatedly shrinking them.
+-- Newly-created rows get the same one-time adjustment; desktop restores originals.
+MobileTextBaseSizes = setmetatable({}, {__mode = "k"})
+ApplyMobileTextSizing = function(Root)
+	if not Root then return end
+	local Objects = {}
+	if Root:IsA("TextLabel") or Root:IsA("TextButton") or Root:IsA("TextBox") then
+		table.insert(Objects, Root)
+	end
+	pcall(function()
+		for _, Object in ipairs(Root:GetDescendants()) do
+			if Object:IsA("TextLabel") or Object:IsA("TextButton") or Object:IsA("TextBox") then
+				table.insert(Objects, Object)
+			end
+		end
+	end)
+	for _, Object in ipairs(Objects) do
+		if Object.TextScaled ~= true then
+			if MobileTextBaseSizes[Object] == nil then MobileTextBaseSizes[Object] = Object.TextSize end
+			local BaseSize = tonumber(MobileTextBaseSizes[Object]) or Object.TextSize
+			if IsMobile then
+				Object.TextSize = math.max(12, math.floor(BaseSize * 0.84 + 0.5))
+			else
+				Object.TextSize = BaseSize
+			end
+		end
+	end
+end
+Connect(ScreenGui.DescendantAdded, function(Object)
+	if Object:IsA("TextLabel") or Object:IsA("TextButton") or Object:IsA("TextBox") then
+		task.defer(function()
+			if Object and Object.Parent then ApplyMobileTextSizing(Object) end
+		end)
+	end
+end)
+
+-- ============================================================
 -- INITIAL STATE
 -- ============================================================
 
@@ -14330,6 +14415,7 @@ SwitchToPage(GamePage, true, true)
 ConfigureMobileActionButtons()
 ResizeHub()
 ConfigureMobileActionButtons()
+ApplyMobileTextSizing(ScreenGui)
 if VoiceOptionAvailable and SetVoiceChatPreference then
 	SetVoiceChatPreference(true)
 end
