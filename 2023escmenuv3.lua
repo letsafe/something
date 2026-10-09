@@ -280,7 +280,9 @@ HOME_HEIGHT = 60
 HOME_WIDTH = 60
 
 HUBBAR_HEIGHT = 60
-MOBILE_HUBBAR_HEIGHT = 40
+-- The 2016-style phone tab bar is compact; tablet and desktop keep their
+-- own heights below.
+MOBILE_HUBBAR_HEIGHT = 32
 TABLET_HUBBAR_HEIGHT = 48
 
 -- Custom SystemMenuButton offsets.
@@ -1724,6 +1726,31 @@ ResizeHub = function()
 
 	local Height
 	UpdateTabletPlatform(Viewport)
+
+	-- On phones, Roblox normally maps IgnoreGuiInset=true to DeviceSafeInsets.
+	-- That leaves edge strips outside the ScreenGui's coordinate/clipping area,
+	-- so any GUI content extending into them becomes invisible. Use the actual
+	-- fullscreen rectangle on phones only; leave tablet and desktop behavior as-is.
+	if IsPhone then
+		pcall(function()
+			ScreenGui.ScreenInsets = Enum.ScreenInsets.None
+		end)
+		pcall(function()
+			ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None
+		end)
+	else
+		-- The prior setup used IgnoreGuiInset=true (DeviceSafeInsets). Preserve
+		-- that behavior on tablet and PC; do not apply phone fullscreen settings.
+		pcall(function()
+			if ScreenGui.ScreenInsets == Enum.ScreenInsets.None then
+				ScreenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+			end
+		end)
+		pcall(function()
+			ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.FullscreenExtension
+		end)
+	end
+
 	-- The original 4:3 aspect constraint makes a portrait phone's menu
 	-- collapse into a narrow/short desktop-shaped box. Disable that constraint
 	-- on phones only; restore it for tablets and desktop so their layout is
