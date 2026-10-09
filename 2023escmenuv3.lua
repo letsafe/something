@@ -3348,14 +3348,15 @@ GetVoiceLevel = function(Player)
 	return Clamp(Peak, 0, 1)
 end
 
-VoiceUnmutedIcon = function(Level)
-	-- Unmuted0 is reserved for an actual zero/no-signal reading.
-	if Level <= 0.00001 then return VOICE_MIC_ROOT .. "Unmuted0@3x.png" end
-	if Level < 0.2 then return VOICE_MIC_ROOT .. "Unmuted20@3x.png" end
-	if Level < 0.4 then return VOICE_MIC_ROOT .. "Unmuted40@3x.png" end
-	if Level < 0.6 then return VOICE_MIC_ROOT .. "Unmuted60@3x.png" end
-	if Level < 0.8 then return VOICE_MIC_ROOT .. "Unmuted80@3x.png" end
-	return VOICE_MIC_ROOT .. "Unmuted100@3x.png"
+VoiceUnmutedIcon = function(Level, UseSpeaker)
+	-- Remote player rows use speaker sprites; only the local self-mic uses mic sprites.
+	local Root = UseSpeaker and VOICE_SPEAKER_ROOT or VOICE_MIC_ROOT
+	if Level <= 0.00001 then return Root .. "Unmuted0@3x.png" end
+	if Level < 0.2 then return Root .. "Unmuted20@3x.png" end
+	if Level < 0.4 then return Root .. "Unmuted40@3x.png" end
+	if Level < 0.6 then return Root .. "Unmuted60@3x.png" end
+	if Level < 0.8 then return Root .. "Unmuted80@3x.png" end
+	return Root .. "Unmuted100@3x.png"
 end
 
 -- Resolve Roblox's actual per-player bubble-chat microphone image when it
@@ -3379,8 +3380,6 @@ FindNativeVoiceBubbleIconObject = function(Player)
 	if not BubbleChatRoot then return nil end
 
 	local Bubble = nil
-	-- Client builds vary: bubble containers have been named BubbleChat_<id>,
-	-- the numeric UserId, or another id-bearing name under bubbleChat.
 	pcall(function()
 		Bubble = BubbleChatRoot:FindFirstChild("BubbleChat_" .. tostring(UserId))
 			or BubbleChatRoot:FindFirstChild(tostring(UserId))
@@ -3403,10 +3402,9 @@ FindNativeVoiceBubbleIconObject = function(Player)
 	local VoiceBubble = nil
 	pcall(function() VoiceBubble = Bubble:FindFirstChild("VoiceBubble", true) end)
 	if not VoiceBubble then return nil end
-	local function IsVoiceMicImage(Object)
+	local function IsVoiceImage(Object)
 		if not Object then return false end
-		local IsImage = false
-		local Image = ""
+		local IsImage, Image = false, ""
 		pcall(function()
 			IsImage = Object:IsA("ImageLabel") or Object:IsA("ImageButton")
 			Image = tostring(Object.Image or "")
@@ -3419,13 +3417,12 @@ FindNativeVoiceBubbleIconObject = function(Player)
 	end
 	local Insert = nil
 	pcall(function() Insert = VoiceBubble:FindFirstChild("Insert", true) end)
-	if IsVoiceMicImage(Insert) then return Insert end
+	if IsVoiceImage(Insert) then return Insert end
 	local Ok, Descendants = pcall(function() return VoiceBubble:GetDescendants() end)
 	if Ok then
-		local Best = nil
-		local BestScore = -1
+		local Best, BestScore = nil, -1
 		for _, Object in ipairs(Descendants) do
-			if IsVoiceMicImage(Object) then
+			if IsVoiceImage(Object) then
 				local Score = 0
 				if string.lower(tostring(Object.Name or "")) == "insert" then Score += 100 end
 				if Object.Visible then Score += 10 end
@@ -3438,22 +3435,16 @@ FindNativeVoiceBubbleIconObject = function(Player)
 end
 
 -- Cache Roblox's native voice icons for participant detection and fallback.
--- Custom player-row meters prefer live analyzer/activity readings so one cached
--- Unmuted## filename cannot freeze the displayed speaking level.
+-- Search only small relevant UI roots, not all of CoreGui on the render path.
 RefreshNativeVoiceMirrorCache = function(Force)
 	local Now = os.clock()
 	local MinimumInterval = Force and 1.0 or 4.0
 	if NativeVoiceScanStamp > 0 and (Now - NativeVoiceScanStamp) < MinimumInterval then return end
 	NativeVoiceScanStamp = Now
 	local Found = {}
-	-- Search only the native topbar and ExperienceChat voice trees; a full
-	-- CoreGui descendant scan on every refresh made menu animations stutter.
 	local SearchRoots, SeenRoots = {}, {}
 	local function AddRoot(Root)
-		if Root and not SeenRoots[Root] then
-			SeenRoots[Root] = true
-			table.insert(SearchRoots, Root)
-		end
+		if Root and not SeenRoots[Root] then SeenRoots[Root] = true; table.insert(SearchRoots, Root) end
 	end
 	local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
 	AddRoot(TopBarRoot)
@@ -3463,20 +3454,14 @@ RefreshNativeVoiceMirrorCache = function(Force)
 	if RobloxGuiRoot then
 		AddRoot(RobloxGuiRoot:FindFirstChild("TopBarApp"))
 		AddRoot(RobloxGuiRoot:FindFirstChild("ExperienceChat"))
-		-- Target the known self-mute button directly rather than traversing the
-		-- entire Settings shield while the ESC menu is animating.
 		local SettingsShield = RobloxGuiRoot:FindFirstChild("SettingsClippingShield")
 		local NativeMuteButton = SettingsShield and SettingsShield:FindFirstChild("MuteSelfButton", true)
 		if NativeMuteButton then
 			local Candidates = {NativeMuteButton}
-			Protect(function()
-				for _, Descendant in ipairs(NativeMuteButton:GetDescendants()) do
-					table.insert(Candidates, Descendant)
-				end
-			end)
+			pcall(function() for _, Descendant in ipairs(NativeMuteButton:GetDescendants()) do table.insert(Candidates, Descendant) end end)
 			for _, Candidate in ipairs(Candidates) do
 				local IsImage, Image = false, ""
-				Protect(function()
+				pcall(function()
 					IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
 					Image = tostring(Candidate.Image or "")
 				end)
@@ -3489,55 +3474,41 @@ RefreshNativeVoiceMirrorCache = function(Force)
 		end
 	end
 	for _, SearchRoot in ipairs(SearchRoots) do
-		Protect(function()
+		pcall(function()
 			for _, Obj in ipairs(SearchRoot:GetDescendants()) do
-				if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton"))
-					and Obj ~= VoiceChatButton
-					and not Obj:IsDescendantOf(ScreenGui)
-				then
+				if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton")) and Obj ~= VoiceChatButton and not Obj:IsDescendantOf(ScreenGui) then
 					local Image = tostring(Obj.Image or "")
-					if Image:find("VoiceChat", 1, true)
-						and (Image:find("Unmuted", 1, true)
-							or Image:find("Muted", 1, true)
-							or Image:find("Connecting", 1, true)
-							or Image:find("Error", 1, true))
-					then
-						local BestPlayer, BestScore = nil, 0
-						local Parent = Obj
-						for _ = 1, 9 do
-							Parent = Parent and Parent.Parent
-							if not Parent then break end
-							local Name = string.lower(tostring(Parent.Name or ""))
-							for _, Player in ipairs(Players:GetPlayers()) do
-								local PlayerName = string.lower(tostring(Player.Name or ""))
-								local Score = 0
-								if Name == PlayerName then Score = 500 end
-								if Name:find(PlayerName, 1, true) then Score = math.max(Score, 250) end
-								local Id = tostring(Player.UserId or 0)
-								if tonumber(Id) and tonumber(Id) > 1 and Name:find(Id, 1, true) then Score = math.max(Score, 180) end
-								if Player == LocalPlayer and (Name:find("self", 1, true) or Name:find("local", 1, true)) then
-									Score = math.max(Score, 180)
-								end
-								if Name:find("voice", 1, true) or Name:find("mic", 1, true) then Score += 20 end
-								if Obj.Visible then Score += 10 end
-								if Score > BestScore then BestPlayer = Player; BestScore = Score end
-							end
-						end
-						if BestPlayer and BestScore >= 50 then Found[BestPlayer.UserId] = Obj end
+					if Image:find("VoiceChat", 1, true) and (Image:find("Unmuted", 1, true) or Image:find("Muted", 1, true) or Image:find("Connecting", 1, true) or Image:find("Error", 1, true)) then
+						local BestPlayer, BestScore, Parent = nil, 0, Obj
+					for _ = 1, 9 do
+						Parent = Parent and Parent.Parent
+						if not Parent then break end
+						local Name = string.lower(tostring(Parent.Name or ""))
+						for _, Player in ipairs(Players:GetPlayers()) do
+							local PlayerName = string.lower(tostring(Player.Name or ""))
+							local Score = 0
+						-- Only accept an exact player-name match or a UserId match here.
+						-- Substring matching made names such as "ice" match generic Voice UI
+						-- ancestors and incorrectly gave non-voice players invisible buttons.
+						if Name == PlayerName then Score = 500 end
+						local Id = tostring(Player.UserId or 0)
+						if tonumber(Id) and tonumber(Id) > 1 and Name:find(Id, 1, true) then Score = math.max(Score, 180) end
+						if Player == LocalPlayer and (Name:find("self", 1, true) or Name:find("local", 1, true)) then Score = math.max(Score, 180) end
+						if Name:find("voice", 1, true) or Name:find("mic", 1, true) or Name:find("speaker", 1, true) then Score += 20 end
+						if Obj.Visible then Score += 10 end
+						if Score > BestScore then BestPlayer = Player; BestScore = Score end
 					end
+					end
+					if BestPlayer and BestScore >= 50 then Found[BestPlayer.UserId] = Obj end
 				end
 			end
 		end)
 	end
-	-- The heuristic scan above is a fallback. Prefer the actual per-user
-	-- ExperienceChat VoiceBubble image whenever Roblox has created it.
-	for _, Player in next, Players:GetPlayers() do
+	for _, Player in ipairs(Players:GetPlayers()) do
 		local DirectObject = FindNativeVoiceBubbleIconObject(Player)
-		if DirectObject then
-			Found[Player.UserId] = DirectObject
-		end
+		if DirectObject then Found[Player.UserId] = DirectObject end
 	end
-	for UserId, Connection in next, NativeVoiceIconConnections do
+	for UserId, Connection in pairs(NativeVoiceIconConnections) do
 		local NewObject = Found[UserId]
 		if not NewObject or NewObject ~= NativeVoiceIconConnectedObjects[UserId] then
 			pcall(function() Connection:Disconnect() end)
@@ -3545,12 +3516,11 @@ RefreshNativeVoiceMirrorCache = function(Force)
 			NativeVoiceIconConnectedObjects[UserId] = nil
 		end
 	end
-
 	NativeVoiceIconObjects = Found
 	NativeVoiceIconImages = {}
-	for UserId, Obj in next, Found do
+	for UserId, Obj in pairs(Found) do
 		local Image = nil
-		Protect(function() Image = tostring(Obj.Image or "") end)
+		pcall(function() Image = tostring(Obj.Image or "") end)
 		NativeVoiceIconImages[UserId] = Image
 		if Image and Image ~= "" then
 			NativeVoiceIconLastImages[UserId] = Image
@@ -3558,7 +3528,7 @@ RefreshNativeVoiceMirrorCache = function(Force)
 		end
 		if NativeVoiceIconConnectedObjects[UserId] ~= Obj then
 			NativeVoiceIconConnectedObjects[UserId] = Obj
-			Protect(function()
+			pcall(function()
 				NativeVoiceIconConnections[UserId] = Connect(Obj:GetPropertyChangedSignal("Image"), function()
 					if NativeVoiceIconObjects[UserId] == Obj then
 						local UpdatedImage = tostring(Obj.Image or "")
@@ -3578,21 +3548,16 @@ ScheduleNativeVoiceMirrorRefresh = function()
 	if NativeVoiceScanScheduled then return end
 	NativeVoiceScanScheduled = true
 	Spawn(function()
-		while NativeVoiceScanStamp > 0 and (os.clock() - NativeVoiceScanStamp) < 1.05 do
-			Wait(0.1)
-		end
+		while NativeVoiceScanStamp > 0 and (os.clock() - NativeVoiceScanStamp) < 1.05 do Wait(0.1) end
 		NativeVoiceScanScheduled = false
 		RefreshNativeVoiceMirrorCache(true)
 	end)
 end
 
--- Native voice bubbles are created dynamically. Only react to voice-related
--- descendants, then coalesce all related additions into one scan.
 Protect(function()
 	Connect(CoreGui.DescendantAdded, function(Descendant)
 		local Name = string.lower(tostring(Descendant.Name or ""))
-		if Name:find("voice", 1, true) or Name:find("bubblechat", 1, true)
-			or Name == "insert" or Name:find("speaker", 1, true) then
+		if Name:find("voice", 1, true) or Name:find("bubblechat", 1, true) or Name == "insert" or Name:find("speaker", 1, true) then
 			ScheduleNativeVoiceMirrorRefresh()
 		end
 	end)
@@ -3606,10 +3571,6 @@ FindNativeVoiceIcon = function(Player)
 		local Image = NativeVoiceIconImages[UserId]
 		if Image and Image ~= "" then return Image end
 	end
-
-	-- Read the native self-mic sprite directly from the known button subtree.
-	-- The button can be hidden by our compatibility layer, but its Image value
-	-- still provides a better mute-state signal than the internal pause flag.
 	if Player == LocalPlayer then
 		local Now = os.clock()
 		if not NativeSelfIconProbeStamp or (Now - NativeSelfIconProbeStamp) >= 0.4 then
@@ -3619,19 +3580,11 @@ FindNativeVoiceIcon = function(Player)
 			local Button = Shield and Shield:FindFirstChild("MuteSelfButton", true)
 			if Button then
 				local Candidates = {Button}
-				pcall(function()
-					for _, Descendant in ipairs(Button:GetDescendants()) do
-						table.insert(Candidates, Descendant)
-					end
-				end)
+				pcall(function() for _, Descendant in ipairs(Button:GetDescendants()) do table.insert(Candidates, Descendant) end end)
 				for _, Candidate in ipairs(Candidates) do
 					local IsImage, Image = false, ""
-					pcall(function()
-						IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
-						Image = tostring(Candidate.Image or "")
-					end)
-					if IsImage and Image:find("VoiceChat", 1, true)
-						and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)) then
+					pcall(function() IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton"); Image = tostring(Candidate.Image or "") end)
+					if IsImage and Image:find("VoiceChat", 1, true) and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)) then
 						NativeVoiceIconLastImages[UserId] = Image
 						NativeVoiceIconLastSeenAt[UserId] = Now
 						return Image
@@ -3640,15 +3593,10 @@ FindNativeVoiceIcon = function(Player)
 			end
 		end
 	end
-
-	-- A remote native image is only useful as a fallback while it is recent.
-	-- An old disconnected bubble must not freeze the icon forever.
 	if Player ~= LocalPlayer then
 		local Last = NativeVoiceIconLastImages[UserId]
 		local LastAt = tonumber(NativeVoiceIconLastSeenAt[UserId]) or 0
-		if type(Last) == "string" and Last ~= "" and LastAt > 0 and (os.clock() - LastAt) <= 3 then
-			return Last
-		end
+		if type(Last) == "string" and Last ~= "" and LastAt > 0 and (os.clock() - LastAt) <= 3 then return Last end
 	end
 	return nil
 end
@@ -3659,91 +3607,89 @@ FindNativePlayerVoice = function(Player)
 	return Image:find("Unmuted", 1, true) ~= nil or Image:find("Muted", 1, true) ~= nil
 end
 
--- Use the MicLight sprite family for custom and mirrored voice icons.
 VoiceContrastIcon = function(Image)
 	if Image == nil then return nil end
 	Image = tostring(Image)
-	-- Native CoreGui often exposes MicDark assets without @3x suffixes.
-	-- Preserve the exact native sprite filename and swap only the asset family.
 	Image = Image:gsub("/MicDark/", "/MicLight/")
 	Image = Image:gsub("/SpeakerDark/", "/SpeakerLight/")
-	if Image == VOICE_ICON_ROOT .. "Muted@3x.png" then
-		return VOICE_MIC_ROOT .. "Muted@3x.png"
-	elseif Image == VOICE_ICON_ROOT .. "Connecting@3x.png" then
-		return VOICE_MIC_ROOT .. "Connecting@3x.png"
-	elseif Image == VOICE_ICON_ROOT .. "Error@3x.png" then
-		return VOICE_MIC_ROOT .. "Error@3x.png"
-	end
+	if Image == VOICE_ICON_ROOT .. "Muted@3x.png" then return VOICE_MIC_ROOT .. "Muted@3x.png"
+	elseif Image == VOICE_ICON_ROOT .. "Connecting@3x.png" then return VOICE_MIC_ROOT .. "Connecting@3x.png"
+	elseif Image == VOICE_ICON_ROOT .. "Error@3x.png" then return VOICE_MIC_ROOT .. "Error@3x.png" end
 	return Image
+end
+
+HasConfirmedPlayerVoice = function(Player)
+	if not Player or Player == LocalPlayer or not VoiceGameSupported then return false end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if UserId <= 1 then return false end
+	if VoiceEnabledCache[UserId] == true or VoiceActivityActive[UserId] == true then return true end
+	if GetAudioDeviceInput(Player) then
+		VoiceEnabledCache[UserId] = true
+		return true
+	end
+	if FindNativePlayerVoice(Player) then
+		VoiceEnabledCache[UserId] = true
+		return true
+	end
+	return false
 end
 
 GetVoiceIcon = function(Player, ForcedMuted)
 	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
 	local IsLocal = Player == LocalPlayer
 	local Native = FindNativeVoiceIcon(Player)
+	local Root = IsLocal and VOICE_MIC_ROOT or VOICE_SPEAKER_ROOT
 
-	-- The user muted this remote subscription locally: show a SPEAKER-muted icon.
-	-- This is intentionally distinct from the remote person's own microphone state.
+	-- A local listener mute always uses the speaker sprite for this row.
 	if not IsLocal and (ForcedMuted == true or VoiceMutedPlayers[UserId] == true) then
 		return VOICE_SPEAKER_ROOT .. "Muted@3x.png"
 	end
 
-	-- When CoreGui exposes the local native mic image, it wins over stale internal
-	-- pause flags. This prevents a fake muted/unmuted image disagreement.
-	if IsLocal and type(Native) == "string"
-		and (Native:find("Muted", 1, true) or Native:find("Unmuted", 1, true)) then
-		return VoiceContrastIcon(Native)
+	if IsLocal then
+		-- Trust the live publishing state, not a stale CoreGui icon image.
+		local StateOk, Muted = pcall(function() return GetLocalVoiceMuted() end)
+		if StateOk then
+			if Muted then return VOICE_MIC_ROOT .. "Muted@3x.png" end
+		else
+			if type(Native) == "string" and Native:find("Muted", 1, true) then return VoiceContrastIcon(Native) end
+		end
+		local Analyzer = GetVoiceAnalyzer(Player)
+		if Analyzer then
+			local Ok, Level = pcall(function() return tonumber(Analyzer.PeakLevel) end)
+			if Ok and Level and Level > 0.00001 then return VoiceUnmutedIcon(Clamp(Level, 0, 1), false) end
+		end
+		return VOICE_MIC_ROOT .. "Unmuted0@3x.png"
 	end
 
+	-- The remote row uses a speaker icon family even when Roblox's bubble exposes
+	-- a microphone sprite. Local receive-mute state was handled above.
 	local Input = GetAudioDeviceInput(Player)
-	local Muted = ForcedMuted == true
-	local MuteStateKnown = Muted
-	if IsLocal and ForcedMuted ~= true then
-		local Ok, Value = pcall(function() return GetLocalVoiceMuted() end)
-		if Ok then Muted = Value == true; MuteStateKnown = true end
-	elseif not IsLocal and not Muted and Input then
-		local Ok, Value = pcall(function() return Input.Muted == true end)
-		if Ok then Muted = Value; MuteStateKnown = true end
-	end
-
-	if not MuteStateKnown and IsLocal and VoiceChatInternal then
-		local Ok, Value = pcall(function() return VoiceChatInternal:IsPublishPaused() == true end)
-		if Ok then Muted = Value; MuteStateKnown = true end
-	end
-	if Muted then
-		-- A remote AudioDeviceInput marked Muted is their mic state; local receive
-		-- mute is handled above and uses SpeakerLight/Muted instead.
-		return VOICE_MIC_ROOT .. "Muted@3x.png"
-	end
-	if IsLocal and not VoiceChatDesiredOn then
-		return VOICE_MIC_ROOT .. "Muted@3x.png"
+	if Input then
+		local InputOk, InputMuted = pcall(function() return Input.Muted == true end)
+		if InputOk and InputMuted then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
 	end
 
 	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
-	local HasRecentActivity = ActivityStamp > 0 and (os.clock() - ActivityStamp) <= 1.5
+	local HasRecentActivity = VoiceActivityActive[UserId] == true
+		or (ActivityStamp > 0 and (os.clock() - ActivityStamp) <= 1.5)
 	if HasRecentActivity then
-		if VoiceActivityPeakMeasured[UserId] == true then
-			return VoiceUnmutedIcon(GetVoiceLevel(Player))
-		end
-		return VOICE_MIC_ROOT .. "Unmuted40@3x.png"
-	end
-
-	-- A fresh speaking event beats a cached native icon; old native state is only a fallback.
-	if not IsLocal and type(Native) == "string" and Native:find("Muted", 1, true) then
-		return VoiceContrastIcon(Native)
+		return VoiceUnmutedIcon(GetVoiceLevel(Player), true)
 	end
 
 	local Analyzer = Input and GetVoiceAnalyzer(Player) or nil
 	if Analyzer then
 		local Ok, Level = pcall(function() return tonumber(Analyzer.PeakLevel) end)
-		if Ok and Level and Level > 0.00001 then return VoiceUnmutedIcon(Level) end
+		if Ok and Level and Level > 0.00001 then return VoiceUnmutedIcon(Clamp(Level, 0, 1), true) end
 	end
 
 	if type(Native) == "string" and Native ~= "" then
-		return VoiceContrastIcon(Native)
+		if Native:find("Muted", 1, true) then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
+		if Native:find("Connecting", 1, true) then return VOICE_SPEAKER_ROOT .. "Connecting@3x.png" end
+		if Native:find("Error", 1, true) then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
+		if Native:find("Unmuted", 1, true) then return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png" end
 	end
-	-- Neutral no-activity fallback. Never fabricate a live peak from zero data.
-	return VOICE_MIC_ROOT .. "Unmuted.png"
+	-- This is a quiet but confirmed voice participant, not an unverified player.
+	return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png"
 end
 
 VoiceProcessActivityInfo = function(ActivityInfo)
@@ -3769,6 +3715,10 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 		or ActivityInfo.PlayerId
 		or ActivityInfo.speakerUserId
 		or ActivityInfo.SpeakerUserId
+		or ActivityInfo.user_id
+		or ActivityInfo.player_user_id
+		or ActivityInfo.UserID
+		or ActivityInfo.userID
 		or ActivityInfo.id
 		or ActivityInfo.Id
 	)
@@ -3778,6 +3728,8 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 			Protect(function() UserId = PlayerValue.UserId end)
 		elseif type(PlayerValue) == "number" then
 			UserId = PlayerValue
+		elseif type(PlayerValue) == "string" then
+			UserId = tonumber(PlayerValue)
 		end
 	end
 	if not UserId then return end
@@ -3795,6 +3747,9 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 	if Speaking == nil then Speaking = ActivityInfo.Active end
 	if Speaking == nil then Speaking = ActivityInfo.isSpeaking end
 	if Speaking == nil then Speaking = ActivityInfo.IsSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.is_speaking end
+	if Speaking == nil then Speaking = ActivityInfo.speaking end
+	if Speaking == nil then Speaking = ActivityInfo.Speaking end
 	if Speaking == nil then Speaking = ActivityInfo.isActive end
 	if Speaking == nil then Speaking = ActivityInfo.IsActive end
 	if Speaking == nil then Speaking = ActivityInfo.isMicActive end
@@ -3803,6 +3758,9 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 	if Speaking == nil then Speaking = ActivityInfo.IsVoiceActive end
 	if Speaking == nil then Speaking = ActivityInfo.isTalking end
 	if Speaking == nil then Speaking = ActivityInfo.IsTalking end
+	if Speaking == nil then Speaking = ActivityInfo.talking end
+	if Speaking == nil then Speaking = ActivityInfo.isSpeakingNow end
+	if Speaking == nil then Speaking = ActivityInfo.SpeakingNow end
 
 	if Speaking == false then
 		VoiceActivityPeak[UserId] = 0
@@ -5000,7 +4958,8 @@ Position =
 	-- Keep a per-player control visible as soon as Voice Chat is requested On.
 	-- Unknown/unsupported player status is reflected by the icon (Connecting/Error),
 	-- rather than suppressing the button entirely.
-	if CanTargetPlayer and VoiceGameSupported and VoiceAccountAllowed then
+	local HasVoiceEvidence = HasConfirmedPlayerVoice(Player)
+	if CanTargetPlayer and VoiceGameSupported and HasVoiceEvidence then
 		VoiceButton = MakeStyledButton(
 			Player.Name .. "VoiceButton",
 			"",
@@ -5017,34 +4976,28 @@ Position =
 		-- Remote eligibility queries are rejected by this client build. Keep the
 		-- button visible unless Roblox explicitly confirmed this player has no VC.
 		-- Unknown players use a neutral zero-peak mic icon, never Error/Connecting.
-		VoiceButton.Visible = VoiceGameSupported == true and VoiceAccountAllowed == true
+		VoiceButton.Visible = HasConfirmedPlayerVoice(Player)
+		VoiceButton.Active = true
 		VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
 		local VoiceIcon = Create("ImageLabel", {
 			Name = "VoiceIcon",
 			Parent = VoiceButton,
 			BackgroundTransparency = 1,
 			Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player))),
+			Visible = true,
+			ImageTransparency = 0,
 			Size = UDim2.new(0, BUTTON_HEIGHT - 8, 0, BUTTON_HEIGHT - 8),
 			Position = UDim2.new(0.5, -(BUTTON_HEIGHT - 8) / 2, 0.5, -(BUTTON_HEIGHT - 8) / 2),
 			ScaleType = Enum.ScaleType.Fit,
 			ZIndex = SETTINGS_BASE_ZINDEX + 4,
 		})
 		if VoiceEnabledCache[UserId] ~= true then
-			CheckVoiceForPlayer(Player, function(Enabled, IsUnknown)
-				if Enabled then
-					VoiceEnabledCache[UserId] = true
-					if VoiceButton then VoiceButton.Visible = true end
-				elseif IsUnknown and VoiceEnabledCache[UserId] ~= false then
-					-- Unknown is not the same as ineligible: retain the row control.
-					if VoiceButton then VoiceButton.Visible = true end
-				else
-					-- Other-player eligibility is not queryable from this client.
-					-- Keep a neutral control instead of making a newly joined player invisible.
-					if VoiceButton then VoiceButton.Visible = VoiceGameSupported == true and VoiceAccountAllowed == true end
+			CheckVoiceForPlayer(Player, function(Enabled)
+				if Enabled then VoiceEnabledCache[UserId] = true end
+				if VoiceButton and VoiceButton.Parent then
+					VoiceButton.Visible = HasConfirmedPlayerVoice(Player)
 				end
-				if VoiceIcon.Parent then
-					VoiceIcon.Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
-				end
+				if VoiceIcon.Parent then VoiceIcon.Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player))) end
 			end)
 		end
 	end
@@ -13100,15 +13053,9 @@ VoiceChatButton = MakeBottomButton(
 		end
 		-- Bottom microphone is exclusively mute/unmute. Connection is managed
 		-- separately by the voice runtime; this button never acts as a Connect UI.
+		-- Use the live publishing pause state for the action label. The native
+		-- CoreGui icon may be stale while the legacy voice controller has changed.
 		local CurrentOk, CurrentMuted = pcall(function() return GetLocalVoiceMuted() end)
-		local NativeMicImage = FindNativeVoiceIcon(LocalPlayer)
-		if type(NativeMicImage) == "string" then
-			if NativeMicImage:find("Muted", 1, true) then
-				CurrentOk, CurrentMuted = true, true
-			elseif NativeMicImage:find("Unmuted", 1, true) then
-				CurrentOk, CurrentMuted = true, false
-			end
-		end
 		if not CurrentOk then
 			return
 		end
@@ -13121,7 +13068,7 @@ VoiceChatButton = MakeBottomButton(
 	end,
 	UDim2.new(0, 64, 0, 64)
 )
-VoiceChatButton.Visible = VoiceChatDesiredOn == true and VoiceOptionAvailable == true and not IsMobile
+VoiceChatButton.Visible = VoiceOptionAvailable == true and not IsMobile
 
 VoiceChatIcon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 if VoiceChatIcon then
@@ -13133,7 +13080,7 @@ end
 ConfigureMobileActionButtons = function()
 	-- Show a mute/unmute button whenever voice is available for this account/place.
 	-- It is not a separate Voice Chat Connected toggle and does not initiate joins.
-	local VoiceActive = VoiceChatDesiredOn == true and VoiceOptionAvailable == true and not IsMobile
+	local VoiceActive = VoiceOptionAvailable == true and not IsMobile
 	local UiScale = GetMobileUiScale()
 	local ActionHeight = 62
 	local Gap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
@@ -13302,7 +13249,7 @@ Spawn(function()
 		if Changed and RebuildPlayersPage then RebuildPlayersPage() end
 
 		if VoiceChatButton and VoiceChatButton.Parent then
-			local VoiceActive = VoiceChatDesiredOn == true and VoiceOptionAvailable == true and not IsMobile
+			local VoiceActive = VoiceOptionAvailable == true and not IsMobile
 			VoiceChatButton.Visible = VoiceActive
 			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 			if Icon then
@@ -13326,7 +13273,7 @@ Spawn(function()
 					elseif VoiceButton then
 						-- Remote eligibility cannot be queried client-side, so keep the button
 						-- visible and update its activity/mute image even before a native bubble exists.
-						VoiceButton.Visible = VoiceGameSupported == true and VoiceAccountAllowed == true
+						VoiceButton.Visible = HasConfirmedPlayerVoice(Player)
 						local VoiceIcon = VoiceButton:FindFirstChild("VoiceIcon")
 						if VoiceIcon then
 							local Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
@@ -13482,6 +13429,7 @@ if VoiceChatInternal then
 			elseif typeof(ActivityInfo) == "Instance" then
 				local UserId = nil
 				pcall(function() if ActivityInfo:IsA("Player") then UserId = ActivityInfo.UserId end end)
+				if not UserId then pcall(function() UserId = tonumber(ActivityInfo.UserId or ActivityInfo.userId) end) end
 				if not UserId then return end
 				Payload.userId = UserId
 			else
@@ -13489,16 +13437,23 @@ if VoiceChatInternal then
 				if not UserId then return end
 				Payload.userId = UserId
 			end
-			if type(SpeakingOrInfo) == "boolean" then
+			local HasSpeakingField = Payload.active ~= nil or Payload.Active ~= nil
+				or Payload.isSpeaking ~= nil or Payload.IsSpeaking ~= nil or Payload.is_speaking ~= nil
+				or Payload.speaking ~= nil or Payload.Speaking ~= nil or Payload.isActive ~= nil
+				or Payload.IsActive ~= nil or Payload.isMicActive ~= nil or Payload.IsMicActive ~= nil
+				or Payload.isVoiceActive ~= nil or Payload.IsVoiceActive ~= nil or Payload.isTalking ~= nil
+				or Payload.IsTalking ~= nil or Payload.talking ~= nil or Payload.isSpeakingNow ~= nil
+				or Payload.SpeakingNow ~= nil
+			local HasPeakField = Payload.peakLevel ~= nil or Payload.PeakLevel ~= nil or Payload.peak ~= nil
+				or Payload.Peak ~= nil or Payload.level ~= nil or Payload.Level ~= nil
+			if type(SpeakingOrInfo) == "boolean" and not HasSpeakingField then
 				Payload.isSpeaking = SpeakingOrInfo
-			elseif type(SpeakingOrInfo) == "number" then
+			elseif type(SpeakingOrInfo) == "number" and not HasPeakField then
 				Payload.peakLevel = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "table" then
-				for Key, Value in next, SpeakingOrInfo do
-					if Payload[Key] == nil then Payload[Key] = Value end
-				end
+				for Key, Value in next, SpeakingOrInfo do if Payload[Key] == nil then Payload[Key] = Value end end
 			end
-			if type(PeakValue) == "number" then Payload.peakLevel = PeakValue end
+			if type(PeakValue) == "number" and not HasPeakField then Payload.peakLevel = PeakValue end
 			VoiceProcessActivityInfo(Payload)
 		end)
 	end)
@@ -13797,10 +13752,6 @@ SetVisibility =
 			-- It is re-enabled only after the closing tween has actually finished.
 			SetTopBarAppEnabled(false)
 			SetTopbarCoreGuiEnabled(true)
-			Hub.HubBar.Visible = false
-			Hub.BottomButtonFrame.Visible = false
-			Hub.PageClipper.Visible = false
-			if HomeButton then HomeButton.Visible = false end
 			if SystemMenuButton then
 				-- Keep the visible 30x30 SystemMenuButton unchanged for the entire
 				-- closing tween. Only hide it in the tween completion callback below.
@@ -13813,6 +13764,11 @@ SetVisibility =
 				end)
 			end
 			if NoAnimation then
+				-- Mobile and explicitly instant closes hide content immediately.
+				Hub.HubBar.Visible = false
+				Hub.BottomButtonFrame.Visible = false
+				Hub.PageClipper.Visible = false
+				if HomeButton then HomeButton.Visible = false end
 				SystemMenuButtonClosing = false
 				SyncTopBarAppVisibility()
 				SetRecorderOverlayVisibility(true)
@@ -13830,6 +13786,11 @@ SetVisibility =
 				if SystemMenuButton then SystemMenuButton.Visible = true end
 				TweenTo(Hub.Shield, SETTINGS_INACTIVE_POSITION, Enum.EasingDirection.In, Enum.EasingStyle.Quad, 0.4, function()
 					if not Hub.Visible then
+						-- Hide the Leave/Resume footer and page only after the desktop slide ends.
+						Hub.HubBar.Visible = false
+						Hub.BottomButtonFrame.Visible = false
+						Hub.PageClipper.Visible = false
+						if HomeButton then HomeButton.Visible = false end
 						Hub.Shield.Visible = false
 						SystemMenuButtonClosing = false
 						SyncTopBarAppVisibility()
@@ -14128,13 +14089,11 @@ EscapeAction =
 		-- that would otherwise reopen it while Roblox is processing the same key.
 		Hub.NativeMenuTarget = nil
 		Hub.SuppressNativeOpenUntil = CurrentTime + 1.5
-		SetVisibility(Target, true)
+		SetVisibility(Target, IsMobile)
 		AlignSystemMenuButton()
 		task.defer(function()
-			if not Hub.Visible then
-				pcall(function() Hub.Modal.Visible = false end)
-				pcall(function() Hub.Shield.Visible = false end)
-			end
+			-- SetVisibility owns the closing animation and hides Hub.Shield in its
+			-- tween completion callback. Do not hide it here or the slide is cut off.
 			HideNativeSystemMenuButtons()
 		end)
 		return Enum.ContextActionResult.Sink
@@ -14239,7 +14198,7 @@ HookNativeMenu =
 				local Target = Hub.NativeMenuTarget
 				Hub.NativeMenuTarget = nil
 				if Target == nil then Target = true end
-				if Hub.Visible ~= Target then SetVisibility(Target, true) end
+				if Hub.Visible ~= Target then SetVisibility(Target, IsMobile) end
 			end)
 		end
 
@@ -14309,7 +14268,7 @@ HookNativeMenu =
 				local Target = not Hub.Visible
 				Hub.NativeMenuTarget = Target
 				task.defer(function()
-					SetVisibility(Target, true)
+					SetVisibility(Target, IsMobile)
 					if Hub.NativeMenuTarget == Target then Hub.NativeMenuTarget = nil end
 				end)
 			end)
