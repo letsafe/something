@@ -1,8 +1,17 @@
+-- Normal build: MicLight icons + native Roblox MuteSelfButton integration.
+-- Verbose microphone diagnostics are intentionally disabled to avoid console spam.
 CoreGui = game:GetService("CoreGui")
+-- Remove a debug panel left behind by an earlier copy of this script.
+pcall(function()
+	local OldDebugWindow = CoreGui:FindFirstChild("Settings2016VoiceMuteDebugWindow")
+	if OldDebugWindow then OldDebugWindow:Destroy() end
+end)
 ContextActionService = game:GetService("ContextActionService")
 UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 StarterGui = game:GetService("StarterGui")
+TextChatService = game:GetService("TextChatService")
+HttpService = game:GetService("HttpService")
 HttpRbxApiService = nil
 pcall(function()
 	HttpRbxApiService = game:GetService("HttpRbxApiService")
@@ -12,6 +21,19 @@ SoundService = game:GetService("SoundService")
 Players = game:GetService("Players")
 SocialService = game:GetService("SocialService")
 VoiceChatService = game:GetService("VoiceChatService")
+
+-- The voice probe confirmed this service is exposed by this client. The
+-- earlier Settings2016 branch never assigned VoiceChatInternal, so every
+-- mute/unmute path saw nil even though game:GetService succeeds.
+VoiceChatInternal = nil
+pcall(function()
+	VoiceChatInternal = game:GetService("VoiceChatInternal")
+end)
+if not VoiceChatInternal then
+	pcall(function()
+		VoiceChatInternal = game:FindService("VoiceChatInternal")
+	end)
+end
 VirtualInputManager = nil
 RunService = game:GetService("RunService")
 
@@ -81,16 +103,6 @@ GetMobileUiScale = function()
 	local ViewportScale = ShortSide / 720
 	local Scale = Clamp(ViewportScale * DisplayScale, 0.95, 1.55)
 
-	pcall(function()
-		local Preferred = GuiService.PreferredTextSize
-		if Preferred == Enum.PreferredTextSize.Large then
-			Scale *= 1.08
-		elseif Preferred == Enum.PreferredTextSize.Larger then
-			Scale *= 1.16
-		elseif Preferred == Enum.PreferredTextSize.Largest then
-			Scale *= 1.25
-		end
-	end)
 
 	return Clamp(Scale, 0.95, 1.65)
 end
@@ -162,7 +174,7 @@ SLIDER_BAR_RIGHT_IMAGE =
 PLAYER_LIST_OFFSET = 20
 DESCRIPTION_PLACEHOLDER = "Short Description (Optional)"
 REPORT_DESCRIPTION_FALLBACK = "Report Reason"
-PAGE_TOP_PADDING = 12
+PAGE_TOP_PADDING = 0
 
 KEY_F12 = 0x7B
 KEY_PRINT_SCREEN = 0x2C
@@ -275,7 +287,7 @@ SYSTEM_MENU_OFFSET_Y = 4
 -- X: horizontal offset from the calculated left-of-button position.
 -- Y: vertical offset from the SystemMenuButton top.
 RECORDER_OFFSET_X = 165
-RECORDER_OFFSET_Y = -17
+RECORDER_OFFSET_Y = -19
 
 SYSTEM_MENU_ICON = "rbxassetid://136616213304711"
 SYSTEM_MENU_ICON_RECT_OFFSET = Vector2.new(135, 86)
@@ -679,9 +691,247 @@ SetSetting = function(
 	Property,
 	Value
 )
-	Protect(function()
+	local Success = Protect(function()
 		Object[Property] = Value
+		return true
 	end)
+	if not Success and sethiddenproperty then
+		pcall(function()
+			sethiddenproperty(Object, Property, Value)
+		end)
+	end
+	return Success == true
+end
+
+GetHiddenOrSetting = function(Object, Property, Default)
+	local Value = nil
+	if gethiddenproperty then
+		Protect(function() Value = gethiddenproperty(Object, Property) end)
+	end
+	if Value == nil then Value = GetSetting(Object, Property, Default) end
+	if Value == nil then return Default end
+	return Value
+end
+
+
+-- ============================================================
+-- AUDIO OUTPUT / BACKGROUND TRANSPARENCY HELPERS
+-- ============================================================
+
+GetOutputDeviceInfo = function()
+	local Name = nil
+	local Guid = nil
+
+	Protect(function()
+		local Returned = {SoundService:GetOutputDevice()}
+
+		local ReadDevice = function(Device)
+			if type(Device) ~= "table" then
+				return
+			end
+
+			Name = Name
+				or Device.Name
+				or Device.name
+				or Device.DisplayName
+				or Device.displayName
+				or Device.DeviceName
+				or Device.deviceName
+				or Name
+
+			Guid = Guid
+				or Device.Guid
+				or Device.guid
+				or Device.Id
+				or Device.id
+				or Device.DeviceGuid
+				or Device.deviceGuid
+				or Guid
+		end
+
+		for _, Value in next, Returned do
+			if type(Value) == "table" then
+				ReadDevice(Value)
+			elseif type(Value) == "string" then
+				if not Name then
+					Name = Value
+				elseif not Guid then
+					Guid = Value
+				end
+			end
+		end
+	end)
+
+	return Name, Guid
+end
+
+GetOutputDeviceOptions = function()
+	local Names = {}
+	local OutputDeviceMap = {}
+	local Seen = {}
+
+	local AddDevice = function(Name, Guid)
+		if not Name then
+			return
+		end
+
+		Name = tostring(Name)
+		Guid = tostring(Guid or "")
+
+		if Name == "" then
+			return
+		end
+
+		local Key = Guid ~= "" and ("guid:" .. Guid) or ("name:" .. Name)
+		if Seen[Key] then
+			return
+		end
+
+		Seen[Key] = true
+		Insert(Names, Name)
+		OutputDeviceMap[Name] = {
+			Name = Name,
+			Guid = Guid,
+		}
+	end
+
+	local ParseDevice = function(Device)
+		if type(Device) ~= "table" then
+			return
+		end
+
+		local Name =
+			Device.Name
+			or Device.name
+			or Device.DisplayName
+			or Device.displayName
+				or Device.DeviceName
+				or Device.deviceName
+
+		local Guid =
+			Device.Guid
+				or Device.guid
+				or Device.Id
+				or Device.id
+				or Device.DeviceGuid
+				or Device.deviceGuid
+
+		if Name then
+			AddDevice(Name, Guid)
+		end
+
+		for _, Child in next, Device do
+			if type(Child) == "table" then
+				ParseDevice(Child)
+			end
+		end
+	end
+
+	Protect(function()
+		local Returned = {SoundService:GetOutputDevices()}
+		local PendingName = nil
+
+		for _, Value in next, Returned do
+			if type(Value) == "table" then
+				ParseDevice(Value)
+			elseif type(Value) == "string" then
+				if not PendingName then
+					PendingName = Value
+				else
+					AddDevice(PendingName, Value)
+					PendingName = nil
+				end
+			end
+		end
+
+		if PendingName then
+			AddDevice(PendingName, "")
+		end
+	end)
+
+	local CurrentName, CurrentGuid = GetOutputDeviceInfo()
+	if CurrentName and CurrentName ~= "" then
+		AddDevice(CurrentName, CurrentGuid)
+	end
+
+	return Names, OutputDeviceMap, CurrentName, CurrentGuid
+end
+
+SetRealOutputDevice = function(Name, Guid)
+	local Success = false
+
+	Protect(function()
+		SoundService:SetOutputDevice(
+			tostring(Name or ""),
+			tostring(Guid or "")
+		)
+		Success = true
+	end)
+
+	if not Success then
+		return false
+	end
+
+	local NewName, NewGuid = GetOutputDeviceInfo()
+	if NewGuid and Guid and tostring(NewGuid) == tostring(Guid) then
+		return true
+	end
+	if NewName and Name and tostring(NewName) == tostring(Name) then
+		return true
+	end
+
+	return false
+end
+
+GetPreferredTransparency = function()
+	local Value = nil
+
+	Protect(function()
+		Value = tonumber(GuiService.PreferredTransparency)
+	end)
+
+	if Value == nil then
+		Protect(function()
+			Value = tonumber(GameSettings.PreferredTransparency)
+		end)
+	end
+
+	return Clamp(Value or 1, 0, 1)
+end
+
+SetPreferredTransparency = function(Value)
+	Value = Clamp(tonumber(Value) or 1, 0, 1)
+
+	Protect(function() GuiService.PreferredTransparency = Value end)
+	Protect(function() GameSettings.PreferredTransparency = Value end)
+
+	if sethiddenproperty then
+		pcall(function() sethiddenproperty(GuiService, "PreferredTransparency", Value) end)
+		pcall(function() sethiddenproperty(GameSettings, "PreferredTransparency", Value) end)
+	end
+
+	if ApplyPreferredBackgroundTransparency then
+		ApplyPreferredBackgroundTransparency(Value)
+	end
+
+	-- The transparency preference is for Roblox's own UI. Keep our custom settings shell opaque/stable.
+	if Hub then
+		Protect(function()
+			if Hub.HubBar then Hub.HubBar.BackgroundTransparency = 1 end
+			if Hub.HubBarContainer then Hub.HubBarContainer.BackgroundTransparency = 1 end
+			if Hub.BottomButtonFrame then Hub.BottomButtonFrame.BackgroundTransparency = 1 end
+			if Hub.Shield then Hub.Shield.BackgroundTransparency = SETTINGS_SHIELD_TRANSPARENCY end
+		end)
+	end
+
+	local ReadBack = GetPreferredTransparency()
+	return math.abs(ReadBack - Value) <= 0.001
+end
+
+ApplyPreferredBackgroundTransparency = function(Value)
+	-- Update Roblox's preference through SetPreferredTransparency, but never modify
+	-- the custom 2016 menu shell; this slider must not visually affect the menu.
+	return
 end
 
 -- ============================================================
@@ -1370,7 +1620,7 @@ Hub.PageView =
 				),
 
 			ScrollBarThickness =
-				6,
+				0,
 
 			ZIndex =
 				SETTINGS_BASE_ZINDEX
@@ -1431,6 +1681,7 @@ CreateHomeButton = function()
 end
 
 CreateHomeButton()
+ApplyPreferredBackgroundTransparency(GetPreferredTransparency())
 
 PositionHomeButton = function()
 	if not HomeButtonEnabled or not HomeButton then return end
@@ -1924,7 +2175,7 @@ ResizeHub = function()
 
 			local UiScale = GetMobileUiScale()
 			local ActionHeight = 62
-			local ActionListGap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
+			local ActionListGap = 10
 			local InviteOffset = InviteFriends and 72 or 0
 
 			local InviteRow =
@@ -1985,11 +2236,11 @@ ResizeHub = function()
 			end
 
 			local ContentHeight =
-				ActionHeight
+				PlayersPage.Frame.Position.Y.Offset
+				+ ActionHeight
 				+ ActionListGap
 				+ InviteOffset
 				+ (#PlayerRows * 72)
-				+ PAGE_TOP_PADDING
 
 			PlayersPage.Frame.Size =
 				UDim2.new(
@@ -2070,15 +2321,33 @@ ResizeHub = function()
 		Hub.PageView.Position=UDim2.new(0.5,0,0.5,0)
 		Hub.PageView.Size=UDim2.new(1,0,1,-20)
 		Hub.PageView.CanvasPosition=Vector2.new(0,0)
-		Hub.PageView.ScrollBarThickness=12
-		Hub.PageView.VerticalScrollBarInset=Enum.ScrollBarInset.ScrollBar
 		Hub.BottomButtonFrame.Parent=Hub.MenuContainer
 		Hub.BottomButtonFrame.Size=UDim2.new(0,800,0,60)
 		if Hub.CurrentPage and Hub.CurrentPage.Frame then
-			Hub.CurrentPage.Frame.Position=UDim2.new(0,0,0,PAGE_TOP_PADDING)
-			Hub.PageView.CanvasSize=UDim2.new(0,0,0,math.max(Hub.CurrentPage.Frame.Size.Y.Offset+PAGE_TOP_PADDING,UsePageSize))
-		end
+			Hub.CurrentPage.Frame.Position=UDim2.new(0,0,0,0)
+			local PageContentHeight =
+				math.max(0, Hub.CurrentPage.Frame.Position.Y.Offset + Hub.CurrentPage.Frame.Size.Y.Offset)
+			local PageViewHeight = math.max(0, UsePageSize - 20)
+			local NeedsPlayerScrollbar =
+				Hub.CurrentPage == PlayersPage
+				and PageContentHeight > PageViewHeight + 1
 
+			if Hub.CurrentPage == PlayersPage then
+				Hub.PageView.ScrollBarThickness = NeedsPlayerScrollbar and 12 or 0
+				Hub.PageView.VerticalScrollBarInset =
+					NeedsPlayerScrollbar
+					and Enum.ScrollBarInset.ScrollBar
+					or Enum.ScrollBarInset.None
+			else
+				Hub.PageView.ScrollBarThickness = 12
+				Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
+			end
+
+			Hub.PageView.CanvasSize=UDim2.new(0,0,0,math.max(PageContentHeight,PageViewHeight))
+		else
+			Hub.PageView.ScrollBarThickness=12
+			Hub.PageView.VerticalScrollBarInset=Enum.ScrollBarInset.ScrollBar
+		end
 	end
 
 	if LayoutTabs then
@@ -2517,12 +2786,15 @@ SwitchToPage = function(
 				800
 			)
 
+		local PageFrameTop =
+			0
+
 		Page.Frame.Position =
 			UDim2.new(
 				0,
 				Direction * PageWidth,
 				0,
-				PAGE_TOP_PADDING
+				PageFrameTop
 			)
 
 		TweenTo(
@@ -2531,7 +2803,7 @@ SwitchToPage = function(
 				0,
 				0,
 				0,
-				PAGE_TOP_PADDING
+				PageFrameTop
 			),
 			Enum.EasingDirection.In,
 			Enum.EasingStyle.Quad,
@@ -2544,7 +2816,7 @@ SwitchToPage = function(
 				0,
 				-Direction * PageWidth,
 				0,
-				PAGE_TOP_PADDING
+				0
 			),
 			Enum.EasingDirection.Out,
 			Enum.EasingStyle.Quad,
@@ -2575,7 +2847,7 @@ SwitchToPage = function(
 				0,
 				0,
 				0,
-				PAGE_TOP_PADDING
+				0
 			)
 
 		if
@@ -2596,17 +2868,39 @@ SwitchToPage = function(
 			0
 		)
 
+	local SwitchPageContentHeight =
+		math.max(0, Page.Frame.Position.Y.Offset + Page.Frame.Size.Y.Offset)
+	local SwitchPageViewHeight =
+		math.max(
+			0,
+			Hub.PageClipper.AbsoluteSize.Y
+				- (IsMobile and 0 or 20)
+		)
+
 	Hub.PageView.CanvasSize =
 		UDim2.new(
 			0,
 			0,
 			0,
 			math.max(
-				Page.Frame.Size.Y.Offset
-				+ PAGE_TOP_PADDING,
-				Hub.PageClipper.AbsoluteSize.Y
+				SwitchPageContentHeight,
+				SwitchPageViewHeight
 			)
 		)
+
+	if not IsMobile and Page == PlayersPage then
+		local NeedsPlayerScrollbar =
+			SwitchPageContentHeight > SwitchPageViewHeight + 1
+		Hub.PageView.ScrollBarThickness =
+			NeedsPlayerScrollbar and 12 or 0
+		Hub.PageView.VerticalScrollBarInset =
+			NeedsPlayerScrollbar
+			and Enum.ScrollBarInset.ScrollBar
+			or Enum.ScrollBarInset.None
+	elseif not IsMobile then
+		Hub.PageView.ScrollBarThickness = 12
+		Hub.PageView.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar
+	end
 
 	Hub.CurrentPage =
 		Page
@@ -2799,100 +3093,126 @@ end
 VoiceEnabledCache = {}
 VoiceCheckBusy = {}
 VoiceCheckError = {}
+-- Failed remote eligibility lookups are rate-limited per user. Roblox rejects
+-- client-side queries for other users, so retrying every refresh only causes lag.
+VoiceEligibilityQueryStamp = {}
+VOICE_REMOTE_ELIGIBILITY_RETRY_SECONDS = 60
 VoiceMutedPlayers = {}
 VoiceSavedVolumes = {}
+VoiceSavedMuted = {}
+VoiceMuteAllActive = false
 VoiceCheckNext = {}
 SavedVoiceGroupId = nil
+VoiceConnectionAttempting = false
+VoiceChatDesiredOn = false
 
 VOICE_ICON_ROOT = "rbxasset://textures/ui/VoiceChat/"
 VOICE_MISC_ROOT = VOICE_ICON_ROOT .. "Misc/"
-VOICE_MIC_ROOT = VOICE_ICON_ROOT .. "MicDark/"
+VOICE_MIC_ROOT = VOICE_ICON_ROOT .. "MicLight/"
+VOICE_SPEAKER_ROOT = VOICE_ICON_ROOT .. "SpeakerLight/"
 
 GetAudioDeviceInputCache = {}
 VoiceActivityPeak = {}
 VoiceActivityStamp = {}
+VoiceActivityPeakMeasured = {}
+VoiceActivityActive = {}
 NativeVoiceIconObjects = {}
 NativeVoiceIconImages = {}
+-- Preserve the last observed native icon for remote players when Roblox removes
+-- their transient VoiceBubble UI while they are quiet/off-camera. This is a
+-- last-observed value, not proof of a live state when no native UI is present.
+NativeVoiceIconLastImages = {}
+NativeVoiceIconLastSeenAt = {}
+NativeVoiceIconConnections = {}
+NativeVoiceIconConnectedObjects = {}
 NativeVoiceScanStamp = 0
 NativeVoiceScanScheduled = false
 
-GetAudioDeviceInput = function(Player)
-	if not Player then
-		return nil
+-- Index real Roblox-created voice inputs once. Earlier builds scanned every
+-- CoreGui/SoundService descendant on every icon refresh, which caused severe UI lag.
+VoiceAudioInputIndexInitialized = false
+IndexExistingVoiceAudioInputs = function()
+	if VoiceAudioInputIndexInitialized then return end
+	VoiceAudioInputIndexInitialized = true
+	local function Index(Candidate)
+		if not Candidate then return end
+		local IsInput = false
+		local Name = ""
+		local Owner = nil
+		pcall(function()
+			IsInput = Candidate:IsA("AudioDeviceInput")
+			Name = tostring(Candidate.Name or "")
+			Owner = Candidate.Player
+		end)
+		if not IsInput or Name == "Settings2016LocalAudioDeviceInput" or not Owner then return end
+		local Existing = GetAudioDeviceInputCache[Owner]
+		local ExistingReady = false
+		local CandidateReady = false
+		if Existing and Existing.Parent then pcall(function() ExistingReady = Existing.IsReady == true or Existing.Active == true end) end
+		pcall(function() CandidateReady = Candidate.IsReady == true or Candidate.Active == true end)
+		if not Existing or not Existing.Parent or (CandidateReady and not ExistingReady) then
+			GetAudioDeviceInputCache[Owner] = Candidate
+		end
 	end
+	pcall(function()
+		for _, Player in ipairs(Players:GetPlayers()) do
+			for _, Child in ipairs(Player:GetChildren()) do Index(Child) end
+		end
+	end)
+	pcall(function() for _, Descendant in ipairs(SoundService:GetDescendants()) do Index(Descendant) end end)
+end
 
+GetAudioDeviceInput = function(Player)
+	if not Player then return nil end
 	local Cached = GetAudioDeviceInputCache[Player]
 	if Cached and Cached.Parent then
 		local Matches = false
-		Protect(function()
-			Matches = Cached:IsA("AudioDeviceInput") and Cached.Player == Player
+		pcall(function()
+			Matches = Cached:IsA("AudioDeviceInput")
+				and Cached.Player == Player
+				and Cached.Name ~= "Settings2016LocalAudioDeviceInput"
 		end)
-		if Matches then
-			return Cached
+		if Matches then return Cached end
+	end
+	GetAudioDeviceInputCache[Player] = nil
+
+	-- Remove only the known fake object left by old script copies; never create a fake input.
+	if Player == LocalPlayer then
+		pcall(function()
+			for _, Child in ipairs(Player:GetChildren()) do
+				if Child:IsA("AudioDeviceInput") and Child.Name == "Settings2016LocalAudioDeviceInput" then Child:Destroy() end
+			end
+		end)
+	end
+
+	local Best = nil
+	local BestScore = -1
+	local function Consider(Candidate)
+		if not Candidate then return end
+		local IsInput, Name, Owner = false, "", nil
+		pcall(function()
+			IsInput = Candidate:IsA("AudioDeviceInput")
+			Name = tostring(Candidate.Name or "")
+			Owner = Candidate.Player
+		end)
+		if not IsInput or Name == "Settings2016LocalAudioDeviceInput" or Owner ~= Player then return end
+		local Score = 0
+		pcall(function() if Candidate.IsReady == true then Score += 2 end end)
+		pcall(function() if Candidate.Active == true then Score += 1 end end)
+		if not Best or Score > BestScore then Best = Candidate; BestScore = Score end
+	end
+	pcall(function() for _, Child in ipairs(Player:GetChildren()) do Consider(Child) end end)
+	if not Best and not VoiceAudioInputIndexInitialized then
+		IndexExistingVoiceAudioInputs()
+		Cached = GetAudioDeviceInputCache[Player]
+		if Cached and Cached.Parent then
+			local Matches = false
+			pcall(function() Matches = Cached:IsA("AudioDeviceInput") and Cached.Player == Player and Cached.Name ~= "Settings2016LocalAudioDeviceInput" end)
+			if Matches then return Cached end
 		end
 	end
-
-	local Input = nil
-
-	-- AudioDeviceInput is identified by its Player property. Do not assume
-	-- Roblox parents it directly under Player; depending on the Audio API
-	-- path it may live elsewhere in the client audio tree.
-	Protect(function()
-		local Direct = Player:FindFirstChild("AudioDeviceInput")
-		if Direct and Direct:IsA("AudioDeviceInput") then
-			Input = Direct
-		end
-	end)
-
-	if not Input then
-		Protect(function()
-			for _, Descendant in next, SoundService:GetDescendants() do
-				if Descendant:IsA("AudioDeviceInput") then
-					local Owner = nil
-					Protect(function() Owner = Descendant.Player end)
-					if Owner == Player then
-						Input = Descendant
-						break
-					end
-				end
-			end
-		end)
-	end
-
-	if not Input then
-		Protect(function()
-			for _, Descendant in next, CoreGui:GetDescendants() do
-				if Descendant:IsA("AudioDeviceInput") then
-					local Owner = nil
-					Protect(function() Owner = Descendant.Player end)
-					if Owner == Player then
-						Input = Descendant
-						break
-					end
-				end
-			end
-		end)
-	end
-
-	-- With the Audio API enabled, the official pattern is an AudioDeviceInput
-	-- owned by the Player. Create the local device if Roblox has not created it
-	-- yet so the analyzer can attach to the real microphone stream.
-	if not Input and Player == LocalPlayer then
-		Protect(function()
-			if VoiceChatService.UseAudioApi == Enum.AudioApiRollout.Enabled then
-				Input = Instance.new("AudioDeviceInput")
-				Input.Name = "Settings2016LocalAudioDeviceInput"
-				Input.Player = Player
-				Input.Parent = Player
-			end
-		end)
-	end
-
-	if Input then
-		GetAudioDeviceInputCache[Player] = Input
-	end
-
-	return Input
+	if Best then GetAudioDeviceInputCache[Player] = Best end
+	return Best
 end
 
 VoiceAnalyzers = {}
@@ -2908,9 +3228,16 @@ EnsureVoiceAnalyzer = function(Player)
 	local Analyzer = VoiceAnalyzers[Player]
 	if Analyzer and Analyzer.Parent and Analyzer:IsA("AudioAnalyzer") then
 		local Wire = VoiceAnalyzerWires[Player]
+		local WireMatchesInput = false
 		if Wire and Wire.Parent and Wire:IsA("Wire") then
-			return Analyzer
+			pcall(function()
+				WireMatchesInput = Wire.SourceInstance == Input
+					and Wire.TargetInstance == Analyzer
+					and Wire.SourceName == "Output"
+					and Wire.TargetName == "Input"
+			end)
 		end
+		if WireMatchesInput then return Analyzer end
 	end
 
 	Analyzer = nil
@@ -2992,30 +3319,32 @@ end
 GetVoiceLevel = function(Player)
 	if not Player then return 0 end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	local Stamp = tonumber(VoiceActivityStamp[UserId]) or 0
+	local ActivityIsRecent = Stamp > 0 and (os.clock() - Stamp) <= 1.5
+	local ActivityPeak = tonumber(VoiceActivityPeak[UserId]) or 0
+
+	-- When Roblox sends numeric mic peaks, use those directly. An AudioAnalyzer
+	-- can exist while remaining pinned at zero if that client cannot tap the
+	-- remote stream; that zero must not hide a live peak event.
+	if ActivityIsRecent and VoiceActivityPeakMeasured[UserId] == true then
+		return Clamp(ActivityPeak, 0, 1)
+	end
 
 	local Peak = 0
-	local Analyzer = GetVoiceAnalyzer(Player)
-	if Analyzer then
-		Protect(function()
-			Peak = tonumber(Analyzer.PeakLevel) or 0
-		end)
+	local Input = GetAudioDeviceInput(Player)
+	local Analyzer = Input and GetVoiceAnalyzer(Player) or nil
+	if Input and Analyzer then
+		local Ok, Value = pcall(function() return tonumber(Analyzer.PeakLevel) end)
+		if Ok and Value ~= nil then
+			Peak = Clamp(Value, 0, 1)
+		end
 	end
 
-	-- AudioAnalyzer.PeakLevel is already the peak volume value for the
-	-- latest audio buffer. Do not apply sqrt/log/dB conversion here.
-	-- Roblox documents PeakLevel as the loudest volume observed in that
-	-- buffer, and it changes more often than the frame rate.
-	Peak = Clamp(Peak, 0, 1)
-
-	-- Internal voice-chat fallback. Older/internal voice can expose mic
-	-- activity through PlayerMicActivitySignalChange even when the Audio API
-	-- path does not provide an AudioAnalyzer reading.
-	local ActivityPeak = tonumber(VoiceActivityPeak[UserId]) or 0
-	local Stamp = tonumber(VoiceActivityStamp[UserId]) or 0
-	if ActivityPeak > 0 and (os.clock() - Stamp) <= 0.35 then
-		if ActivityPeak > Peak then Peak = ActivityPeak end
+	-- If only a coarse speaking boolean is exposed, show a modest speaking
+	-- indication instead of forcing the meter to 100% on every event.
+	if ActivityIsRecent and VoiceActivityPeakMeasured[UserId] ~= true then
+		Peak = math.max(Peak, Clamp(ActivityPeak, 0, 0.45))
 	end
-
 	return Clamp(Peak, 0, 1)
 end
 
@@ -3029,71 +3358,219 @@ VoiceUnmutedIcon = function(Level)
 	return VOICE_MIC_ROOT .. "Unmuted100@3x.png"
 end
 
--- Roblox's normal voice UI already has the exact microphone peak meter that
--- the user sees in the real ESC menu. Prefer mirroring that icon whenever it
--- exists. This makes the custom button follow the same peak thresholds rather
--- than inventing its own approximation.
-RefreshNativeVoiceMirrorCache = function(Force)
-	local Now = os.clock()
-	if not Force and (Now - NativeVoiceScanStamp) < 0.35 then return end
-	NativeVoiceScanStamp = Now
-	local Found = {}
-	Protect(function()
-		for _, Obj in next, CoreGui:GetDescendants() do
-			if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton"))
-				and Obj ~= VoiceChatButton
-				and not Obj:IsDescendantOf(ScreenGui)
-			then
-				local Image = tostring(Obj.Image or "")
-				if Image:find("VoiceChat", 1, true)
-					and (Image:find("Unmuted", 1, true)
-					or Image:find("Muted", 1, true)
-					or Image:find("Connecting", 1, true)
-					or Image:find("Error", 1, true))
-				then
-					local BestPlayer = nil
-					local BestScore = 0
-					local Parent = Obj
-					for _ = 1, 6 do
-						Parent = Parent and Parent.Parent
-						if not Parent then break end
-						local Name = string.lower(tostring(Parent.Name or ""))
-						for _, Player in next, Players:GetPlayers() do
-							if Player ~= LocalPlayer then
-								local Score = 0
-								if Name == string.lower(Player.Name) then Score = 500 end
-								if Name:find(string.lower(Player.Name), 1, true) then Score = math.max(Score, 250) end
-								local Id = tostring(Player.UserId or 0)
-								if tonumber(Id) and tonumber(Id) > 1 and Name:find(Id, 1, true) then Score = math.max(Score, 180) end
-								if Name:find("voice", 1, true) or Name:find("mic", 1, true) then Score += 20 end
-								if Obj.Visible then Score += 10 end
-								if Score > BestScore then
-									BestScore = Score
-									BestPlayer = Player
-								end
-							end
-						end
-					end
-					if BestPlayer and BestScore >= 50 then
-						Found[BestPlayer.UserId] = Obj
-					end
+-- Resolve Roblox's actual per-player bubble-chat microphone image when it
+-- exists. The image may be transient, so the mirror refresh caches its last state.
+-- This lookup runs only from RefreshNativeVoiceMirrorCache, not every icon frame.
+FindNativeVoiceBubbleIconObject = function(Player)
+	if not Player then return nil end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if UserId <= 1 then return nil end
+	local ExperienceChat = nil
+	local BubbleChatRoot = nil
+	pcall(function() ExperienceChat = CoreGui:FindFirstChild("ExperienceChat") end)
+	if not ExperienceChat then
+		pcall(function()
+			local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+			ExperienceChat = RobloxGui and RobloxGui:FindFirstChild("ExperienceChat")
+		end)
+	end
+	if not ExperienceChat then return nil end
+	pcall(function() BubbleChatRoot = ExperienceChat:FindFirstChild("bubbleChat", true) end)
+	if not BubbleChatRoot then return nil end
+
+	local Bubble = nil
+	-- Client builds vary: bubble containers have been named BubbleChat_<id>,
+	-- the numeric UserId, or another id-bearing name under bubbleChat.
+	pcall(function()
+		Bubble = BubbleChatRoot:FindFirstChild("BubbleChat_" .. tostring(UserId))
+			or BubbleChatRoot:FindFirstChild(tostring(UserId))
+	end)
+	if not Bubble then
+		local Ok, Children = pcall(function() return BubbleChatRoot:GetChildren() end)
+		if Ok then
+			for _, Candidate in ipairs(Children) do
+				local Name = string.lower(tostring(Candidate.Name or ""))
+				if Name:find(tostring(UserId), 1, true) then
+					local HasVoiceBubble = false
+					pcall(function() HasVoiceBubble = Candidate:FindFirstChild("VoiceBubble", true) ~= nil end)
+					if HasVoiceBubble then Bubble = Candidate; break end
 				end
 			end
 		end
-	end)
+	end
+	if not Bubble then return nil end
+
+	local VoiceBubble = nil
+	pcall(function() VoiceBubble = Bubble:FindFirstChild("VoiceBubble", true) end)
+	if not VoiceBubble then return nil end
+	local function IsVoiceMicImage(Object)
+		if not Object then return false end
+		local IsImage = false
+		local Image = ""
+		pcall(function()
+			IsImage = Object:IsA("ImageLabel") or Object:IsA("ImageButton")
+			Image = tostring(Object.Image or "")
+		end)
+		return IsImage and Image:find("VoiceChat", 1, true) ~= nil
+			and (Image:find("Muted", 1, true) ~= nil
+				or Image:find("Unmuted", 1, true) ~= nil
+				or Image:find("Connecting", 1, true) ~= nil
+				or Image:find("Error", 1, true) ~= nil)
+	end
+	local Insert = nil
+	pcall(function() Insert = VoiceBubble:FindFirstChild("Insert", true) end)
+	if IsVoiceMicImage(Insert) then return Insert end
+	local Ok, Descendants = pcall(function() return VoiceBubble:GetDescendants() end)
+	if Ok then
+		local Best = nil
+		local BestScore = -1
+		for _, Object in ipairs(Descendants) do
+			if IsVoiceMicImage(Object) then
+				local Score = 0
+				if string.lower(tostring(Object.Name or "")) == "insert" then Score += 100 end
+				if Object.Visible then Score += 10 end
+				if Score > BestScore then Best = Object; BestScore = Score end
+			end
+		end
+		return Best
+	end
+	return nil
+end
+
+-- Cache Roblox's native voice icons for participant detection and fallback.
+-- Custom player-row meters prefer live analyzer/activity readings so one cached
+-- Unmuted## filename cannot freeze the displayed speaking level.
+RefreshNativeVoiceMirrorCache = function(Force)
+	local Now = os.clock()
+	local MinimumInterval = Force and 1.0 or 4.0
+	if NativeVoiceScanStamp > 0 and (Now - NativeVoiceScanStamp) < MinimumInterval then return end
+	NativeVoiceScanStamp = Now
+	local Found = {}
+	-- Search only the native topbar and ExperienceChat voice trees; a full
+	-- CoreGui descendant scan on every refresh made menu animations stutter.
+	local SearchRoots, SeenRoots = {}, {}
+	local function AddRoot(Root)
+		if Root and not SeenRoots[Root] then
+			SeenRoots[Root] = true
+			table.insert(SearchRoots, Root)
+		end
+	end
+	local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
+	AddRoot(TopBarRoot)
+	if TopBarRoot then AddRoot(TopBarRoot:FindFirstChild("TopBarApp")) end
+	AddRoot(CoreGui:FindFirstChild("ExperienceChat"))
+	local RobloxGuiRoot = CoreGui:FindFirstChild("RobloxGui")
+	if RobloxGuiRoot then
+		AddRoot(RobloxGuiRoot:FindFirstChild("TopBarApp"))
+		AddRoot(RobloxGuiRoot:FindFirstChild("ExperienceChat"))
+		-- Target the known self-mute button directly rather than traversing the
+		-- entire Settings shield while the ESC menu is animating.
+		local SettingsShield = RobloxGuiRoot:FindFirstChild("SettingsClippingShield")
+		local NativeMuteButton = SettingsShield and SettingsShield:FindFirstChild("MuteSelfButton", true)
+		if NativeMuteButton then
+			local Candidates = {NativeMuteButton}
+			Protect(function()
+				for _, Descendant in ipairs(NativeMuteButton:GetDescendants()) do
+					table.insert(Candidates, Descendant)
+				end
+			end)
+			for _, Candidate in ipairs(Candidates) do
+				local IsImage, Image = false, ""
+				Protect(function()
+					IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
+					Image = tostring(Candidate.Image or "")
+				end)
+				if IsImage and Image:find("VoiceChat", 1, true)
+					and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)) then
+					Found[LocalPlayer.UserId] = Candidate
+					break
+				end
+			end
+		end
+	end
+	for _, SearchRoot in ipairs(SearchRoots) do
+		Protect(function()
+			for _, Obj in ipairs(SearchRoot:GetDescendants()) do
+				if (Obj:IsA("ImageLabel") or Obj:IsA("ImageButton"))
+					and Obj ~= VoiceChatButton
+					and not Obj:IsDescendantOf(ScreenGui)
+				then
+					local Image = tostring(Obj.Image or "")
+					if Image:find("VoiceChat", 1, true)
+						and (Image:find("Unmuted", 1, true)
+							or Image:find("Muted", 1, true)
+							or Image:find("Connecting", 1, true)
+							or Image:find("Error", 1, true))
+					then
+						local BestPlayer, BestScore = nil, 0
+						local Parent = Obj
+						for _ = 1, 9 do
+							Parent = Parent and Parent.Parent
+							if not Parent then break end
+							local Name = string.lower(tostring(Parent.Name or ""))
+							for _, Player in ipairs(Players:GetPlayers()) do
+								local PlayerName = string.lower(tostring(Player.Name or ""))
+								local Score = 0
+								if Name == PlayerName then Score = 500 end
+								if Name:find(PlayerName, 1, true) then Score = math.max(Score, 250) end
+								local Id = tostring(Player.UserId or 0)
+								if tonumber(Id) and tonumber(Id) > 1 and Name:find(Id, 1, true) then Score = math.max(Score, 180) end
+								if Player == LocalPlayer and (Name:find("self", 1, true) or Name:find("local", 1, true)) then
+									Score = math.max(Score, 180)
+								end
+								if Name:find("voice", 1, true) or Name:find("mic", 1, true) then Score += 20 end
+								if Obj.Visible then Score += 10 end
+								if Score > BestScore then BestPlayer = Player; BestScore = Score end
+							end
+						end
+						if BestPlayer and BestScore >= 50 then Found[BestPlayer.UserId] = Obj end
+					end
+				end
+			end
+		end)
+	end
+	-- The heuristic scan above is a fallback. Prefer the actual per-user
+	-- ExperienceChat VoiceBubble image whenever Roblox has created it.
+	for _, Player in next, Players:GetPlayers() do
+		local DirectObject = FindNativeVoiceBubbleIconObject(Player)
+		if DirectObject then
+			Found[Player.UserId] = DirectObject
+		end
+	end
+	for UserId, Connection in next, NativeVoiceIconConnections do
+		local NewObject = Found[UserId]
+		if not NewObject or NewObject ~= NativeVoiceIconConnectedObjects[UserId] then
+			pcall(function() Connection:Disconnect() end)
+			NativeVoiceIconConnections[UserId] = nil
+			NativeVoiceIconConnectedObjects[UserId] = nil
+		end
+	end
+
 	NativeVoiceIconObjects = Found
 	NativeVoiceIconImages = {}
 	for UserId, Obj in next, Found do
 		local Image = nil
 		Protect(function() Image = tostring(Obj.Image or "") end)
 		NativeVoiceIconImages[UserId] = Image
-		Protect(function()
-			Connect(Obj:GetPropertyChangedSignal("Image"), function()
-				if NativeVoiceIconObjects[UserId] == Obj then
-					NativeVoiceIconImages[UserId] = tostring(Obj.Image or "")
-				end
+		if Image and Image ~= "" then
+			NativeVoiceIconLastImages[UserId] = Image
+			NativeVoiceIconLastSeenAt[UserId] = Now
+		end
+		if NativeVoiceIconConnectedObjects[UserId] ~= Obj then
+			NativeVoiceIconConnectedObjects[UserId] = Obj
+			Protect(function()
+				NativeVoiceIconConnections[UserId] = Connect(Obj:GetPropertyChangedSignal("Image"), function()
+					if NativeVoiceIconObjects[UserId] == Obj then
+						local UpdatedImage = tostring(Obj.Image or "")
+						NativeVoiceIconImages[UserId] = UpdatedImage
+						if UpdatedImage ~= "" then
+							NativeVoiceIconLastImages[UserId] = UpdatedImage
+							NativeVoiceIconLastSeenAt[UserId] = os.clock()
+						end
+					end
+				end)
 			end)
-		end)
+		end
 	end
 end
 
@@ -3101,27 +3578,76 @@ ScheduleNativeVoiceMirrorRefresh = function()
 	if NativeVoiceScanScheduled then return end
 	NativeVoiceScanScheduled = true
 	Spawn(function()
-		Wait(0.1)
+		while NativeVoiceScanStamp > 0 and (os.clock() - NativeVoiceScanStamp) < 1.05 do
+			Wait(0.1)
+		end
 		NativeVoiceScanScheduled = false
 		RefreshNativeVoiceMirrorCache(true)
 	end)
 end
 
+-- Native voice bubbles are created dynamically. Only react to voice-related
+-- descendants, then coalesce all related additions into one scan.
+Protect(function()
+	Connect(CoreGui.DescendantAdded, function(Descendant)
+		local Name = string.lower(tostring(Descendant.Name or ""))
+		if Name:find("voice", 1, true) or Name:find("bubblechat", 1, true)
+			or Name == "insert" or Name:find("speaker", 1, true) then
+			ScheduleNativeVoiceMirrorRefresh()
+		end
+	end)
+end)
+
 FindNativeVoiceIcon = function(Player)
 	if not Player then return nil end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	local Obj = NativeVoiceIconObjects[UserId]
+	if Obj and Obj.Parent then
+		local Image = NativeVoiceIconImages[UserId]
+		if Image and Image ~= "" then return Image end
+	end
+
+	-- Read the native self-mic sprite directly from the known button subtree.
+	-- The button can be hidden by our compatibility layer, but its Image value
+	-- still provides a better mute-state signal than the internal pause flag.
 	if Player == LocalPlayer then
-		-- Local icon can be updated independently, so keep the direct cached object.
-		local Obj = NativeVoiceIconObjects[UserId]
-		if Obj and Obj.Parent then
-			local Image = NativeVoiceIconImages[UserId]
-			if Image and Image ~= "" then return Image end
+		local Now = os.clock()
+		if not NativeSelfIconProbeStamp or (Now - NativeSelfIconProbeStamp) >= 0.4 then
+			NativeSelfIconProbeStamp = Now
+			local RobloxGui = CoreGui and CoreGui:FindFirstChild("RobloxGui")
+			local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
+			local Button = Shield and Shield:FindFirstChild("MuteSelfButton", true)
+			if Button then
+				local Candidates = {Button}
+				pcall(function()
+					for _, Descendant in ipairs(Button:GetDescendants()) do
+						table.insert(Candidates, Descendant)
+					end
+				end)
+				for _, Candidate in ipairs(Candidates) do
+					local IsImage, Image = false, ""
+					pcall(function()
+						IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
+						Image = tostring(Candidate.Image or "")
+					end)
+					if IsImage and Image:find("VoiceChat", 1, true)
+						and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)) then
+						NativeVoiceIconLastImages[UserId] = Image
+						NativeVoiceIconLastSeenAt[UserId] = Now
+						return Image
+					end
+				end
+			end
 		end
-	else
-		local Obj = NativeVoiceIconObjects[UserId]
-		if Obj and Obj.Parent then
-			local Image = NativeVoiceIconImages[UserId]
-			if Image and Image ~= "" then return Image end
+	end
+
+	-- A remote native image is only useful as a fallback while it is recent.
+	-- An old disconnected bubble must not freeze the icon forever.
+	if Player ~= LocalPlayer then
+		local Last = NativeVoiceIconLastImages[UserId]
+		local LastAt = tonumber(NativeVoiceIconLastSeenAt[UserId]) or 0
+		if type(Last) == "string" and Last ~= "" and LastAt > 0 and (os.clock() - LastAt) <= 3 then
+			return Last
 		end
 	end
 	return nil
@@ -3133,67 +3659,116 @@ FindNativePlayerVoice = function(Player)
 	return Image:find("Unmuted", 1, true) ~= nil or Image:find("Muted", 1, true) ~= nil
 end
 
+-- Use the MicLight sprite family for custom and mirrored voice icons.
+VoiceContrastIcon = function(Image)
+	if Image == nil then return nil end
+	Image = tostring(Image)
+	-- Native CoreGui often exposes MicDark assets without @3x suffixes.
+	-- Preserve the exact native sprite filename and swap only the asset family.
+	Image = Image:gsub("/MicDark/", "/MicLight/")
+	Image = Image:gsub("/SpeakerDark/", "/SpeakerLight/")
+	if Image == VOICE_ICON_ROOT .. "Muted@3x.png" then
+		return VOICE_MIC_ROOT .. "Muted@3x.png"
+	elseif Image == VOICE_ICON_ROOT .. "Connecting@3x.png" then
+		return VOICE_MIC_ROOT .. "Connecting@3x.png"
+	elseif Image == VOICE_ICON_ROOT .. "Error@3x.png" then
+		return VOICE_MIC_ROOT .. "Error@3x.png"
+	end
+	return Image
+end
+
 GetVoiceIcon = function(Player, ForcedMuted)
 	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
-	local Muted = ForcedMuted == true
+	local IsLocal = Player == LocalPlayer
+	local Native = FindNativeVoiceIcon(Player)
+
+	-- The user muted this remote subscription locally: show a SPEAKER-muted icon.
+	-- This is intentionally distinct from the remote person's own microphone state.
+	if not IsLocal and (ForcedMuted == true or VoiceMutedPlayers[UserId] == true) then
+		return VOICE_SPEAKER_ROOT .. "Muted@3x.png"
+	end
+
+	-- When CoreGui exposes the local native mic image, it wins over stale internal
+	-- pause flags. This prevents a fake muted/unmuted image disagreement.
+	if IsLocal and type(Native) == "string"
+		and (Native:find("Muted", 1, true) or Native:find("Unmuted", 1, true)) then
+		return VoiceContrastIcon(Native)
+	end
+
 	local Input = GetAudioDeviceInput(Player)
-
-	if Input and not Muted then
-		Protect(function() Muted = Input.Muted == true end)
-	end
-	if not Muted and VoiceChatInternal and UserId > 1 then
-		Protect(function() Muted = VoiceChatInternal:IsSubscribePaused(UserId) == true end)
-	end
-	if Player == LocalPlayer and not Muted and VoiceChatInternal then
-		Protect(function() Muted = VoiceChatInternal:IsPublishPaused() == true end)
-	end
-
-	if Muted then return VOICE_MIC_ROOT .. "Muted@3x.png" end
-	if Player == LocalPlayer then
-		if not VoiceChatEnabled or not LocalVoiceEnabled then
-			return VOICE_MIC_ROOT .. "Muted@3x.png"
-		end
-
-		-- Keep Roblox's own live voice meter as the primary source.
-		-- Only force Unmuted0 when an actual AudioAnalyzer is present and
-		-- reports a genuine zero peak. This preserves the working native peak.
-		local Analyzer = GetVoiceAnalyzer(Player)
-		if Analyzer then
-			local Peak = nil
-			Protect(function() Peak = tonumber(Analyzer.PeakLevel) end)
-			if Peak ~= nil then
-				Peak = Clamp(Peak, 0, 1)
-				if Peak <= 0.00001 then
-					return VOICE_MIC_ROOT .. "Unmuted0@3x.png"
-				end
-			end
-		end
-
-		local Native = FindNativeVoiceIcon(Player)
-		if Native and Native:find("Unmuted", 1, true) then
-			return Native
-		end
-	else
-		if VoiceEnabledCache[UserId] ~= true then
-			return VOICE_ICON_ROOT .. (VoiceCheckError[UserId] and "Error@3x.png" or "Connecting@3x.png")
-		end
-		local Native = FindNativeVoiceIcon(Player)
-		if Native and (Native:find("Unmuted", 1, true) or Native:find("Muted", 1, true)) then
-			return Native
-		end
+	local Muted = ForcedMuted == true
+	local MuteStateKnown = Muted
+	if IsLocal and ForcedMuted ~= true then
+		local Ok, Value = pcall(function() return GetLocalVoiceMuted() end)
+		if Ok then Muted = Value == true; MuteStateKnown = true end
+	elseif not IsLocal and not Muted and Input then
+		local Ok, Value = pcall(function() return Input.Muted == true end)
+		if Ok then Muted = Value; MuteStateKnown = true end
 	end
 
-	return VoiceUnmutedIcon(GetVoiceLevel(Player))
+	if not MuteStateKnown and IsLocal and VoiceChatInternal then
+		local Ok, Value = pcall(function() return VoiceChatInternal:IsPublishPaused() == true end)
+		if Ok then Muted = Value; MuteStateKnown = true end
+	end
+	if Muted then
+		-- A remote AudioDeviceInput marked Muted is their mic state; local receive
+		-- mute is handled above and uses SpeakerLight/Muted instead.
+		return VOICE_MIC_ROOT .. "Muted@3x.png"
+	end
+	if IsLocal and not VoiceChatDesiredOn then
+		return VOICE_MIC_ROOT .. "Muted@3x.png"
+	end
+
+	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
+	local HasRecentActivity = ActivityStamp > 0 and (os.clock() - ActivityStamp) <= 1.5
+	if HasRecentActivity then
+		if VoiceActivityPeakMeasured[UserId] == true then
+			return VoiceUnmutedIcon(GetVoiceLevel(Player))
+		end
+		return VOICE_MIC_ROOT .. "Unmuted40@3x.png"
+	end
+
+	-- A fresh speaking event beats a cached native icon; old native state is only a fallback.
+	if not IsLocal and type(Native) == "string" and Native:find("Muted", 1, true) then
+		return VoiceContrastIcon(Native)
+	end
+
+	local Analyzer = Input and GetVoiceAnalyzer(Player) or nil
+	if Analyzer then
+		local Ok, Level = pcall(function() return tonumber(Analyzer.PeakLevel) end)
+		if Ok and Level and Level > 0.00001 then return VoiceUnmutedIcon(Level) end
+	end
+
+	if type(Native) == "string" and Native ~= "" then
+		return VoiceContrastIcon(Native)
+	end
+	-- Neutral no-activity fallback. Never fabricate a live peak from zero data.
+	return VOICE_MIC_ROOT .. "Unmuted.png"
 end
 
 VoiceProcessActivityInfo = function(ActivityInfo)
 	if type(ActivityInfo) ~= "table" then return end
+	local Nested = ActivityInfo.activityInfo or ActivityInfo.ActivityInfo or ActivityInfo.activity or ActivityInfo.Activity
+	if type(Nested) == "table" then
+		local Merged = {}
+		for Key, Value in next, ActivityInfo do Merged[Key] = Value end
+		for Key, Value in next, Nested do if Merged[Key] == nil then Merged[Key] = Value end end
+		ActivityInfo = Merged
+	end
 
 	local UserId = tonumber(
 		ActivityInfo.userId
 		or ActivityInfo.UserId
 		or ActivityInfo.playerUserId
 		or ActivityInfo.PlayerUserId
+		or ActivityInfo.participantUserId
+		or ActivityInfo.ParticipantUserId
+		or ActivityInfo.participantId
+		or ActivityInfo.ParticipantId
+		or ActivityInfo.playerId
+		or ActivityInfo.PlayerId
+		or ActivityInfo.speakerUserId
+		or ActivityInfo.SpeakerUserId
 		or ActivityInfo.id
 		or ActivityInfo.Id
 	)
@@ -3207,60 +3782,94 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 	end
 	if not UserId then return end
 
-	local Peak = nil
-	for _, Key in next, {
-		"peakLevel", "PeakLevel", "peak", "Peak", "level", "Level",
-		"loudness", "Loudness", "volume", "Volume", "micLevel", "MicLevel"
-	} do
-		local Value = tonumber(ActivityInfo[Key])
-		if Value then
-			Peak = Value
-			break
-		end
-	end
-
-	if Peak then
-		if Peak > 1 and Peak <= 100 then Peak = Peak / 100 end
-		VoiceActivityPeak[UserId] = Clamp(Peak, 0, 1)
-		VoiceActivityStamp[UserId] = os.clock()
-		return
+	local ActivityPlayer = nil
+	pcall(function() ActivityPlayer = Players:GetPlayerByUserId(UserId) end)
+	if ActivityPlayer then
+		local WasKnown = VoiceEnabledCache[UserId] == true
+		VoiceEnabledCache[UserId] = true
+		VoiceCheckError[UserId] = nil
+		if not WasKnown and RebuildPlayersPage then RebuildPlayersPage() end
 	end
 
 	local Speaking = ActivityInfo.active
 	if Speaking == nil then Speaking = ActivityInfo.Active end
 	if Speaking == nil then Speaking = ActivityInfo.isSpeaking end
 	if Speaking == nil then Speaking = ActivityInfo.IsSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.isActive end
+	if Speaking == nil then Speaking = ActivityInfo.IsActive end
+	if Speaking == nil then Speaking = ActivityInfo.isMicActive end
+	if Speaking == nil then Speaking = ActivityInfo.IsMicActive end
+	if Speaking == nil then Speaking = ActivityInfo.isVoiceActive end
+	if Speaking == nil then Speaking = ActivityInfo.IsVoiceActive end
+	if Speaking == nil then Speaking = ActivityInfo.isTalking end
+	if Speaking == nil then Speaking = ActivityInfo.IsTalking end
+
+	if Speaking == false then
+		VoiceActivityPeak[UserId] = 0
+		VoiceActivityStamp[UserId] = 0
+		VoiceActivityActive[UserId] = false
+		VoiceActivityPeakMeasured[UserId] = false
+		return
+	end
+
+	local Peak = nil
+	for _, Key in ipairs({
+		"peakLevel", "PeakLevel", "peak", "Peak", "level", "Level",
+		"loudness", "Loudness", "volume", "Volume", "micLevel", "MicLevel",
+		"peak_level", "micPeak", "MicPeak", "voiceLevel", "VoiceLevel",
+		"rmsLevel", "RmsLevel", "rms", "Rms", "activityLevel", "ActivityLevel",
+		"audioLevel", "AudioLevel", "amplitude", "Amplitude"
+	}) do
+		local Value = tonumber(ActivityInfo[Key])
+		if Value ~= nil then Peak = Value; break end
+	end
+
+	if Peak ~= nil then
+		if Peak > 1 and Peak <= 100 then Peak = Peak / 100 end
+		Peak = Clamp(Peak, 0, 1)
+		if Peak > 0.00001 then
+			VoiceActivityPeak[UserId] = Peak
+			VoiceActivityStamp[UserId] = os.clock()
+			VoiceActivityActive[UserId] = true
+			VoiceActivityPeakMeasured[UserId] = true
+			return
+		elseif Speaking == true then
+			-- Some clients send peak=0 alongside active=true; preserve the activity flag.
+			VoiceActivityPeak[UserId] = 0.35
+			VoiceActivityStamp[UserId] = os.clock()
+			VoiceActivityActive[UserId] = true
+			VoiceActivityPeakMeasured[UserId] = false
+			return
+		else
+			VoiceActivityPeak[UserId] = 0
+			VoiceActivityStamp[UserId] = 0
+			VoiceActivityActive[UserId] = false
+			VoiceActivityPeakMeasured[UserId] = false
+			return
+		end
+	end
+
 	if Speaking == true then
-		VoiceActivityPeak[UserId] = 1
+		VoiceActivityPeak[UserId] = 0.35
 		VoiceActivityStamp[UserId] = os.clock()
+		VoiceActivityActive[UserId] = true
+		VoiceActivityPeakMeasured[UserId] = false
+	elseif Speaking == false then
+		VoiceActivityPeak[UserId] = 0
+		VoiceActivityStamp[UserId] = 0
+		VoiceActivityActive[UserId] = false
+		VoiceActivityPeakMeasured[UserId] = false
 	end
 end
 
 RefreshVoiceParticipants = function()
-	if not VoiceChatEnabled then return false end
+	-- Keep participant discovery active when the local client is disconnected.
+	if not VoiceGameSupported then return false end
 	local PlayerList = Players:GetPlayers()
 	local Changed = false
 
-	-- Do not clear a confirmed voice player just because a group/participant
-	-- query is temporarily incomplete. These sources are discovery fallbacks.
-	Protect(function()
-		local Groups = VoiceChatService:GetChatGroupsAsync(PlayerList)
-		if type(Groups) == "table" then
-			for Index, Player in next, PlayerList do
-				if Player ~= LocalPlayer then
-					local GroupList = Groups[Index]
-					if type(GroupList) == "table" and #GroupList > 0 then
-						local Id = tonumber(Player.UserId or Player.userId) or 0
-						if Id > 1 and VoiceEnabledCache[Id] ~= true then
-							VoiceEnabledCache[Id] = true
-							VoiceCheckError[Id] = nil
-							Changed = true
-						end
-					end
-				end
-			end
-		end
-	end)
+	-- GetChatGroupsAsync is server-only. Discover active participants from the
+	-- client through actual AudioDeviceInput/native UI/internal participant data.
 
 	for _, Player in next, PlayerList do
 		if Player ~= LocalPlayer and GetAudioDeviceInput(Player) then
@@ -3277,13 +3886,15 @@ RefreshVoiceParticipants = function()
 		Protect(function()
 			local Participants = VoiceChatInternal:GetParticipants()
 			if type(Participants) == "table" then
-				for _, Participant in next, Participants do
+				for Key, Participant in next, Participants do
 					local Id = nil
-					if type(Participant) == "number" then
+					local KeyId = tonumber(Key)
+					if KeyId and KeyId > 1000 then Id = KeyId end
+					if not Id and type(Participant) == "number" then
 						Id = Participant
-					elseif type(Participant) == "string" then
+					elseif not Id and type(Participant) == "string" then
 						Id = tonumber(Participant)
-					elseif type(Participant) == "table" then
+					elseif not Id and type(Participant) == "table" then
 						Id = tonumber(Participant.UserId or Participant.userId or Participant.PlayerUserId or Participant.playerUserId or Participant.Id or Participant.id)
 						if not Id and Participant.Player then
 							Id = tonumber(Participant.Player.UserId or Participant.Player.userId)
@@ -3319,35 +3930,41 @@ GetPlayerVoiceStatus = function(Player)
 	if not Player then return nil end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
 	if UserId <= 1 then return false end
-	if not VoiceChatEnabled then return false end
-
-	local Success = false
-	local Found = false
-
-	-- With RobloxScript authority this direct call is the cleanest test.
-	Protect(function()
-		Found = VoiceChatService:IsVoiceEnabledForUserIdAsync(UserId) == true
-		Success = true
-	end)
-
-	if not Success and VoiceChatInternal then
-		Protect(function()
-			Found = VoiceChatInternal:IsVoiceEnabledForUserIdAsync(UserId) == true
-			Success = true
-		end)
+	if not VoiceGameSupported then
+		if Player == LocalPlayer then return false end
+		return nil
 	end
 
-	if Success then return Found end
+	if Player == LocalPlayer then
+		local Ok, Enabled = pcall(function()
+			return VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
+		end)
+		if Ok then return Enabled end
+		if VoiceChatInternal then
+			local InternalOk, InternalEnabled = pcall(function()
+				return VoiceChatInternal:IsContextVoiceEnabled() == true
+			end)
+			if InternalOk then return InternalEnabled end
+		end
+		return nil
+	end
 
+	-- Client builds reject eligibility queries for other users. Treat missing
+	-- evidence as unknown, not as "no voice"; keep the player-row control visible
+	-- until an input/native bubble/activity event confirms voice participation.
+	if VoiceEnabledCache[UserId] == true then return true end
 	if GetAudioDeviceInput(Player) then return true end
-	if FindNativePlayerVoice(Player) then return true end
-
+	if FindNativePlayerVoice(Player) then
+		VoiceEnabledCache[UserId] = true
+		return true
+	end
+	if VoiceEnabledCache[UserId] == false then return false end
 	return nil
 end
 
 CheckVoiceForPlayer = function(Player, Callback)
 	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
-	if UserId <= 1 or not VoiceChatEnabled then
+	if UserId <= 1 or not VoiceGameSupported then
 		if Callback then Callback(false, false) end
 		return
 	end
@@ -3363,11 +3980,14 @@ CheckVoiceForPlayer = function(Player, Callback)
 
 	if Status == false then
 		local Was = VoiceEnabledCache[UserId] == true
-		if Was or FindNativePlayerVoice(Player) then
+		local HasNative = FindNativePlayerVoice(Player)
+		local HasInput = GetAudioDeviceInput(Player) ~= nil
+		if HasNative or HasInput then
 			VoiceEnabledCache[UserId] = true
 			VoiceCheckError[UserId] = nil
 			if Callback then Callback(true, false, not Was) end
 		else
+			-- A successful false result is an eligibility answer, not a warning.
 			VoiceEnabledCache[UserId] = false
 			VoiceCheckError[UserId] = nil
 			if Callback then Callback(false, false, Was) end
@@ -3375,46 +3995,247 @@ CheckVoiceForPlayer = function(Player, Callback)
 		return
 	end
 
-	VoiceCheckError[UserId] = true
+	-- If status cannot be queried on this client, do not label the player as
+	-- having an error. Keep them hidden until native voice evidence appears.
+	VoiceCheckError[UserId] = nil
 	if Callback then Callback(VoiceEnabledCache[UserId] == true, true) end
 end
 
+-- Voice-mute diagnostic panel and verbose logging removed.
+
 GetLocalVoiceMuted = function()
+	-- When Roblox supplies its real AudioDeviceInput, that is the authoritative
+	-- mute state for the Audio API path. Do not let a stale legacy pause flag
+	-- override a confirmed Input.Muted = false (that made Unmute appear broken).
 	local Input = GetAudioDeviceInput(LocalPlayer)
 	if Input then
-		local Muted = false
-		Protect(function() Muted = Input.Muted == true end)
-		return Muted
+		local Ok, Muted = pcall(function()
+			return Input.Muted == true
+		end)
+		if Ok then return Muted end
 	end
+
+	-- Only rely on the legacy voice publisher if no readable real input exists.
 	if VoiceChatInternal then
-		local Muted = false
-		Protect(function() Muted = VoiceChatInternal:IsPublishPaused() == true end)
-		return Muted
+		local Ok, Muted = pcall(function()
+			return VoiceChatInternal:IsPublishPaused() == true
+		end)
+		if Ok then return Muted end
 	end
 	return LocalVoiceMuted == true
 end
 
+FindNativeMuteSelfButton = function()
+	local RobloxGui = nil
+	pcall(function()
+		RobloxGui = CoreGui and CoreGui:FindFirstChild("RobloxGui")
+	end)
+	if not RobloxGui then
+		return nil, "CoreGui.RobloxGui not found"
+	end
+
+	-- Prefer the exact native Settings page path reported by the user.
+	local PathParts = {
+		"SettingsClippingShield", "SettingsShield", "MenuContainer", "Page",
+		"PageViewClipper", "PageView", "PageViewInnerFrame", "Players",
+		"Holder", "MuteSelfButton",
+	}
+	local Object = RobloxGui
+	for _, Name in ipairs(PathParts) do
+		if not Object then break end
+		local Ok, Child = pcall(function() return Object:FindFirstChild(Name) end)
+		Object = (Ok and Child) or nil
+	end
+	if Object then
+		local IsButtonOk, IsButton = pcall(function() return Object:IsA("GuiButton") end)
+		if IsButtonOk and IsButton then
+			return Object, "exact SettingsClippingShield path"
+		end
+	end
+
+	-- CoreGui's menu hierarchy can differ slightly between client builds.
+	-- Search the Settings shield first, then RobloxGui, using the exact button name.
+	local SearchRoots = {}
+	local SettingsRoot = RobloxGui:FindFirstChild("SettingsClippingShield")
+	if SettingsRoot then table.insert(SearchRoots, SettingsRoot) end
+	table.insert(SearchRoots, RobloxGui)
+	-- Some client builds host/reparent the Settings shield outside RobloxGui.
+	-- Search CoreGui once as a final fallback, but only on a manual mic click.
+	if CoreGui then table.insert(SearchRoots, CoreGui) end
+	for _, Root in ipairs(SearchRoots) do
+		local Ok, Descendants = pcall(function() return Root:GetDescendants() end)
+		if Ok and type(Descendants) == "table" then
+			for _, Descendant in ipairs(Descendants) do
+				if Descendant.Name == "MuteSelfButton" then
+					local IsButtonOk, IsButton = pcall(function() return Descendant:IsA("GuiButton") end)
+					if IsButtonOk and IsButton then
+						return Descendant, "recursive fallback from " .. tostring(Root.Name)
+					end
+				end
+			end
+		end
+	end
+	return nil, "MuteSelfButton not present in RobloxGui Settings tree"
+end
+
+NativeMuteSelfButtonMatchesTarget = function(TargetMuted, Stage, Button)
+	Wait(0.20)
+	local StateOk, StateMuted = pcall(function() return GetLocalVoiceMuted() end)
+	local PauseOk, Paused = false, "unavailable"
+	if VoiceChatInternal then
+		PauseOk, Paused = pcall(function() return VoiceChatInternal:IsPublishPaused() == true end)
+	end
+	local NativeIcon = nil
+	pcall(function() NativeIcon = FindNativeVoiceIcon(LocalPlayer) end)
+	local IconMuted = nil
+	if type(NativeIcon) == "string" then
+		if NativeIcon:find("Unmuted", 1, true) then
+			IconMuted = false
+		elseif NativeIcon:find("Muted", 1, true) then
+			IconMuted = true
+		end
+	end
+	local Input = nil
+	pcall(function() Input = GetAudioDeviceInput(LocalPlayer) end)
+	local InputReadOk, InputMuted = false, nil
+	if Input then
+		InputReadOk, InputMuted = pcall(function() return Input.Muted == true end)
+	end
+	local StateMatches = StateOk and StateMuted == TargetMuted
+	local NativeEvidenceMatches = (IconMuted ~= nil and IconMuted == TargetMuted)
+		or (InputReadOk and InputMuted == TargetMuted)
+	local Verified = StateMatches and NativeEvidenceMatches
+	if Verified then
+		LocalVoiceMuted = TargetMuted
+		return true
+	end
+	if StateMatches and not NativeEvidenceMatches then
+	end
+	return false
+end
+
+TryRealNativeMuteButtonClick = function(Button, TargetMuted)
+	-- Deliberately disabled: synthesizing clicks against a closed CoreGui menu
+	-- caused ESC state corruption and never verified the native voice change.
+	return false
+end
+
+InvokeNativeMuteSelfButton = function(TargetMuted)
+	TargetMuted = TargetMuted == true
+	local MenuReadOk, MenuIsOpen = pcall(function() return GuiService.MenuIsOpen end)
+	local Button, FoundBy = FindNativeMuteSelfButton()
+
+	local function Refuse(Reason)
+		return false
+	end
+
+	if not MenuReadOk or MenuIsOpen ~= true then
+		return Refuse("native CoreGui menu is not already open; do not open/close it from the mic callback")
+	end
+	if not Button then
+		return Refuse("MuteSelfButton was not found while native menu is open")
+	end
+
+	local VisibleOk, Visible = pcall(function() return Button.Visible end)
+	local ActiveOk, Active = pcall(function() return Button.Active end)
+	local InteractableOk, Interactable = pcall(function() return Button.Interactable end)
+	local AncestorsReady = true
+	local Cursor = Button.Parent
+	while Cursor and Cursor ~= CoreGui do
+		local IsGuiOk, IsGui = pcall(function() return Cursor:IsA("GuiObject") end)
+		if IsGuiOk and IsGui then
+			local ReadOk, IsVisible = pcall(function() return Cursor.Visible end)
+			if not ReadOk or not IsVisible then AncestorsReady = false; break end
+		end
+		local ParentOk, Parent = pcall(function() return Cursor.Parent end)
+		if not ParentOk then AncestorsReady = false; break end
+		Cursor = Parent
+	end
+
+	local PosOk, Pos = pcall(function() return Button.AbsolutePosition end)
+	local SizeOk, Size = pcall(function() return Button.AbsoluteSize end)
+	local Camera = nil
+	pcall(function() Camera = workspace.CurrentCamera end)
+	local Viewport = Vector2.new(0, 0)
+	pcall(function() if Camera then Viewport = Camera.ViewportSize end end)
+	local X, Y, OnScreen = -1, -1, false
+	if PosOk and SizeOk then
+		X = math.floor(Pos.X + Size.X / 2)
+		Y = math.floor(Pos.Y + Size.Y / 2)
+		OnScreen = Size.X > 2 and Size.Y > 2 and X >= 0 and Y >= 0 and X < Viewport.X and Y < Viewport.Y
+	end
+
+	if not (VisibleOk and Visible and ActiveOk and Active and AncestorsReady and OnScreen) then
+		return Refuse("native button is not naturally visible, active, and on-screen")
+	end
+	if InteractableOk and Interactable == false then
+		return Refuse("native button Interactable=false")
+	end
+
+	local VIM = nil
+	pcall(function() VIM = game:GetService("VirtualInputManager") end)
+	if not VIM then return Refuse("VirtualInputManager unavailable; no verified input route") end
+
+	local ClickOk, ClickErr = pcall(function()
+		VIM:SendMouseMoveEvent(X, Y, game)
+		Wait(0.04)
+		VIM:SendMouseButtonEvent(X, Y, 0, true, game, 0)
+		Wait(0.05)
+		VIM:SendMouseButtonEvent(X, Y, 0, false, game, 0)
+	end)
+	if not ClickOk then return Refuse("VirtualInputManager click failed: " .. tostring(ClickErr)) end
+
+	local Verified = NativeMuteSelfButtonMatchesTarget(TargetMuted, "native-menu-direct-click-no-transaction", Button)
+	if Verified then
+		if Hub then Hub.NativeMuteTransactionFailedThisClick = false end
+		return true
+	end
+	return Refuse("input call returned but native mute state did not verify; no additional synthetic click or PublishPause fallback")
+end
+
 SetLocalVoiceMuted = function(Muted)
 	Muted = Muted == true
-	local Changed = false
+	local InputFindOk, Input = pcall(function() return GetAudioDeviceInput(LocalPlayer) end)
 
-	local Input = GetAudioDeviceInput(LocalPlayer)
+	-- Preferred path for the enabled Audio API: change the real Roblox input.
 	if Input then
-		Changed = Protect(function()
+		local WriteOk, ReadBack = pcall(function()
 			Input.Muted = Muted
+			return Input.Muted == true
+		end)
+		if WriteOk and ReadBack == Muted then
+			LocalVoiceMuted = Muted
+			if VoiceChatInternal then pcall(function() VoiceChatInternal:PublishPause(Muted) end) end
 			return true
-		end) or Changed
+		end
 	end
 
+	-- If the user already has the real Roblox menu open, try its actual button.
+	-- Never synthesize Escape/open-close cycles from this callback: they broke ESC.
+	local MenuReadOk, MenuIsOpen = pcall(function() return GuiService.MenuIsOpen end)
+	if MenuReadOk and MenuIsOpen == true then
+		local NativeCallOk, NativeApplied = pcall(function() return InvokeNativeMuteSelfButton(Muted) end)
+		if NativeCallOk and NativeApplied then
+			LocalVoiceMuted = Muted
+			return true
+		end
+	end
+
+	-- This client reports UseAudioApi=Automatic, which currently uses Roblox's
+	-- legacy internal voice system. PublishPause is its actual publishing-pause
+	-- control; it changes the native internal state without needing a GUI click.
+	-- We log the state match honestly, but do not claim that remote listeners heard
+	-- audio: this client exposes no AudioDeviceInput/audio peak for that verification.
 	if VoiceChatInternal then
-		Changed = Protect(function()
-			VoiceChatInternal:PublishPause(Muted)
+		local CallOk, CallResult = pcall(function() return VoiceChatInternal:PublishPause(Muted) end)
+		Wait(0.1)
+		local ReadOk, PauseAfter = pcall(function() return VoiceChatInternal:IsPublishPaused() == true end)
+		if ReadOk and PauseAfter == Muted then
+			LocalVoiceMuted = Muted
 			return true
-		end) or Changed
+		end
 	end
-
-	LocalVoiceMuted = Muted
-	return Changed
+	return false
 end
 
 RefreshLocalVoiceState = function()
@@ -3443,147 +4264,247 @@ RefreshLocalVoiceState = function()
 end
 
 GetLocalVoiceGroupId = function()
+	-- This is only a group identifier, NOT proof that a voice session has joined.
 	local GroupId = ""
 	if VoiceChatInternal then
-		Protect(function() GroupId = tostring(VoiceChatInternal:GetGroupId() or "") end)
+		pcall(function() GroupId = tostring(VoiceChatInternal:GetGroupId() or "") end)
 	end
-	if GroupId ~= "" then return GroupId end
-	Protect(function()
-		local Groups = VoiceChatService:GetChatGroupsAsync({LocalPlayer})
-		local First = Groups and Groups[1]
-		if type(First) == "table" and First[1] then GroupId = tostring(First[1]) end
-	end)
 	return GroupId
 end
 
-SetVoiceChatPreference = function(Enabled)
-	VoiceChatEnabled = Enabled == true
-	VoiceCheckNext = {}
-
-	if not VoiceChatEnabled then
-		if VoiceChatInternal then
-			Protect(function()
-				local GroupId = tostring(VoiceChatInternal:GetGroupId() or "")
-				if GroupId ~= "" then SavedVoiceGroupId = GroupId end
-			end)
-			Protect(function() VoiceChatInternal:PublishPause(true) end)
-			Protect(function() VoiceChatInternal:Leave() end)
-		end
-		LocalVoiceEnabled = false
-		LocalVoiceMuted = false
-		VoiceEnabledCache = {}
-		VoiceCheckError = {}
-		VoiceActivityPeak = {}
-		VoiceActivityStamp = {}
-		if RebuildPlayersPage then RebuildPlayersPage() end
-		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
-		return
+VoiceInternalConnectionState = nil
+VoiceInternalStateConnection = nil
+GetVoiceInternalStateText = function()
+	-- Read the live state first; use the last StateChanged event only as fallback.
+	if VoiceChatInternal then
+		local Ok, State = pcall(function() return VoiceChatInternal.VoiceChatState end)
+		if Ok and State ~= nil then return tostring(State) end
 	end
-
-	local GroupId = SavedVoiceGroupId or GetLocalVoiceGroupId()
-	if VoiceChatInternal and GroupId ~= "" then
-		Protect(function()
-			VoiceChatInternal:JoinByGroupId(GroupId, false)
-			VoiceChatInternal:PublishPause(false)
+	if VoiceInternalConnectionState ~= nil and tostring(VoiceInternalConnectionState) ~= "" then
+		return tostring(VoiceInternalConnectionState)
+	end
+	return "unavailable"
+end
+if VoiceChatInternal then
+	pcall(function()
+		local State = VoiceChatInternal.VoiceChatState
+		if State ~= nil then VoiceInternalConnectionState = tostring(State) end
+	end)
+	pcall(function()
+		VoiceInternalStateConnection = VoiceChatInternal.StateChanged:Connect(function(OldState, NewState)
+			VoiceInternalConnectionState = tostring(NewState)
 		end)
-		SavedVoiceGroupId = GroupId
-	end
-
-	Spawn(function()
-		for _ = 1, 20 do
-			if not VoiceChatEnabled then return end
-			RefreshLocalVoiceState()
-			if LocalVoiceEnabled then
-				local Input = GetAudioDeviceInput(LocalPlayer)
-				if Input then Protect(function() Input.Muted = false end) end
-				if VoiceChatInternal then Protect(function() VoiceChatInternal:PublishPause(false) end) end
-			end
-			RefreshVoiceParticipants()
-			if LocalVoiceEnabled then break end
-			Wait(0.5)
-		end
-		if RebuildPlayersPage then RebuildPlayersPage() end
-		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
-		if AudioInputSelector and AudioInputSelector.UpdateDropDownList then
-			local NewMicNames = GetMicDeviceOptions()
-			Protect(function() AudioInputSelector:UpdateDropDownList(NewMicNames) end)
-		end
 	end)
 end
 
-SetRemoteVoiceMuted = function(Player, Muted)
-	local UserId = tonumber(Player.UserId or Player.userId) or 0
-	local Done = false
-
-	if VoiceChatInternal then
-		Done = Protect(function()
-			return VoiceChatInternal:SubscribePause(UserId, Muted == true) == true
-		end)
+IsLocalVoiceConnectionReady = function()
+	-- A non-empty GetGroupId (especially the literal "default") is NOT enough
+	-- to prove a real session exists. Use the actual legacy session state, or
+	-- the real AudioDeviceInput when the Audio API is enabled.
+	local Input = GetAudioDeviceInput(LocalPlayer)
+	if Input then
+		local Ok, Ready = pcall(function() return Input.IsReady == true end)
+		if Ok and Ready then return true end
+		local ActiveOk, Active = pcall(function() return Input.Active == true end)
+		if ActiveOk and Active then return true end
 	end
 
-	local Input = GetAudioDeviceInput(Player)
-	if Input then
-		if Muted then
-			if VoiceSavedVolumes[UserId] == nil then
-				local Volume = 1
-				Protect(function() Volume = tonumber(Input.Volume) or 1 end)
-				VoiceSavedVolumes[UserId] = Volume
-			end
-			Done = Protect(function() Input.Volume = 0 return true end) or Done
-		else
-			local Restore = VoiceSavedVolumes[UserId]
-			VoiceSavedVolumes[UserId] = nil
-			Done = Protect(function() Input.Volume = Restore or 1 return true end) or Done
+	local StateText = GetVoiceInternalStateText()
+	local StateLower = string.lower(StateText)
+	if StateLower:find("joined", 1, true) or StateLower:find("connected", 1, true) then
+		return true
+	end
+
+	-- Conservative fallback: real participants imply an active legacy session.
+	if VoiceChatInternal then
+		local Ok, Participants = pcall(function() return VoiceChatInternal:GetParticipants() end)
+		if Ok and type(Participants) == "table" and #Participants > 0 then return true end
+	end
+
+	-- States like Idle, Joining, Failed, Leaving and Ended are not connected.
+	return false
+end
+
+VoiceMuteBeforeDisconnect = nil
+
+SetVoiceChatPreference = function(Enabled)
+	if not VoiceOptionAvailable then return false end
+	Enabled = Enabled == true
+	VoiceCheckNext = {}
+	VoiceChatDesiredOn = Enabled
+
+	if not Enabled then
+		VoiceConnectionAttempting = false
+		VoiceChatEnabled = false
+		LocalVoiceEnabled = false
+		if VoiceChatInternal then
+			local GroupId = GetLocalVoiceGroupId()
+			if GroupId ~= "" then SavedVoiceGroupId = GroupId end
+			pcall(function() VoiceChatInternal:Leave() end)
+		end
+		if VoiceChatSelector then
+			pcall(function() VoiceChatSelector:SetSelectionIndex(2, false) end)
+		end
+		if RebuildPlayersPage then RebuildPlayersPage() end
+		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+		return true
+	end
+
+	-- Show the voice controls immediately after On is selected. The connected
+	-- state probe is not consistently readable in every Roblox client revision.
+	VoiceChatEnabled = true
+	LocalVoiceEnabled = VoiceOptionAvailable == true
+	VoiceConnectionAttempting = true
+	RefreshLocalVoiceState()
+	if VoiceChatSelector then
+		pcall(function() VoiceChatSelector:SetSelectionIndex(1, false) end)
+	end
+	if RebuildPlayersPage then RebuildPlayersPage() end
+	if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+
+	local GroupId = SavedVoiceGroupId or GetLocalVoiceGroupId()
+	local JoinRequested = false
+	if VoiceChatInternal then
+		if GroupId ~= "" then
+			local JoinOk, JoinResult = pcall(function()
+				return VoiceChatInternal:JoinByGroupId(GroupId, false)
+			end)
+			JoinRequested = JoinOk and JoinResult == true
+			if JoinRequested then SavedVoiceGroupId = GroupId end
+		end
+		if not JoinRequested then
+			local JoinOk, JoinResult = pcall(function()
+				if type(VoiceChatInternal.Join) == "function" then
+					return VoiceChatInternal:Join()
+				end
+				return false
+			end)
+			JoinRequested = JoinOk and JoinResult == true
 		end
 	end
 
-	return Done
+	Spawn(function()
+		local Connected = false
+		for _ = 1, 20 do
+			if not VoiceChatDesiredOn then
+				VoiceConnectionAttempting = false
+				return
+			end
+			if IsLocalVoiceConnectionReady() then
+				Connected = true
+				break
+			end
+			Wait(0.5)
+		end
+
+		VoiceConnectionAttempting = false
+		-- Keep controls available if Roblox temporarily fails to establish a native session;
+		-- connection state never hides the voice controls.
+		VoiceChatEnabled = VoiceChatDesiredOn
+		if Connected then RefreshLocalVoiceState() end
+		if VoiceChatSelector then
+			pcall(function() VoiceChatSelector:SetSelectionIndex(VoiceChatDesiredOn and 1 or 2, false) end)
+		end
+		if RebuildPlayersPage then RebuildPlayersPage() end
+		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+	end)
+
+	return true
+end
+
+GetRemoteVoiceMuted = function(Player)
+	if not Player or Player == LocalPlayer then return false end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if UserId <= 1 then return false end
+	-- Store BOTH true and false as explicit local-listener choices. Clearing the
+	-- false value made an Unmute click fall back to stale native state and flip
+	-- the icon back to Muted.
+	if VoiceMutedPlayers[UserId] ~= nil then
+		return VoiceMutedPlayers[UserId] == true
+	end
+	if VoiceChatInternal then
+		local Ok, Value = pcall(function()
+			return VoiceChatInternal:IsSubscribePaused(UserId) == true
+		end)
+		if Ok then
+			VoiceMutedPlayers[UserId] = Value
+			return Value
+		end
+	end
+	return false
+end
+
+SetRemoteVoiceMuted = function(Player, Muted)
+	if not Player then return false end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if UserId <= 1 or Player == LocalPlayer then return false end
+	Muted = Muted == true
+
+	local Changed = false
+	if VoiceChatInternal then
+		local CallOk, CallResult = pcall(function()
+			return VoiceChatInternal:SubscribePause(UserId, Muted)
+		end)
+		local ReadOk, ReadBack = pcall(function()
+			return VoiceChatInternal:IsSubscribePaused(UserId) == true
+		end)
+		if ReadOk then
+			Changed = ReadBack == Muted or CallResult == true
+		elseif CallOk then
+			Changed = CallResult ~= false
+		end
+	end
+
+	-- This is a receive-side choice for this client, not a mute of the remote
+	-- player's microphone. Preserve the user's chosen UI state even when this
+	-- client build doesn't expose a readable SubscribePause acknowledgement.
+	VoiceMutedPlayers[UserId] = Muted
+	VoiceSavedMuted[UserId] = nil
+	return Changed
 end
 
 SetMuteAll = function(Muted)
 	Muted = Muted == true
+	VoiceMuteAllActive = Muted
 
-	-- Always update our own per-player state first.
+	-- Ask Roblox's receive controller to mute/unmute all remote subscriptions.
+	-- Then also set per-player state so the individual icons and buttons mirror
+	-- the same choice and can subsequently override one player independently.
+	local BulkApplied = false
+	if VoiceChatInternal then
+		local CallOk, CallResult = pcall(function()
+			return VoiceChatInternal:SubscribePauseAll(Muted)
+		end)
+		BulkApplied = CallOk
+	end
+
 	for _, Player in next, Players:GetPlayers() do
 		if Player ~= LocalPlayer then
 			local UserId = tonumber(Player.UserId or Player.userId) or 0
 			if UserId > 1 then
-				VoiceMutedPlayers[UserId] = Muted and true or nil
-
-				-- The internal API is the primary path for remote subscriptions.
-				if VoiceChatInternal then
-					Protect(function()
-						VoiceChatInternal:SubscribePause(UserId, Muted)
-					end)
-				end
-
-				-- Explicit volume fallback/restore makes the result reliable even if
-				-- SubscribePause is unavailable for a particular player.
-				local Input = GetAudioDeviceInput(Player)
-				if Input then
-					if Muted then
-						if VoiceSavedVolumes[UserId] == nil then
-							local Volume = 1
-							Protect(function() Volume = tonumber(Input.Volume) or 1 end)
-							VoiceSavedVolumes[UserId] = Volume
-						end
-						Protect(function() Input.Volume = 0 end)
-					else
-						local Restore = VoiceSavedVolumes[UserId]
-						VoiceSavedVolumes[UserId] = nil
-						Protect(function() Input.Volume = Restore or 1 end)
-					end
+				local Applied = SetRemoteVoiceMuted(Player, Muted)
+				if not Applied and BulkApplied then
+					-- The aggregate controller succeeded even if a per-player state
+					-- readback is unavailable in this client build.
+					VoiceMutedPlayers[UserId] = Muted
+					VoiceSavedMuted[UserId] = nil
 				end
 			end
 		end
 	end
 
-	-- Also use the aggregate internal API when available; the explicit loop above
-	-- remains the authoritative per-user operation.
-	if VoiceChatInternal then
-		Protect(function()
-			VoiceChatInternal:SubscribePauseAll(Muted)
-		end)
+	-- Refresh currently visible remote-mic icons immediately.
+	if PlayersPage and PlayersPage.Frame then
+		for _, Player in next, Players:GetPlayers() do
+			if Player ~= LocalPlayer then
+				local Row = PlayersPage.Frame:FindFirstChild("PlayerLabel" .. Player.Name)
+				local VoiceButton = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
+				local VoiceIcon = VoiceButton and VoiceButton:FindFirstChild("VoiceIcon")
+				if VoiceIcon then
+					VoiceIcon.Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
+				end
+			end
+		end
 	end
 end
 
@@ -3897,6 +4818,7 @@ Position =
 	local GAP = 12
 	local FRIEND_WIDTH = 156
 	local ACTION_RIGHT_PAD = 14
+	local SELF_VIEW_RIGHT_PAD = 14
 
 	local VoiceButton
 	local ViewButton
@@ -3994,7 +4916,7 @@ Position =
 			ViewButton.Position =
 				UDim2.new(
 					1,
-					-(BUTTON_WIDTH + GAP + ACTION_RIGHT_PAD),
+					-(BUTTON_WIDTH + SELF_VIEW_RIGHT_PAD),
 					0.5,
 					-BUTTON_HEIGHT / 2
 				)
@@ -4065,69 +4987,63 @@ Position =
 	end
 
 
-	if CanTargetPlayer and VoiceChatEnabled then
-		local ExistingVoice = VoiceEnabledCache[UserId]
-		if ExistingVoice == true then
-			VoiceButton = MakeStyledButton(
-				Player.Name .. "VoiceButton",
-				"",
-				UDim2.new(0, BUTTON_WIDTH, 0, BUTTON_HEIGHT),
-				function()
-					local Muted = not VoiceMutedPlayers[UserId]
-					if SetRemoteVoiceMuted(Player, Muted) then
-						VoiceMutedPlayers[UserId] = Muted and true or nil
-					end
-				end
-			)
-			VoiceButton.Parent = Row
-			VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
-			local VoiceIcon = Create("ImageLabel", {
-				Name = "VoiceIcon",
-				Parent = VoiceButton,
-				BackgroundTransparency = 1,
-				Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true),
-				Size = UDim2.new(0, BUTTON_HEIGHT - 8, 0, BUTTON_HEIGHT - 8),
-				Position = UDim2.new(0.5, -(BUTTON_HEIGHT - 8) / 2, 0.5, -(BUTTON_HEIGHT - 8) / 2),
-				ScaleType = Enum.ScaleType.Fit,
-				ZIndex = SETTINGS_BASE_ZINDEX + 4,
-			})
-			Connect(UserInputService.InputChanged, function()
-				if VoiceIcon.Parent then
-					VoiceIcon.Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true)
-				end
-			end)
-		else
-			CheckVoiceForPlayer(Player, function(Enabled)
-				if Enabled and Row.Parent then
-					VoiceButton = MakeStyledButton(
-						Player.Name .. "VoiceButton",
-						"",
-						UDim2.new(0, BUTTON_WIDTH, 0, BUTTON_HEIGHT),
-						function()
-							local Muted = not VoiceMutedPlayers[UserId]
-							if SetRemoteVoiceMuted(Player, Muted) then
-								VoiceMutedPlayers[UserId] = Muted and true or nil
-							end
-						end
-					)
-					VoiceButton.Parent = Row
-					VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
-					local VoiceIcon = Create("ImageLabel", {
-						Name = "VoiceIcon",
-						Parent = VoiceButton,
-						BackgroundTransparency = 1,
-						Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true),
-						Size = UDim2.new(0, BUTTON_HEIGHT - 8, 0, BUTTON_HEIGHT - 8),
-						Position = UDim2.new(0.5, -(BUTTON_HEIGHT - 8) / 2, 0.5, -(BUTTON_HEIGHT - 8) / 2),
-						ScaleType = Enum.ScaleType.Fit,
-						ZIndex = SETTINGS_BASE_ZINDEX + 4,
-					})
-					Connect(UserInputService.InputChanged, function()
-						if VoiceIcon.Parent then VoiceIcon.Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true) end
-					end)
-					PositionPlayerActionButtons(true)
+	if Player ~= LocalPlayer and VoiceEnabledCache[UserId] == false then
+		-- Client-side eligibility checks for other players are unavailable; discard
+		-- stale negative state left by older script runs.
+		VoiceEnabledCache[UserId] = nil
+	end
+	local PlayerVoiceStatus = GetPlayerVoiceStatus(Player)
+	if PlayerVoiceStatus == true then
+		VoiceEnabledCache[UserId] = true
+	end
+
+	-- Keep a per-player control visible as soon as Voice Chat is requested On.
+	-- Unknown/unsupported player status is reflected by the icon (Connecting/Error),
+	-- rather than suppressing the button entirely.
+	if CanTargetPlayer and VoiceGameSupported and VoiceAccountAllowed then
+		VoiceButton = MakeStyledButton(
+			Player.Name .. "VoiceButton",
+			"",
+			UDim2.new(0, BUTTON_WIDTH, 0, BUTTON_HEIGHT),
+			function()
+				local Muted = not GetRemoteVoiceMuted(Player)
+				local Applied = SetRemoteVoiceMuted(Player, Muted)
+				local CurrentVoiceButton = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
+				local CurrentVoiceIcon = CurrentVoiceButton and CurrentVoiceButton:FindFirstChild("VoiceIcon")
+				if CurrentVoiceIcon then CurrentVoiceIcon.Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player))) end
+			end
+		)
+		VoiceButton.Parent = Row
+		-- Remote eligibility queries are rejected by this client build. Keep the
+		-- button visible unless Roblox explicitly confirmed this player has no VC.
+		-- Unknown players use a neutral zero-peak mic icon, never Error/Connecting.
+		VoiceButton.Visible = VoiceGameSupported == true and VoiceAccountAllowed == true
+		VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
+		local VoiceIcon = Create("ImageLabel", {
+			Name = "VoiceIcon",
+			Parent = VoiceButton,
+			BackgroundTransparency = 1,
+			Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player))),
+			Size = UDim2.new(0, BUTTON_HEIGHT - 8, 0, BUTTON_HEIGHT - 8),
+			Position = UDim2.new(0.5, -(BUTTON_HEIGHT - 8) / 2, 0.5, -(BUTTON_HEIGHT - 8) / 2),
+			ScaleType = Enum.ScaleType.Fit,
+			ZIndex = SETTINGS_BASE_ZINDEX + 4,
+		})
+		if VoiceEnabledCache[UserId] ~= true then
+			CheckVoiceForPlayer(Player, function(Enabled, IsUnknown)
+				if Enabled then
+					VoiceEnabledCache[UserId] = true
+					if VoiceButton then VoiceButton.Visible = true end
+				elseif IsUnknown and VoiceEnabledCache[UserId] ~= false then
+					-- Unknown is not the same as ineligible: retain the row control.
+					if VoiceButton then VoiceButton.Visible = true end
 				else
-					PositionPlayerActionButtons(false)
+					-- Other-player eligibility is not queryable from this client.
+					-- Keep a neutral control instead of making a newly joined player invisible.
+					if VoiceButton then VoiceButton.Visible = VoiceGameSupported == true and VoiceAccountAllowed == true end
+				end
+				if VoiceIcon.Parent then
+					VoiceIcon.Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
 				end
 			end)
 		end
@@ -4175,45 +5091,33 @@ Position =
 				-BUTTON_HEIGHT / 2
 			)
 
-		Create(
-			"ImageLabel",
-			{
-				Name =
-					"Icon",
+		local ReportIcon =
+			Create(
+				"ImageLabel",
+				{
+					Name =
+						"Icon",
 
-				Parent =
-					ReportButton,
+					Parent =
+						ReportButton,
 
-				BackgroundTransparency =
-					1,
+					BackgroundTransparency =
+						1,
 
-				Image =
-					"rbxasset://textures/ui/Settings/MenuBarIcons/ReportAbuseTab.png",
+					Image =
+						"rbxasset://textures/ui/Settings/MenuBarIcons/ReportAbuseTab.png",
 
-				Size =
-					UDim2.new(
-						0,
-						28,
-						0,
-						28
-					),
+					-- Keep the original compact height; widen only slightly.
 
-				Position =
-					UDim2.new(
-						0.5,
-						-14,
-						0.5,
-						-14
-					),
+					Size = UDim2.new(0, 26, 0, 28),
 
-				ScaleType =
-					Enum.ScaleType.Fit,
+					Position = UDim2.new(0.5, -13, 0.5, -14),
 
-				ZIndex =
-					SETTINGS_BASE_ZINDEX
-					+ 4,
-			}
-		)
+					ScaleType = Enum.ScaleType.Stretch,
+
+					ZIndex = SETTINGS_BASE_ZINDEX + 4,
+				}
+			)
 
 		BlockButton =
 			MakeStyledButton(
@@ -4483,7 +5387,7 @@ Position =
 				"FriendStatus"
 
 			if FriendLabel then
-				FriendLabel.TextSize = 22
+				FriendLabel.TextSize = 26
 			end
 
 			FriendButton.Parent =
@@ -5086,7 +5990,8 @@ MakeSlider = function(
 	Steps,
 	Index,
 	Changed,
-	MinStep
+	MinStep,
+	Instant
 )
 
 	MinStep =
@@ -5376,19 +6281,10 @@ MakeSlider = function(
 
 			else
 
-				if Immediate then
-
-					Segment.BackgroundColor3 =
-						Color
-
-				else
-
-					ColorTo(
-						Segment,
-						Color
-					)
-
-				end
+				-- Slider segment colors must snap immediately.
+				-- Do not tween transparency/color when choosing a new level.
+				Segment.BackgroundColor3 =
+					Color
 
 			end
 
@@ -5425,7 +6321,7 @@ MakeSlider = function(
 		CurrentIndex =
 			NewIndex
 
-		Refresh()
+		Refresh(Instant == true)
 
 		if Changed then
 			Changed(
@@ -6495,36 +7391,46 @@ INVITE_MOBILE_SEARCH_COLLAPSED = 38
 INVITE_MOBILE_HEADER_DIVIDER = nil
 
 MakeInviteFriendsRow = function(Page)
-	local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
-	local RowWidth = VoiceActive and UDim2.new(0.5, -4, 0, 60) or UDim2.new(1, 0, 0, 60)
+	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
+	local RowWidth = VoiceActive and UDim2.new(0.5, -4, 0, 62) or UDim2.new(1, 0, 0, 62)
 	local function BaseRow(Name, Pos)
 		return Create("ImageButton", {Name=Name, Parent=Page.Frame, BackgroundTransparency=1, BorderSizePixel=0, Image="rbxasset://textures/ui/dialog_white.png", ImageTransparency=0.85, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(10,10,10,10), Size=RowWidth, Position=Pos, AutoButtonColor=false, ZIndex=SETTINGS_BASE_ZINDEX+2})
 	end
-	local Row=BaseRow("InviteFriendsToJoin", UDim2.new(0,0,0,PLAYER_LIST_OFFSET))
-	Create("ImageLabel", {Name="Icon",Parent=Row,BackgroundTransparency=1,Image="rbxassetid://80022950003290",Size=UDim2.fromOffset(24,24),Position=UDim2.new(0,14,0.5,-12),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+3})
-	Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-54,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
+	local Row
+	if InviteFriends then
+		Row=BaseRow("InviteFriendsToJoin", UDim2.new(0,0,0,0), VoiceActive and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62))
+		Create("ImageLabel", {Name="Icon",Parent=Row,BackgroundTransparency=1,Image="rbxassetid://80022950003290",Size=UDim2.fromOffset(24,24),Position=UDim2.new(0,14,0.5,-12),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+3})
+		Create("TextLabel", {Name="NameLabel",Parent=Row,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Invite friends to join",Size=UDim2.new(1,-54,1,0),Position=UDim2.new(0,50,0,0),ZIndex=SETTINGS_BASE_ZINDEX+3})
+	end
 	local MuteRow
 	if VoiceActive then
-		MuteRow=BaseRow("MuteAllVoiceRow", UDim2.new(0.5,4,0,PLAYER_LIST_OFFSET))
+		local MutePosition = InviteFriends and UDim2.new(0.5,4,0,PLAYER_LIST_OFFSET) or UDim2.new(0,0,0,PLAYER_LIST_OFFSET)
+		local MuteSize = InviteFriends and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
+		MuteRow=BaseRow("MuteAllVoiceRow", MutePosition, MuteSize)
 		local Icon=Create("ImageLabel", {Name="Icon",Parent=MuteRow,BackgroundTransparency=1,Image=VOICE_MISC_ROOT.."UnmuteAll@3x.png",Size=UDim2.fromOffset(30,30),Position=UDim2.new(0,14,0.5,-15),ScaleType=Enum.ScaleType.Fit,ZIndex=SETTINGS_BASE_ZINDEX+4})
 		local Label=Create("TextLabel", {Name="MuteAllLabel",Parent=MuteRow,BackgroundTransparency=1,Font=Enum.Font.SourceSans,TextSize=22,TextColor3=Color3.new(1,1,1),TextXAlignment=Enum.TextXAlignment.Left,Text="Mute All",Size=UDim2.new(1,-56,1,0),Position=UDim2.new(0,52,0,0),ZIndex=SETTINGS_BASE_ZINDEX+4})
-		local State=false
+		local State = VoiceMuteAllActive == true
+		Label.Text = State and "Unmute All" or "Mute All"
 		Connect(MuteRow.MouseEnter,function() MuteRow.ImageTransparency=0.65 end)
 		Connect(MuteRow.MouseLeave,function() MuteRow.ImageTransparency=0.85 end)
-		Connect(MuteRow.MouseButton1Click,function() State=not State SetMuteAll(State) Label.Text=State and "Unmute All" or "Mute All" end)
-		Icon.Image=VOICE_MISC_ROOT.."UnmuteAll@3x.png"
+		Connect(MuteRow.MouseButton1Click,function()
+			State = not State
+			SetMuteAll(State)
+			Label.Text = State and "Unmute All" or "Mute All"
+		end)
 	end
-	Connect(Row.MouseEnter,function() Row.ImageTransparency=0.65 end)
-	Connect(Row.MouseLeave,function() Row.ImageTransparency=0.85 end)
-	Connect(Row.MouseButton1Click,function() if OpenInviteFriends then OpenInviteFriends() end end)
+	if Row then
+		Connect(Row.MouseEnter,function() Row.ImageTransparency=0.65 end)
+		Connect(Row.MouseLeave,function() Row.ImageTransparency=0.85 end)
+		Connect(Row.MouseButton1Click,function() if OpenInviteFriends then OpenInviteFriends() end end)
+	end
 	return Row,MuteRow
 end
 
 RebuildPlayersPage = function()
 
-	-- Mirror Roblox's own voice player icons first. This scan happens once per
-	-- rebuild instead of once per frame, which keeps the menu responsive.
-	RefreshNativeVoiceMirrorCache(true)
+	-- Queue one throttled native-icon refresh away from the menu's layout frame.
+	ScheduleNativeVoiceMirrorRefresh()
 
 	for _, Child in next,
 		PlayersPage.Frame:GetChildren()
@@ -6552,7 +7458,7 @@ RebuildPlayersPage = function()
 	local MobileUiScale = GetMobileUiScale()
 	local MobileActionOffset =
 		(IsMobile and not IsTablet)
-		and (62 + math.max(4, math.floor(MOBILE_LAYOUT_GAP * MobileUiScale + 0.5)))
+		and 72
 		or 0
 
 	table.sort(
@@ -6576,19 +7482,19 @@ RebuildPlayersPage = function()
 	local InviteOffset =
 		0
 
-	if InviteFriends then
-
+	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
+	if InviteFriends or VoiceActive then
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
-
 		local RowY = (IsMobile and not IsTablet) and 72 or 0
-		local VoiceActive = LocalVoiceEnabled and InviteFriends and DisplayNameSupport and VoiceChatEnabled
-		InviteRow.Position = UDim2.new(0,0,0,RowY)
-		InviteRow.Size = VoiceActive and UDim2.new(0.5,-4,0,60) or UDim2.new(1,0,0,60)
-		if MuteRow then MuteRow.Position = UDim2.new(0.5,4,0,RowY) end
-
-		InviteOffset =
-			80
-
+		if InviteRow then
+			InviteRow.Position = UDim2.new(0,0,0,RowY)
+			InviteRow.Size = (VoiceActive and InviteFriends) and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
+		end
+		if MuteRow then
+			MuteRow.Position = InviteFriends and UDim2.new(0.5,4,0,RowY) or UDim2.new(0,0,0,RowY)
+			MuteRow.Size = InviteFriends and UDim2.new(0.5,-4,0,62) or UDim2.new(1,0,0,62)
+		end
+		InviteOffset = 72
 	end
 
 	for _, Player in next,
@@ -6636,6 +7542,23 @@ RebuildPlayersPage = function()
 			)
 			- 5
 		)
+
+	if not IsMobile and Hub and Hub.PageView and Hub.CurrentPage == PlayersPage then
+		local PageViewHeight = Hub.PageView.AbsoluteSize.Y
+		if PageViewHeight <= 0 and Hub.PageClipper then
+			PageViewHeight = math.max(0, Hub.PageClipper.AbsoluteSize.Y - 20)
+		end
+
+		local PageContentHeight = math.max(0, PlayersPage.Frame.Position.Y.Offset + PlayersPage.Frame.Size.Y.Offset)
+		local NeedsPlayerScrollbar = PageContentHeight > PageViewHeight + 1
+		Hub.PageView.ScrollBarThickness = NeedsPlayerScrollbar and 12 or 0
+		Hub.PageView.VerticalScrollBarInset =
+			NeedsPlayerScrollbar
+			and Enum.ScrollBarInset.ScrollBar
+			or Enum.ScrollBarInset.None
+		Hub.PageView.CanvasSize =
+			UDim2.new(0, 0, 0, math.max(PageContentHeight, PageViewHeight))
+	end
 
 end
 
@@ -6778,9 +7701,9 @@ InviteBackButton, InviteBackLabel =
 		"Back",
 		UDim2.new(
 			0,
-			90,
+			132,
 			0,
-			44
+			56
 		),
 		function()
 
@@ -6796,6 +7719,10 @@ InviteBackButton, InviteBackLabel =
 
 			Hub.InInviteMenu =
 				false
+
+			Protect(function() GuiService.SelectedObject = nil end)
+			Protect(function() GuiService.SelectedCoreObject = nil end)
+			HideInviteSelection()
 
 			if SearchBox then
 				Protect(function()
@@ -6856,7 +7783,7 @@ InviteBackButton.Position =
 		0,
 		8,
 		0,
-		8
+		0
 	)
 
 InviteBackLabel.ZIndex =
@@ -7173,11 +8100,11 @@ ConfigureInviteMobileHeader = function()
 	end
 
 	InviteBackLabel.Text = "←"
-	InviteBackLabel.TextSize = 36
+	InviteBackLabel.TextSize = 24
 	InviteBackLabel.TextXAlignment = Enum.TextXAlignment.Center
 	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
-	InviteBackButton.Size = UDim2.fromOffset(42, 42)
-	InviteBackButton.Position = UDim2.fromOffset(4, 7)
+	InviteBackButton.Size = UDim2.fromOffset(132, 56)
+	InviteBackButton.Position = UDim2.fromOffset(4, -3)
 	InviteBackButton.Image = ""
 
 	local Expanded = INVITE_MOBILE_SEARCH_EXPANDED
@@ -7208,22 +8135,105 @@ Connect(SearchFrame.InputBegan, function(Input)
 	end
 end)
 
-Connect(UserInputService.InputBegan, function(Input, Processed)
-	if not IsMobile or not Hub.InInviteMenu or not InviteList.Visible or Processed then return end
-	if SearchBox and SearchBox:IsFocused() then return end
-	local Delta = 0
-	if Input.KeyCode == Enum.KeyCode.W or Input.KeyCode == Enum.KeyCode.Up then
-		Delta = -70
-	elseif Input.KeyCode == Enum.KeyCode.S or Input.KeyCode == Enum.KeyCode.Down then
-		Delta = 70
-	elseif Input.KeyCode == Enum.KeyCode.Left then
-		INVITE_MOBILE_SEARCH_EXPANDED = false
-		ConfigureInviteMobileHeader()
+-- Invite-player selection: one exact-size SelectionImageObject per row.
+-- Each selection image belongs to its own row and is destroyed with that row,
+-- so there is never a second shared selection overlay left behind.
+InviteSelectionButtons = {}
+InviteSelectionFriends = {}
+InviteSelectionInviteButtons = {}
+InviteSelectionInviteLabels = {}
+InviteSelectionImages = {}
+InviteSelectedIndex = 0
+InviteSelectedFriendId = nil
+
+SetInviteGuiSelection = function(Button)
+	if not Button or not Button.Parent then return end
+	Protect(function()
+		if GuiService.SelectedObject ~= Button then
+			GuiService.SelectedObject = Button
+		end
+	end)
+end
+
+UpdateInviteSelectionVisual = function(PreviousIndex, Index)
+	if PreviousIndex and PreviousIndex ~= 0 and PreviousIndex ~= Index then
+		local PreviousImage = InviteSelectionImages[PreviousIndex]
+		if PreviousImage then PreviousImage.Visible = false end
+	end
+	local Image = InviteSelectionImages[Index]
+	if Image then Image.Visible = true end
+end
+
+HideInviteSelection = function()
+	local Image = InviteSelectionImages[InviteSelectedIndex]
+	if Image then Image.Visible = false end
+	Protect(function() GuiService.SelectedObject = nil end)
+	Protect(function() GuiService.SelectedCoreObject = nil end)
+	InviteSelectedIndex = 0
+	InviteSelectedFriendId = nil
+end
+
+KeepInviteSelectionVisible = function(Row)
+	if not Row or not InviteList then return end
+	local Top = Row.Position.Y.Offset
+	local Bottom = Top + Row.AbsoluteSize.Y
+	local Current = InviteList.CanvasPosition.Y
+	local Window = InviteList.AbsoluteWindowSize.Y
+	local Target = Current
+	if Top < Current then
+		Target = Top
+	elseif Bottom > Current + Window then
+		Target = Bottom - Window
+	end
+	local MaxY = math.max(0, InviteList.AbsoluteCanvasSize.Y - InviteList.AbsoluteWindowSize.Y)
+	Target = math.clamp(Target, 0, MaxY)
+	if math.abs(Target - Current) > 0.5 then
+		InviteList.CanvasPosition = Vector2.new(0, Target)
+	end
+end
+
+SetInviteSelection = function(Index, PreserveScroll)
+	if #InviteSelectionButtons == 0 then
+		InviteSelectedIndex = 0
+		InviteSelectedFriendId = nil
 		return
 	end
-	if Delta ~= 0 then
-		local MaxY = math.max(0, InviteList.AbsoluteCanvasSize.Y - InviteList.AbsoluteWindowSize.Y)
-		InviteList.CanvasPosition = Vector2.new(0, math.clamp(InviteList.CanvasPosition.Y + Delta, 0, MaxY))
+	Index = math.clamp(tonumber(Index) or 1, 1, #InviteSelectionButtons)
+	local Button = InviteSelectionButtons[Index]
+	local Row = Button and Button.Parent
+	if not Button or not Row then return end
+	local OldIndex = InviteSelectedIndex
+	InviteSelectedIndex = Index
+	local Friend = InviteSelectionFriends[Index]
+	InviteSelectedFriendId = Friend and tostring(Friend.Id) or nil
+	if not PreserveScroll then KeepInviteSelectionVisible(Row) end
+	UpdateInviteSelectionVisual(OldIndex, Index)
+	if OldIndex ~= Index or GuiService.SelectedObject ~= Button then
+		SetInviteGuiSelection(Button)
+	end
+end
+
+Connect(UserInputService.InputBegan, function(Input, Processed)
+	if not Hub.InInviteMenu or not InviteList.Visible or Processed then return end
+	if SearchBox and SearchBox:IsFocused() then return end
+
+	if Input.KeyCode == Enum.KeyCode.W or Input.KeyCode == Enum.KeyCode.Up then
+		if InviteSelectedIndex > 1 then
+			SetInviteSelection(InviteSelectedIndex - 1)
+		end
+		return
+	end
+
+	if Input.KeyCode == Enum.KeyCode.S or Input.KeyCode == Enum.KeyCode.Down then
+		if InviteSelectedIndex < #InviteSelectionButtons then
+			SetInviteSelection(InviteSelectedIndex + 1)
+		end
+		return
+	end
+
+	if IsMobile and Input.KeyCode == Enum.KeyCode.Left then
+		INVITE_MOBILE_SEARCH_EXPANDED = false
+		ConfigureInviteMobileHeader()
 	end
 end)
 
@@ -7272,7 +8282,7 @@ InviteList =
 				),
 
 			ScrollBarThickness =
-				6,
+				0,
 
 			ZIndex =
 				SETTINGS_BASE_ZINDEX
@@ -7306,6 +8316,11 @@ InviteList.Visible =
 InviteFriendsCache =
 	{}
 
+InviteSelectionButtons = InviteSelectionButtons or {}
+InviteSelectionFriends = InviteSelectionFriends or {}
+InviteSelectedIndex = InviteSelectedIndex or 0
+InviteSelectedFriendId = InviteSelectedFriendId or nil
+
 -- Persist invite state in getgenv so rebuilding the invite list,
 -- leaving/reopening the ESC menu, or rerunning this script does not
 -- forget which friends have already received an accepted invite.
@@ -7337,6 +8352,18 @@ end
 
 PendingInviteFriendIds =
 	{}
+
+ActiveInviteTargetId =
+	nil
+
+ActiveInviteFriend =
+	nil
+
+ActiveInviteButton =
+	nil
+
+ActiveInviteLabel =
+	nil
 
 InviteRows =
 	{}
@@ -7655,7 +8682,7 @@ FriendMatchesSearch =
 -- ============================================================
 
 ActiveInviteOptions =
-		nil
+	nil
 
 InviteFriend =
 	function(
@@ -7668,6 +8695,7 @@ InviteFriend =
 			not Friend
 			or not Friend.Id
 			or Friend.Invited
+			or InvitedFriendIds[tostring(Friend.Id)] == true
 		then
 			return
 		end
@@ -7679,27 +8707,24 @@ InviteFriend =
 			return
 		end
 
+		local FriendKey =
+			tostring(FriendId)
+
+		-- This is the invite path used by the older working Settings2016
+		-- builds: open the targeted native prompt first, with a generic
+		-- native-prompt fallback for clients that reject ExperienceInviteOptions.
 		if ActiveInviteOptions then
 			pcall(function()
 				ActiveInviteOptions:Destroy()
 			end)
 			ActiveInviteOptions = nil
-		end
-
-		local FriendKey = tostring(FriendId)
-		PendingInviteFriendIds[FriendKey] = true
-		if Button then
-			Button.Active = false
-			Button.Selectable = false
-		end
-		if Label then
-			Label.Text = "Sending..."
-			Label.TextColor3 = Color3.new(1, 1, 1)
-			Label.TextTransparency = 0
+			ActiveInviteTargetId = nil
+			ActiveInviteFriend = nil
+			ActiveInviteButton = nil
+			ActiveInviteLabel = nil
 		end
 
 		local Options = nil
-
 		pcall(function()
 			Options = Instance.new("ExperienceInviteOptions")
 		end)
@@ -7707,7 +8732,6 @@ InviteFriend =
 		local OptionsReady = false
 
 		if Options then
-
 			OptionsReady =
 				pcall(function()
 					Options.InviteUser = FriendId
@@ -7719,29 +8743,33 @@ InviteFriend =
 					.. (Friend.DisplayName or Friend.Username or "friend")
 					.. " to join?"
 				end)
-
 		end
 
 		local Success = false
 
 		if Options and OptionsReady then
-
 			ActiveInviteOptions = Options
+			ActiveInviteTargetId = FriendId
+			ActiveInviteFriend = Friend
+			ActiveInviteButton = Button
+			ActiveInviteLabel = Label
 
 			Success =
-				Protect(function()
+				pcall(function()
 					SocialService:PromptGameInvite(
 						LocalPlayer,
 						Options
 					)
 				end)
-
 		end
 
 		if not Success then
-
 			if ActiveInviteOptions == Options then
 				ActiveInviteOptions = nil
+				ActiveInviteTargetId = nil
+				ActiveInviteFriend = nil
+				ActiveInviteButton = nil
+				ActiveInviteLabel = nil
 			end
 
 			pcall(function()
@@ -7750,42 +8778,39 @@ InviteFriend =
 				end
 			end)
 
-			PendingInviteFriendIds[FriendKey] = nil
+			Success =
+				pcall(function()
+					SocialService:PromptGameInvite(
+						LocalPlayer
+					)
+				end)
+		end
+
+		if not Success then
 			if Button then
 				Button.ImageTransparency = 0
 				Button.BackgroundTransparency = 1
 				Button.Active = true
-				Button.Selectable = true
+				Button.Selectable = false
 			end
 
 			if Label then
 				Label.Text = "Invite"
 				Label.TextColor3 = Color3.new(1, 1, 1)
+				Label.TextTransparency = 0
 			end
-
 			return
 		end
 
-		-- ========================================================
-		-- IMMEDIATELY PERSIST INVITED STATE
-		-- ========================================================
-		-- Once Roblox accepts the prompt call, this session treats the
-		-- selected friend as invited. Do not depend on recipient data
-		-- from GameInvitePromptClosed, because some clients return nil
-		-- or an empty recipient list even after the targeted prompt was used.
-
-		Spawn(function()
-			Wait(0.4 + math.random() * 1.5)
-			InvitedFriendIds[FriendKey] = true
-			InviteState.InvitedFriendIds = InvitedFriendIds
-			Friend.Invited = true
-			PendingInviteFriendIds[FriendKey] = nil
-			if RebuildInviteList then
-				RebuildInviteList()
-			end
-		end)
+		-- Persist the invited target only after the native invite prompt
+		-- successfully opened, exactly like the older working build.
+		InvitedFriendIds[FriendKey] = true
+		InviteState.InvitedFriendIds = InvitedFriendIds
+		Friend.Invited = true
+		PendingInviteFriendIds[FriendKey] = true
 
 		if Button then
+			Button.Image = ""
 			Button.ImageTransparency = 1
 			Button.BackgroundTransparency = 1
 			Button.AutoButtonColor = false
@@ -7794,35 +8819,149 @@ InviteFriend =
 		end
 
 		if Label then
-			Label.Text = "Sending..."
-			Label.TextColor3 = Color3.new(1, 1, 1)
+			Label.Text = "Invited..."
+			Label.TextColor3 = INVITED_COLOR
 			Label.TextTransparency = 0
 		end
+	end
 
-		if ActiveInviteOptions == Options then
-			ActiveInviteOptions = nil
-		end
+-- ============================================================
+-- ROBLOX NATIVE INVITE RESULT MONITOR
+-- ============================================================
 
+local InstallInvitePromptMonitor = function()
+	local Existing = getgenv().Settings2016InvitePromptMonitorConnection
+	if Existing then
 		pcall(function()
-			if Options then
-				Options:Destroy()
-			end
+			Existing:Disconnect()
+		end)
+	end
+
+	local Success, Connection =
+		pcall(function()
+			return SocialService.GameInvitePromptClosed:Connect(
+				function(Player, RecipientIds)
+					if Player and LocalPlayer and Player ~= LocalPlayer then
+						return
+					end
+
+					local TargetId = ActiveInviteTargetId
+					local Friend = ActiveInviteFriend
+					local Button = ActiveInviteButton
+					local Label = ActiveInviteLabel
+					local Options = ActiveInviteOptions
+
+					if not TargetId then
+						return
+					end
+
+					local FriendKey = tostring(TargetId)
+					local WasActuallySent = InvitedFriendIds[FriendKey] == true
+
+					if type(RecipientIds) == "table" then
+						-- Roblox documents recipientIds as an array, but be defensive
+						-- here because some client versions have returned table-like
+						-- values with non-array keys.
+						for _, RecipientId in pairs(RecipientIds) do
+							if tonumber(RecipientId) == TargetId then
+								WasActuallySent = true
+								break
+							end
+						end
+					end
+
+					-- For a targeted InviteUser prompt, some Roblox client versions
+					-- have been observed to close with an empty recipientIds table
+					-- even after the native Invite button was used. The native prompt
+					-- is still what performs the actual invite; this fallback only
+					-- prevents the local UI from getting stuck on "Sending..." when
+					-- Roblox fails to report the recipient.
+					if not WasActuallySent and Options then
+						local OptionInviteUser = nil
+						pcall(function()
+							OptionInviteUser = tonumber(Options.InviteUser)
+						end)
+						if OptionInviteUser == TargetId then
+							WasActuallySent = true
+						end
+					end
+
+					PendingInviteFriendIds[FriendKey] = nil
+
+					if WasActuallySent then
+						InvitedFriendIds[FriendKey] = true
+						InviteState.InvitedFriendIds = InvitedFriendIds
+
+						if Friend then
+							Friend.Invited = true
+						end
+
+						-- The actual invite was sent by Roblox's native prompt.
+						-- Hide the Invite button and leave the status as Invited....
+						if Button then
+							Button.ImageTransparency = 1
+							Button.BackgroundTransparency = 1
+							Button.AutoButtonColor = false
+							Button.Active = false
+							Button.Selectable = false
+					end
+
+						if Label then
+							Label.Text = "Invited..."
+							Label.TextColor3 = INVITED_COLOR
+							Label.TextTransparency = 0
+						end
+					else
+						-- The native prompt was closed without sending the selected
+						-- friend. Restore the normal Invite action.
+						if Button then
+							Button.ImageTransparency = 0
+							Button.BackgroundTransparency = 1
+							Button.AutoButtonColor = false
+							Button.Active = true
+							Button.Selectable = false
+					end
+
+						if Label then
+							Label.Text = "Invite"
+							Label.TextColor3 = Color3.new(1, 1, 1)
+							Label.TextTransparency = 0
+						end
+					end
+
+					if ActiveInviteOptions == Options then
+						ActiveInviteOptions = nil
+						ActiveInviteTargetId = nil
+						ActiveInviteFriend = nil
+						ActiveInviteButton = nil
+						ActiveInviteLabel = nil
+					end
+
+					pcall(function()
+						if Options then
+							Options:Destroy()
+						end
+					end)
+				end
+			)
 		end)
 
-		if RebuildInviteList then
-			RebuildInviteList()
-		end
+	if Success and Connection then
+		getgenv().Settings2016InvitePromptMonitorConnection = Connection
 	end
+end
+
+InstallInvitePromptMonitor()
 
 -- ============================================================
 -- BUILD INVITE ROW
 -- ============================================================
 
 INVITE_ROW_HEIGHT =
-	80
+	62
 
 INVITE_ROW_GAP =
-	6
+	10
 
 
 INVITED_COLOR =
@@ -7880,8 +9019,10 @@ BuildInviteRow =
 							1,
 							0,
 							0,
-							60
+							62
 						),
+
+					ClipsDescendants = true,
 
 					Position =
 						UDim2.new(
@@ -7896,6 +9037,119 @@ BuildInviteRow =
 						SETTINGS_BASE_ZINDEX + 2,
 				}
 			)
+
+		local SelectionButton =
+			Create(
+				"TextButton",
+				{
+					Name = "InviteSelectionButton",
+					Parent = Row,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Text = "",
+					TextTransparency = 1,
+					AutoButtonColor = false,
+					Active = true,
+					Selectable = true,
+					Size = UDim2.new(1, 0, 1, 0),
+					Position = UDim2.new(0, 0, 0, 0),
+					ClipsDescendants = true,
+					ZIndex = SETTINGS_BASE_ZINDEX + 2,
+				}
+			)
+
+		local SelectionAdorner =
+			Create(
+				"ImageLabel",
+				{
+					Name = "InviteSelectionImageObject",
+					Parent = SelectionButton,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Image = "rbxasset://textures/ui/SelectionBox@2x.png",
+					ImageTransparency = 1,
+					ScaleType = Enum.ScaleType.Slice,
+					SliceScale = 0.5,
+					SliceCenter = Rect.new(36, 36, 88, 88),
+					AnchorPoint = Vector2.new(0, 0),
+					Position = UDim2.new(0, 0, 0, 0),
+					Size = UDim2.new(1, 0, 1, 0),
+					Visible = true,
+					Active = false,
+					Selectable = false,
+					ZIndex = SETTINGS_BASE_ZINDEX + 7,
+				}
+			)
+
+		local SelectionImage =
+			Create(
+				"ImageLabel",
+				{
+					Name = "InviteSelectionVisual",
+					Parent = SelectionButton,
+					BackgroundTransparency = 1,
+					BorderSizePixel = 0,
+					Image = "rbxasset://textures/ui/SelectionBox@2x.png",
+					ScaleType = Enum.ScaleType.Slice,
+					SliceScale = 0.5,
+					SliceCenter = Rect.new(36, 36, 88, 88),
+					AnchorPoint = Vector2.new(0, 0),
+					Position = UDim2.new(0, -10, 0, -10),
+					Size = UDim2.new(1, 20, 1, 20),
+					ClipsDescendants = false,
+					Visible = false,
+					Active = false,
+					Selectable = false,
+					ZIndex = SETTINGS_BASE_ZINDEX + 8,
+				}
+			)
+
+		SelectionButton.SelectionImageObject = SelectionAdorner
+
+		Insert(InviteSelectionButtons, SelectionButton)
+		Insert(InviteSelectionFriends, Friend)
+		Insert(InviteSelectionImages, SelectionImage)
+		local SelectionIndex = #InviteSelectionButtons
+
+		Connect(
+			SelectionButton.Activated,
+			function()
+				for i, Candidate in ipairs(InviteSelectionButtons) do
+					if Candidate == SelectionButton then
+						SetInviteSelection(i)
+						return
+					end
+				end
+			end
+		)
+
+		Connect(
+			SelectionButton.SelectionGained,
+			function()
+				for i, Candidate in ipairs(InviteSelectionButtons) do
+					if Candidate == SelectionButton then
+						SetInviteSelection(i, true)
+						return
+					end
+				end
+			end
+		)
+
+		Connect(
+			Row.InputBegan,
+			function(Input)
+				if Input.UserInputType == Enum.UserInputType.Touch
+					or Input.UserInputType == Enum.UserInputType.MouseButton1
+				then
+					for i, Candidate in ipairs(InviteSelectionButtons) do
+						if Candidate == SelectionButton then
+							SetInviteSelection(i, true)
+							return
+						end
+					end
+				end
+			end
+		)
 
 		Connect(
 			Row.MouseEnter,
@@ -7921,18 +9175,13 @@ BuildInviteRow =
 					Parent = Row,
 					BackgroundColor3 = Color3.new(1, 1, 1),
 					BackgroundTransparency = 0,
-					BorderSizePixel = 0,
+					BorderSizePixel = 2,
+					BorderColor3 = Color3.fromRGB(205, 205, 205),
 					Size = UDim2.new(0, 36, 0, 36),
 					Position = UDim2.new(0, 12, 0.5, -18),
 					ZIndex = SETTINGS_BASE_ZINDEX + 2,
 				})
 
-		Create("UIStroke", {
-			Parent = AvatarBackground,
-			Color = Color3.fromRGB(145, 145, 145),
-			Thickness = 1,
-			Transparency = 0,
-		})
 
 		local Avatar =
 			Create(
@@ -7945,8 +9194,8 @@ BuildInviteRow =
 						"rbxthumb://type=AvatarBust&id="
 						.. tostring(tonumber(Friend.Id) or 1)
 						.. "&w=100&h=100",
-					Size = UDim2.new(0, 36, 0, 36),
-					Position = UDim2.new(0, 12, 0.5, -18),
+					Size = UDim2.new(0, 32, 0, 32),
+					Position = UDim2.new(0, 14, 0.5, -16),
 					ScaleType = Enum.ScaleType.Fit,
 					ZIndex = SETTINGS_BASE_ZINDEX + 3,
 				}
@@ -8017,23 +9266,35 @@ BuildInviteRow =
 
 		if Friend.Invited then
 
-			Create(
-				"TextLabel",
-				{
-					Name = "InvitedLabel",
-					Parent = Row,
-					BackgroundTransparency = 1,
-					Font = Enum.Font.SourceSans,
-					TextSize = 24,
-					TextColor3 = INVITED_COLOR,
-					TextXAlignment = Enum.TextXAlignment.Center,
-					TextYAlignment = Enum.TextYAlignment.Center,
-					Text = "Invited...",
-					Size = UDim2.new(0, INVITE_BUTTON_WIDTH, 0, INVITE_BUTTON_HEIGHT),
-					Position = UDim2.new(1, -(INVITE_BUTTON_WIDTH + 12), 0.5, -(INVITE_BUTTON_HEIGHT / 2)),
-					ZIndex = SETTINGS_BASE_ZINDEX + 3,
-				}
-			)
+			local InviteButton, InviteLabel =
+				MakeStyledButton(
+					"InviteButton",
+					"Invited...",
+					UDim2.new(0, INVITE_BUTTON_WIDTH, 0, INVITE_BUTTON_HEIGHT)
+				)
+
+			InviteButton.Active = false
+			InviteButton.Selectable = false
+			InviteButton.AutoButtonColor = false
+			InviteButton.ImageTransparency = 1
+			InviteButton.BackgroundTransparency = 1
+			InviteLabel.TextColor3 = INVITED_COLOR
+			InviteLabel.TextWrapped = false
+			InviteLabel.TextScaled = false
+			InviteLabel.TextSize = 18
+			InviteButton.Parent = Row
+			InviteButton.ZIndex = SETTINGS_BASE_ZINDEX + 6
+			InviteLabel.ZIndex = SETTINGS_BASE_ZINDEX + 7
+			InviteButton.Position =
+				UDim2.new(
+					1,
+					-(INVITE_BUTTON_WIDTH + 12),
+					0.5,
+					-(INVITE_BUTTON_HEIGHT / 2)
+				)
+
+			InviteSelectionInviteButtons[SelectionIndex] = InviteButton
+			InviteSelectionInviteLabels[SelectionIndex] = InviteLabel
 
 		else
 
@@ -8045,7 +9306,10 @@ BuildInviteRow =
 				)
 
 			InviteButton.Active = true
-			InviteButton.Selectable = true
+			InviteButton.Selectable = false
+			InviteLabel.TextWrapped = false
+			InviteLabel.TextScaled = false
+			InviteLabel.TextSize = 18
 
 			Connect(
 				InviteButton.Activated,
@@ -8059,6 +9323,15 @@ BuildInviteRow =
 			)
 
 			InviteButton.Parent = Row
+
+			InviteSelectionInviteButtons[SelectionIndex] = InviteButton
+			InviteSelectionInviteLabels[SelectionIndex] = InviteLabel
+
+			InviteButton.ZIndex = SETTINGS_BASE_ZINDEX + 6
+			local InviteButtonText = InviteButton:FindFirstChild("InviteButtonTextLabel")
+			if InviteButtonText then
+				InviteButtonText.ZIndex = SETTINGS_BASE_ZINDEX + 7
+			end
 
 			InviteButton.Position =
 				UDim2.new(
@@ -8078,8 +9351,31 @@ BuildInviteRow =
 -- REBUILD INVITE LIST
 -- ============================================================
 
+UpdateInviteListScrollbar = function()
+	if not InviteList then return end
+
+	local ContentHeight = InviteList.CanvasSize.Y.Offset
+	local WindowHeight = InviteList.AbsoluteWindowSize.Y
+	if WindowHeight <= 0 then
+		WindowHeight = InviteList.AbsoluteSize.Y
+	end
+
+	local NeedsScrollbar = ContentHeight > WindowHeight + 1
+	InviteList.ScrollBarThickness = NeedsScrollbar and 6 or 0
+	InviteList.VerticalScrollBarInset =
+		NeedsScrollbar
+		and Enum.ScrollBarInset.ScrollBar
+		or Enum.ScrollBarInset.None
+end
+
 RebuildInviteList =
 	function()
+
+		local PreviousFriendId = InviteSelectedFriendId
+
+		pcall(function()
+			HideInviteSelection()
+		end)
 
 		for _, Row in next,
 			InviteRows
@@ -8095,6 +9391,13 @@ RebuildInviteList =
 
 		InviteRows =
 			{}
+
+		InviteSelectionButtons = {}
+		InviteSelectionFriends = {}
+		InviteSelectionInviteButtons = {}
+		InviteSelectionInviteLabels = {}
+		InviteSelectionImages = {}
+		InviteSelectedIndex = 0
 
 		local Count =
 			0
@@ -8126,6 +9429,13 @@ RebuildInviteList =
 
 		end
 
+		for i, SelectionButton in ipairs(InviteSelectionButtons) do
+			SelectionButton.NextSelectionUp = InviteSelectionButtons[math.max(1, i - 1)]
+			SelectionButton.NextSelectionDown = InviteSelectionButtons[math.min(#InviteSelectionButtons, i + 1)]
+			SelectionButton.NextSelectionLeft = SelectionButton
+			SelectionButton.NextSelectionRight = SelectionButton
+		end
+
 		InviteList.CanvasSize =
 			UDim2.new(
 				0,
@@ -8137,6 +9447,28 @@ RebuildInviteList =
 					- INVITE_ROW_GAP
 				)
 			)
+
+		UpdateInviteListScrollbar()
+		Spawn(function()
+			Wait()
+			UpdateInviteListScrollbar()
+		end)
+
+		if Count > 0 then
+			local NewIndex = 1
+			if PreviousFriendId then
+				for i, Friend in ipairs(InviteSelectionFriends) do
+					if tostring(Friend.Id) == tostring(PreviousFriendId) then
+						NewIndex = i
+						break
+					end
+				end
+			end
+			SetInviteSelection(NewIndex, true)
+		else
+			InviteSelectedIndex = 0
+			InviteSelectedFriendId = nil
+		end
 
 	end
 
@@ -8206,9 +9538,16 @@ OpenInviteFriends =
 			true
 		)
 
+		InviteSelectedFriendId = nil
 		RefreshInviteFriends()
+		if #InviteSelectionButtons > 0 then
+			SetInviteSelection(1)
+		end
 
 		ResizeHub()
+		if InviteSelectedIndex > 0 then
+			SetInviteSelection(InviteSelectedIndex, true)
+		end
 		if ConfigureInviteMobileHeader then ConfigureInviteMobileHeader() end
 
 	end
@@ -8322,6 +9661,35 @@ SetTopbarCoreGuiEnabled =
 		CoreGuiStateCaptured =
 			true
 
+	end
+
+-- Directly enable/disable the live Roblox TopBarApp container.
+-- In the current CoreGui hierarchy this is:
+-- CoreGui.TopBarApp.TopBarApp
+-- The custom ESC menu owns the top-left menu while this is disabled.
+SetTopBarAppEnabled =
+	function(Enabled)
+		local Root = CoreGui:FindFirstChild("TopBarApp")
+		local App = Root and Root:FindFirstChild("TopBarApp")
+		if not App then return false end
+		local Success = pcall(function()
+			App.Enabled = Enabled
+		end)
+		return Success
+	end
+
+-- TopBarApp must stay hidden for the entire lifetime of the custom menu,
+-- including the closing tween.  It may only reappear after the menu is
+-- completely closed.
+SyncTopBarAppVisibility =
+	function()
+		if Hub and Hub.Visible then
+			SetTopBarAppEnabled(false)
+		elseif SystemMenuButtonClosing == true then
+			SetTopBarAppEnabled(false)
+		else
+			SetTopBarAppEnabled(true)
+		end
 	end
 
 CameraDefaultString =
@@ -8446,7 +9814,7 @@ MakeBooleanSelector =
 	)
 
 		local Current =
-			GetSetting(
+			GetHiddenOrSetting(
 				Object,
 				Property,
 				false
@@ -8469,16 +9837,16 @@ MakeBooleanSelector =
 				OnFirst
 					or "On",
 				OffSecond
-					or "Off",
+				or "Off",
 			},
 			Start,
 			function(Index)
 
-				SetSetting(
-					Object,
-					Property,
-					Index == 1
-				)
+				local Value = Index == 1
+				SetSetting(Object, Property, Value)
+				if sethiddenproperty then
+					pcall(function() sethiddenproperty(Object, Property, Value) end)
+				end
 
 			end
 		)
@@ -8717,47 +10085,389 @@ UpdateDevChoiceSettings =
 UpdateDevChoiceSettings()
 Connect(LocalPlayer.Changed, UpdateDevChoiceSettings)
 
-MouseStart =
-	Clamp(
-		Floor(
-			(
-				2 / 3
-			)
-			* (
-				math.sqrt(
-					(
-						75 * (GameSettings.MouseSensitivity or 1)
-					)
-					- 11
-				)
-				- 2
-			)
-		),
-		1,
-		10
-	)
+-- ============================================================
+-- SETTING DESCRIPTIONS / SPECIAL SLIDERS
+-- ============================================================
 
-MakeSlider(
+AddSettingDescription = function(Page, Row, Description)
+	if not Page or not Row or not Description then return end
+
+	local BaseName = Row.Name:gsub("Frame$", "")
+	local MainLabel = Row:FindFirstChild(BaseName .. "Label")
+	if MainLabel then
+		MainLabel.Size = UDim2.new(0, 285, 0, 40)
+		MainLabel.Position = UDim2.new(0, 10, 0, 0)
+		MainLabel.TextYAlignment = Enum.TextYAlignment.Center
+	end
+
+	Page.DescriptionRows = Page.DescriptionRows or {}
+	Page.DescriptionRows[Row] = true
+
+	local Preferred = GuiService.PreferredTextSize
+	local Height = 98
+	if Preferred == Enum.PreferredTextSize.Large then
+		Height = 104
+	elseif Preferred == Enum.PreferredTextSize.Larger then
+		Height = 110
+	elseif Preferred == Enum.PreferredTextSize.Largest then
+		Height = 116
+	end
+	Row.Size = UDim2.new(1, 0, 0, Height)
+
+	for _, Child in ipairs(Row:GetChildren()) do
+		if Child ~= MainLabel and Child:IsA("GuiObject") and Child.Name ~= "SettingDescription" then
+			local XScale, XOffset = Child.Position.X.Scale, Child.Position.X.Offset
+			local ChildHeight = Child.Size.Y.Offset
+			local Y = (ChildHeight > 0 and ChildHeight <= 46) and 3 or 0
+			Child.Position = UDim2.new(XScale, XOffset, 0, Y)
+		end
+	end
+
+	local Desc = Row:FindFirstChild("SettingDescription")
+	if not Desc then
+		Desc = Create("TextLabel", {
+			Name = "SettingDescription",
+			Parent = Row,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Font = Enum.Font.SourceSans,
+			TextSize = 18,
+			TextColor3 = Color3.fromRGB(158, 158, 158),
+			TextTransparency = 0.05,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			Text = Description,
+			Size = UDim2.new(0, 430, 0, Height - 43),
+			Position = UDim2.new(0, 10, 0, 43),
+			ZIndex = SETTINGS_BASE_ZINDEX + 3,
+		})
+	else
+		Desc.Text = Description
+		Desc.TextSize = 18
+		Desc.Size = UDim2.new(0, 430, 0, Height - 43)
+		Desc.Position = UDim2.new(0, 10, 0, 43)
+	end
+
+	if not Page.ReflowRows then
+		Page.ReflowRows = function(Self)
+			local Y = 0
+			for _, Item in ipairs(Self.Rows) do
+				Item.Position = UDim2.new(0, 0, 0, Y)
+				Y += math.max(1, Item.Size.Y.Offset)
+			end
+			Self.NextY = Y
+			Self.Frame.Size = UDim2.new(1, 0, 0, Self.NextY + PAGE_TOP_PADDING)
+		end
+	end
+	Page:ReflowRows()
+end
+
+StretchSliderBars = function(Slider, StartX, EndX, BarWidth, RightHitWidth, RequestedGap)
+	if not Slider or not Slider.SliderFrame then return end
+	local Holder = Slider.SliderFrame
+	local Segments = {}
+	local Left = nil
+	local Right = nil
+	local Capture = nil
+
+	for _, Child in ipairs(Holder:GetChildren()) do
+		if Child:IsA("ImageButton") then
+			local IsLeft, IsRight = false, false
+			for _, Descendant in ipairs(Child:GetChildren()) do
+				if Descendant:IsA("ImageLabel") then
+					if Descendant.Image == SLIDER_LEFT_IMAGE then IsLeft = true end
+					if Descendant.Image == SLIDER_RIGHT_IMAGE then IsRight = true end
+				end
+			end
+			if IsLeft then
+				Left = Child
+			elseif IsRight then
+				Right = Child
+			else
+				Insert(Segments, Child)
+			end
+		elseif Child:IsA("TextButton") then
+			Capture = Child
+		end
+	end
+
+	table.sort(Segments, function(A, B)
+		return A.Position.X.Offset < B.Position.X.Offset
+	end)
+	if #Segments == 0 then return end
+
+	local HolderWidth = Holder.Size.X.Offset
+	local RightWidth = RightHitWidth or 42
+	local Start = math.max(0, StartX or 60)
+	local MaxFinish = math.max(Start + 1, HolderWidth - RightWidth - 2)
+	local Finish = math.min(MaxFinish, EndX or MaxFinish)
+	if Finish <= Start then Finish = MaxFinish end
+
+	-- Match the normal Roblox slider look: a small, consistent gap between
+	-- neighboring segments rather than having them touch or melt together.
+	local TrackWidth = Finish - Start
+	local SegmentGap = RequestedGap or 4
+	local SegmentWidth =
+		(TrackWidth - (SegmentGap * (#Segments - 1))) / #Segments
+	local Width = math.max(1, math.floor(math.min(BarWidth or SegmentWidth, SegmentWidth) + 0.5))
+
+	for Index, Segment in ipairs(Segments) do
+		local X =
+			Start
+			+ ((Index - 1) * (SegmentWidth + SegmentGap))
+		Segment.Size = UDim2.new(0, Width, 0, 25)
+		Segment.Position = UDim2.new(0, math.floor(X + 0.5), 0.5, -12)
+		Segment.AutoButtonColor = false
+	end
+
+	if Left then
+		Left.AnchorPoint = Vector2.new(1, 0.5)
+		Left.Position = UDim2.new(0, math.floor(Start + 0.5), 0.5, 0)
+		Left.Size = UDim2.new(0, RightWidth, 0, 50)
+	end
+
+	if Right then
+		Right.AnchorPoint = Vector2.new(0, 0.5)
+		Right.Position = UDim2.new(0, math.floor(Finish + 2 + 0.5), 0.5, 0)
+		Right.Size = UDim2.new(0, RightWidth, 0, 50)
+	end
+
+	if Capture then
+		Capture.Position = UDim2.new(0, Start, 0, 0)
+		Capture.Size = UDim2.new(0, math.max(0, Finish - Start), 0, 48)
+		Capture.ZIndex = SETTINGS_BASE_ZINDEX + 5
+	end
+end
+
+FixedTextSizeRoots = {}
+FixedTextSizeObjects = {}
+FixedTextSizeConnections = {}
+
+IsFixedTextSizeObject = function(Object)
+	if not Object then return false end
+	if not (Object:IsA("TextLabel") or Object:IsA("TextButton") or Object:IsA("TextBox")) then
+		return false
+	end
+	for _, Root in ipairs(FixedTextSizeRoots) do
+		if Root and (Object == Root or Object:IsDescendantOf(Root)) then
+			return true
+		end
+	end
+	return false
+end
+
+RegisterFixedTextSizeObject = function(Object)
+	if not IsFixedTextSizeObject(Object) or Object.TextScaled == true then return end
+	if FixedTextSizeObjects[Object] == nil then
+		FixedTextSizeObjects[Object] = Object.TextSize
+	end
+end
+
+RegisterFixedTextSizeObjects = function()
+	FixedTextSizeRoots = {}
+	FixedTextSizeObjects = {}
+	if Hub and Hub.HubBar then table.insert(FixedTextSizeRoots, Hub.HubBar) end
+	if Hub and Hub.BottomButtonFrame then table.insert(FixedTextSizeRoots, Hub.BottomButtonFrame) end
+	for _, Root in ipairs(FixedTextSizeRoots) do
+		for _, Object in ipairs(Root:GetDescendants()) do
+			RegisterFixedTextSizeObject(Object)
+		end
+		if FixedTextSizeConnections[Root] then
+			Protect(function() FixedTextSizeConnections[Root]:Disconnect() end)
+		end
+		FixedTextSizeConnections[Root] = Connect(Root.DescendantAdded, function(Object)
+			RegisterFixedTextSizeObject(Object)
+		end)
+	end
+end
+
+RestoreFixedTextSizes = function()
+	-- Capture any newly-created excluded text before restoring it.
+	for _, Root in ipairs(FixedTextSizeRoots) do
+		if Root and Root.Parent then
+			for _, Object in ipairs(Root:GetDescendants()) do
+				RegisterFixedTextSizeObject(Object)
+			end
+		end
+	end
+	for Object, BaseSize in next, FixedTextSizeObjects do
+		if Object and Object.Parent and IsFixedTextSizeObject(Object) then
+			Object.TextSize = BaseSize
+		end
+	end
+end
+
+SetPreferredTextSize = function(Value)
+	local Written = false
+	if sethiddenproperty then
+		local Ok = pcall(function()
+			sethiddenproperty(GuiService, "PreferredTextSize", Value)
+		end)
+		Written = Ok or Written
+		Ok = pcall(function()
+			sethiddenproperty(GameSettings, "PreferredTextSize", Value)
+		end)
+		Written = Ok or Written
+	end
+	if not Written then
+		Written = Protect(function()
+			GuiService.PreferredTextSize = Value
+			return true
+		end) or false
+	end
+	RestoreFixedTextSizes()
+	return Written
+end
+
+-- ============================================================
+-- CAMERA SENSITIVITY (0.2 = zero bars)
+-- ============================================================
+
+CameraSensitivityValues = {0.36, 0.52, 0.68, 0.84, 1, 1.6, 2.2, 2.8, 3.4, 4}
+FormatCameraSensitivity = function(Value)
+	local Text = string.format("%.2f", tonumber(Value) or 0.2)
+	Text = Text:gsub("0+$", ""):gsub("%.$", "")
+	return Text
+end
+CameraSensitivityCurrent = Clamp(tonumber(GetSetting(GameSettings, "MouseSensitivity", 0.2)) or 0.2, 0.2, 4)
+
+GetCameraSensitivityIndex = function(Value)
+	Value = Clamp(tonumber(Value) or 0.2, 0.2, 4)
+	if Value <= 0.28 then return 0 end
+	local BestIndex, BestDistance = 1, math.huge
+	for Index, Preset in ipairs(CameraSensitivityValues) do
+		local Distance = math.abs(Preset - Value)
+		if Distance < BestDistance then
+			BestDistance = Distance
+			BestIndex = Index
+		end
+	end
+	return BestIndex
+end
+
+CameraSensitivitySlider = MakeSlider(
 	GamePage,
-	"Mouse Sensitivity",
+	"Camera Sensitivity",
 	10,
-	MouseStart,
-	function(Value)
-		Value = Clamp(Value, 1, 10)
-		SetMouseSensitivity(
-			(0.03 * (Value ^ 2))
-			+ (0.08 * Value)
-			+ 0.2
-		)
+	GetCameraSensitivityIndex(CameraSensitivityCurrent),
+	function(Index)
+		local Value = (Index == 0 and 0.2) or CameraSensitivityValues[Clamp(Index, 1, 10)]
+		CameraSensitivityCurrent = Value
+		SetMouseSensitivity(Value)
+		if CameraSensitivityNumber then
+			CameraSensitivityNumber.Text = FormatCameraSensitivity(Value)
+		end
 	end,
-	1
+	0,
+	true
 )
 
-MakeBooleanSelector(GamePage, "UI Navigation Toggle", GameSettings, "UiNavigationKeyBindEnabled")
-MakeBooleanSelector(GamePage, "People's Names", GameSettings, "PlayerNamesEnabled", "Show", "Hide")
-MakeBooleanSelector(GamePage, "My Badges", GameSettings, "BadgeVisible", "Show", "Hide")
+CameraSensitivitySlider.SliderFrame.Size = UDim2.new(0, 500, 0, 50)
+CameraSensitivitySlider.SliderFrame.Position = UDim2.new(1, -502, 0.5, -25)
+StretchSliderBars(CameraSensitivitySlider, 54, 414, nil, 24)
 
-MakeSectionHeader(GamePage, "Audio")
+CameraSensitivityNumberFrame = Create("Frame", {
+	Name = "CameraSensitivityNumberFrame",
+	Parent = CameraSensitivitySlider.RowFrame,
+	BackgroundColor3 = Color3.fromRGB(58, 58, 58),
+	BackgroundTransparency = 0,
+	BorderSizePixel = 2,
+	BorderColor3 = Color3.fromRGB(205, 205, 205),
+	Size = UDim2.new(0, 50, 0, 38),
+	Position = UDim2.new(1, -52, 0.5, -19),
+	ZIndex = SETTINGS_BASE_ZINDEX + 6,
+})
+
+CameraSensitivityNumber = Create("TextBox", {
+	Name = "Value",
+	Parent = CameraSensitivityNumberFrame,
+	BackgroundColor3 = Color3.fromRGB(58, 58, 58),
+	BackgroundTransparency = 0,
+	BorderSizePixel = 0,
+	ClearTextOnFocus = false,
+	Font = Enum.Font.SourceSans,
+	TextSize = 18,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = FormatCameraSensitivity(CameraSensitivityCurrent),
+	TextXAlignment = Enum.TextXAlignment.Center,
+	TextYAlignment = Enum.TextYAlignment.Center,
+	Size = UDim2.new(1, -4, 1, -4),
+	Position = UDim2.new(0, 2, 0, 2),
+	ZIndex = SETTINGS_BASE_ZINDEX + 7,
+})
+
+Connect(CameraSensitivityNumber.FocusLost, function()
+	local Value = tonumber(CameraSensitivityNumber.Text)
+	if not Value then
+		CameraSensitivityNumber.Text = FormatCameraSensitivity(CameraSensitivityCurrent)
+		return
+	end
+	Value = Clamp(Value, 0.2, 4)
+	CameraSensitivityCurrent = Value
+	SetMouseSensitivity(Value)
+	CameraSensitivitySlider:SetValue(GetCameraSensitivityIndex(Value))
+	CameraSensitivityNumber.Text = FormatCameraSensitivity(Value)
+end)
+
+Protect(function()
+	Connect(GameSettings:GetPropertyChangedSignal("MouseSensitivity"), function()
+		local Value = Clamp(tonumber(GameSettings.MouseSensitivity) or 0.2, 0.2, 4)
+		CameraSensitivityCurrent = Value
+		CameraSensitivitySlider:SetValue(GetCameraSensitivityIndex(Value))
+		if not CameraSensitivityNumber:IsFocused() then
+			CameraSensitivityNumber.Text = FormatCameraSensitivity(Value)
+		end
+	end)
+end)
+
+-- This is the real Roblox output-device selector.  It is intentionally
+-- independent of Voice Chat: it controls the destination for experience audio.
+OutputDeviceNames, OutputDeviceMap, CurrentOutputName, CurrentOutputGuid =
+	GetOutputDeviceOptions()
+
+if #OutputDeviceNames > 0 then
+	local CurrentOutputIndex = 1
+
+	for Index, Name in ipairs(OutputDeviceNames) do
+		local Info = OutputDeviceMap[Name]
+		if Info
+			and CurrentOutputName
+			and CurrentOutputName == Info.Name
+			and (not CurrentOutputGuid or CurrentOutputGuid == "" or CurrentOutputGuid == Info.Guid)
+		then
+			CurrentOutputIndex = Index
+			break
+		end
+	end
+
+	AudioOutputSelector = MakeSelector(
+		GamePage,
+		"Output Device",
+		OutputDeviceNames,
+		CurrentOutputIndex,
+		function(Index, Value)
+			local Info = OutputDeviceMap[Value]
+			if not Info then
+				return
+			end
+
+			if not SetRealOutputDevice(Info.Name, Info.Guid) then
+				local ActualName, ActualGuid = GetOutputDeviceInfo()
+				for DeviceIndex, DeviceName in ipairs(OutputDeviceNames) do
+					local ActualInfo = OutputDeviceMap[DeviceName]
+					if ActualInfo
+						and ActualName == ActualInfo.Name
+						and (not ActualGuid or ActualGuid == "" or ActualGuid == ActualInfo.Guid)
+					then
+						AudioOutputSelector:SetSelectionIndex(DeviceIndex, false)
+						break
+					end
+				end
+			end
+		end
+	)
+end
 
 MakeSlider(
 	GamePage,
@@ -8770,91 +10480,219 @@ MakeSlider(
 	end
 )
 
--- Voice Chat is a real setting only when BOTH conditions are true:
---   1) this experience has VoiceChatService.EnableDefaultVoice enabled
---   2) the local account has Voice Chat enabled/eligible
--- This intentionally fails closed if either check cannot be read.
+-- Only expose voice controls when this experience supports default voice and
+-- the local account is voice-enabled. Never create a synthetic AudioDeviceInput.
 GetGameVoiceSupport = function()
-	local Supported = false
-	local Success = false
-	Success = Protect(function()
-		Supported = VoiceChatService.EnableDefaultVoice == true
-		return true
+	local ReadOk, Enabled = pcall(function()
+		return VoiceChatService.EnableDefaultVoice
 	end)
-	return Success and Supported
+	if ReadOk and Enabled == true then return true end
+
+	-- A protected property read may be denied in the client. Check evidence from
+	-- actual Roblox-created voice objects and live voice state before deciding
+	-- that the experience has no voice support.
+	local HasEvidence = false
+	for _, Player in ipairs(Players:GetPlayers()) do
+		if GetAudioDeviceInput(Player) then
+			HasEvidence = true
+			break
+		end
+	end
+
+	if not HasEvidence and VoiceChatInternal then
+		pcall(function()
+			local GroupId = tostring(VoiceChatInternal:GetGroupId() or "")
+			if GroupId ~= "" then HasEvidence = true end
+		end)
+		if not HasEvidence then
+			pcall(function()
+				local Participants = VoiceChatInternal:GetParticipants()
+				HasEvidence = type(Participants) == "table" and next(Participants) ~= nil
+			end)
+		end
+		if not HasEvidence then
+			pcall(function()
+				HasEvidence = VoiceChatInternal:IsContextVoiceEnabled() == true
+			end)
+		end
+	end
+
+	if not HasEvidence then
+		pcall(function() RefreshNativeVoiceMirrorCache(true) end)
+		for _, Icon in pairs(NativeVoiceIconObjects) do
+			if Icon and Icon.Parent then HasEvidence = true break end
+		end
+	end
+
+	if HasEvidence then return true end
+	-- Some clients/games expose the legacy VoiceChatInternal controller while
+	-- EnableDefaultVoice is false or reports the modern path only. Do not hide
+	-- every voice control before the first participant/input has been created.
+	if ReadOk and Enabled == false then
+		return HasVoiceConnectionControls == true or HasMicDeviceControls == true
+	end
+	return HasVoiceConnectionControls == true or HasMicDeviceControls == true
 end
 
 GetAccountVoiceAllowed = function()
 	local Allowed = false
-	local Success = false
-	Success = Protect(function()
+	local Success = pcall(function()
 		Allowed = VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
-		return true
 	end)
-	return Success and Allowed
+	if Success then return Allowed end
+	-- Fall back only when the public local-entitlement query is unavailable,
+	-- not when Roblox explicitly says the account is ineligible.
+	if VoiceChatInternal then
+		local Ok, Value = pcall(function() return VoiceChatInternal:IsContextVoiceEnabled() == true end)
+		if Ok then return Value end
+	end
+	if GetAudioDeviceInput(LocalPlayer) then return true end
+	return FindNativeVoiceIcon(LocalPlayer) ~= nil
+end
+
+HasVoiceConnectionControls = false
+HasMicDeviceControls = false
+if VoiceChatInternal then
+	local Ok, Available = pcall(function()
+		return type(VoiceChatInternal.GetGroupId) == "function"
+			and type(VoiceChatInternal.JoinByGroupId) == "function"
+			and type(VoiceChatInternal.Leave) == "function"
+	end)
+	HasVoiceConnectionControls = Ok and Available == true
+	local MicOk, MicAvailable = pcall(function()
+		return type(VoiceChatInternal.GetMicDevices) == "function"
+			and type(VoiceChatInternal.SetMicDevice) == "function"
+	end)
+	HasMicDeviceControls = MicOk and MicAvailable == true
 end
 
 VoiceGameSupported = GetGameVoiceSupport()
 VoiceAccountAllowed = GetAccountVoiceAllowed()
 VoiceOptionAvailable = VoiceGameSupported and VoiceAccountAllowed
 
-if VoiceOptionAvailable then
-	Protect(function()
-		VoiceChatService.UseAudioApi = Enum.AudioApiRollout.Enabled
-	end)
+-- Do not change VoiceChatService.UseAudioApi from the client. Roblox owns the
+-- Audio API rollout and creates the real AudioDeviceInput when that path is active.
+VoiceInitiallyConnected = VoiceOptionAvailable and IsLocalVoiceConnectionReady()
+-- Do not expose an On/Off connection selector: voice is auto-requested whenever
+-- the experience supports voice and Roblox confirms that this local account is eligible.
+VoiceChatEnabled = VoiceOptionAvailable == true
+VoiceChatDesiredOn = VoiceOptionAvailable == true
+RefreshLocalVoiceState()
+VoiceChatSelector = nil
 
-	VoiceChatSelector = MakeSelector(GamePage, "Voice Chat", {"On", "Off"}, VoiceChatEnabled and 1 or 2, function(Index)
-		SetVoiceChatPreference(Index == 1)
-	end)
-
-	-- GetMicDevices/SetMicDevice are deprecated legacy APIs, so accept
-	-- several return shapes instead of assuming one particular tuple layout.
+AudioInputSelector = nil
+if VoiceOptionAvailable and HasMicDeviceControls then
+	-- Device switching is available only when this client exposes the real controller.
 	GetMicDeviceOptions = function()
 		local Names = {"Default"}
 		MicDeviceMap = {Default = {Name = "", Guid = ""}}
 		local Seen = {Default = true}
 
-		local AddDevice = function(Name, Guid)
-			if not Name then return end
+		local function AddDevice(Name, Guid)
+			if Name == nil then return end
 			Name = tostring(Name)
 			if Name == "" or Seen[Name] then return end
 			Guid = tostring(Guid or "")
 			Seen[Name] = true
-			Insert(Names, Name)
+			table.insert(Names, Name)
 			MicDeviceMap[Name] = {Name = Name, Guid = Guid}
 		end
 
-		local ParseDevice = function(Device)
-			if type(Device) ~= "table" then return end
+		local function ParseDevice(Device, Depth)
+			if type(Device) ~= "table" or (Depth or 0) > 5 then return end
 			local Name = Device.Name or Device.name or Device.DisplayName or Device.displayName or Device.DeviceName or Device.deviceName
 			local Guid = Device.Guid or Device.guid or Device.Id or Device.id or Device.DeviceGuid or Device.deviceGuid
-			if Name then
-				AddDevice(Name, Guid)
-			end
-			for _, Child in next, Device do
-				if type(Child) == "table" then ParseDevice(Child) end
+			if Name then AddDevice(Name, Guid) end
+			for Key, Child in next, Device do
+				if type(Child) == "table" then
+					ParseDevice(Child, (Depth or 0) + 1)
+				elseif type(Key) == "number" and type(Child) == "string" then
+					AddDevice(Child, "")
+				end
 			end
 		end
 
 		if VoiceChatInternal then
-			Protect(function()
+			pcall(function()
 				local Returned = {VoiceChatInternal:GetMicDevices()}
 				for _, Value in next, Returned do
-					ParseDevice(Value)
+					if type(Value) == "table" then ParseDevice(Value, 0) end
 				end
 			end)
 		end
-
 		return Names
 	end
 
 	MicDeviceNames = GetMicDeviceOptions()
 	AudioInputSelector = MakeSelector(GamePage, "Audio Input Device", MicDeviceNames, 1, function(Index, Value)
-		local Info = MicDeviceMap[Value]
+		local Info = MicDeviceMap and MicDeviceMap[Value]
 		if not Info or not VoiceChatInternal then return end
-		Protect(function() VoiceChatInternal:SetMicDevice(Info.Name, Info.Guid) end)
+		pcall(function() VoiceChatInternal:SetMicDevice(Info.Name, Info.Guid) end)
 	end)
 end
+
+RemoveVoiceFeatureRows = function()
+	local function RemoveRow(Selector)
+		local Row = Selector and Selector.RowFrame
+		if not Row then return end
+		if GamePage and GamePage.Rows then
+			for Index = #GamePage.Rows, 1, -1 do
+				if GamePage.Rows[Index] == Row then table.remove(GamePage.Rows, Index) end
+			end
+		end
+		pcall(function() Row:Destroy() end)
+	end
+	RemoveRow(VoiceChatSelector)
+	RemoveRow(AudioInputSelector)
+	VoiceChatSelector = nil
+	AudioInputSelector = nil
+	if GamePage and GamePage.ReflowRows then pcall(function() GamePage:ReflowRows() end) end
+end
+
+-- Rebuild now that VoiceGameSupported is initialized. The very first player-list
+-- build occurs earlier in startup, before this eligibility check has a value.
+if RebuildPlayersPage then RebuildPlayersPage() end
+
+Spawn(function()
+	while ScreenGui and ScreenGui.Parent do
+		Wait(VoiceOptionAvailable and 8 or 1.5)
+		local NewGameSupport = GetGameVoiceSupport()
+		local NewAccountAllowed = GetAccountVoiceAllowed()
+		if VoiceChatDesiredOn then
+			NewGameSupport = NewGameSupport or VoiceGameSupported
+			NewAccountAllowed = NewAccountAllowed or VoiceAccountAllowed
+		end
+		local NewOptionAvailable = NewGameSupport and NewAccountAllowed
+		local Changed = NewGameSupport ~= VoiceGameSupported
+			 or NewAccountAllowed ~= VoiceAccountAllowed
+			 or NewOptionAvailable ~= VoiceOptionAvailable
+		local SupportBecameAvailable = NewGameSupport == true and VoiceGameSupported ~= true
+		VoiceGameSupported = NewGameSupport
+		VoiceAccountAllowed = NewAccountAllowed
+		VoiceOptionAvailable = NewOptionAvailable
+		if SupportBecameAvailable then
+			for _, Player in ipairs(Players:GetPlayers()) do
+				if Player ~= LocalPlayer then
+					local Id = tonumber(Player.UserId) or 0
+					if VoiceEnabledCache[Id] == false then VoiceEnabledCache[Id] = nil end
+				end
+			end
+		end
+		if VoiceOptionAvailable and not VoiceChatDesiredOn then
+			SetVoiceChatPreference(true)
+		elseif not VoiceOptionAvailable then
+			VoiceChatDesiredOn = false
+			VoiceChatEnabled = false
+			LocalVoiceEnabled = false
+		end
+		if Changed then
+			if RebuildPlayersPage then RebuildPlayersPage() end
+			if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+		end
+	end
+end)
+
+-- Voice auto-connection is requested after the custom UI and player list are initialized.
 
 MakeSectionHeader(GamePage, "Chat & Language")
 
@@ -8871,9 +10709,169 @@ MakeButtonRow(
 	end
 )
 
-MakeBooleanSelector(GamePage, "Automatic Chat Translation", GameSettings, "ChatTranslationEnabled")
-MakeBooleanSelector(GamePage, "Chat Translation Language", GameSettings, "ChatTranslationToggleEnabled")
-MakeBooleanSelector(GamePage, "View Untranslated Messages", GameSettings, "ChatTranslationFTUXShown")
+AutomaticChatTranslationSelector = MakeBooleanSelector(GamePage, "Automatic Chat Translation", TextChatService, "ChatTranslationEnabled", "On", "Off")
+
+ChatTranslationLanguageMap = {
+	{"Arabic", "ar"},
+	{"Chinese (Simplified)", "zh-cn"},
+	{"Chinese (Traditional)", "zh-tw"},
+	{"English", "en-us"},
+	{"French", "fr-fr"},
+	{"German", "de-de"},
+	{"Hindi", "hi-in"},
+	{"Indonesian", "id-id"},
+	{"Italian", "it-it"},
+	{"Japanese", "ja-jp"},
+	{"Korean", "ko-kr"},
+	{"Polish", "pl-pl"},
+	{"Portuguese", "pt-br"},
+	{"Russian", "ru-ru"},
+	{"Spanish", "es-es"},
+	{"Thai", "th-th"},
+	{"Turkish", "tr-tr"},
+	{"Vietnamese", "vi-vn"},
+}
+
+-- The endpoint is the Roblox language service for automatic-translation target languages.
+-- When HTTP is unavailable, keep the same current Roblox-supported list above.
+FetchChatTranslationLanguages = function()
+	local Result = {}
+	local Seen = {}
+	local function AddLocale(Locale)
+		Locale = tostring(Locale or ""):lower()
+		for _, Item in ipairs(ChatTranslationLanguageMap) do
+			if Item[2] == Locale and not Seen[Locale] then
+				Seen[Locale] = true
+				table.insert(Result, Item)
+				return
+			end
+		end
+	end
+
+	local ResponseBody = nil
+	local Url = "https://gameinternationalization.roblox.com/v1/automatic-translation/languages/en/target-languages"
+	Protect(function()
+		if game.HttpGet then
+			ResponseBody = game:HttpGet(Url)
+		end
+	end)
+	if ResponseBody then
+		Protect(function()
+			local Decoded = HttpService:JSONDecode(ResponseBody)
+			local List = Decoded
+			if type(Decoded) == "table" then
+				List = Decoded.target_languages or Decoded.languages or Decoded.data or Decoded
+			end
+			if type(List) == "table" then
+				for _, Item in ipairs(List) do
+					if type(Item) == "string" then
+						AddLocale(Item)
+					elseif type(Item) == "table" then
+						AddLocale(Item.language_code or Item.locale or Item.code or Item.target_language_code)
+					end
+				end
+			end
+		end)
+	end
+
+	if #Result == 0 then
+		for _, Item in ipairs(ChatTranslationLanguageMap) do
+			table.insert(Result, Item)
+		end
+	end
+	return Result
+end
+
+ChatTranslationLanguageEntries = FetchChatTranslationLanguages()
+ChatTranslationLanguageNames = {}
+ChatTranslationLanguageCodes = {}
+for Index, Item in ipairs(ChatTranslationLanguageEntries) do
+	ChatTranslationLanguageNames[Index] = Item[1]
+	ChatTranslationLanguageCodes[Item[1]] = Item[2]
+end
+
+NormalizeChatTranslationLocale = function(Locale)
+	Locale = tostring(Locale or ""):lower():gsub("_", "-")
+	return Locale
+end
+
+ChatTranslationLocaleForUserGameSettings = function(Locale)
+	return NormalizeChatTranslationLocale(Locale):gsub("-", "_")
+end
+
+CurrentChatTranslationLocale = NormalizeChatTranslationLocale(
+	GetHiddenOrSetting(GameSettings, "ChatTranslationLocale", "en_us")
+)
+if CurrentChatTranslationLocale == "" then
+	CurrentChatTranslationLocale = "en-us"
+end
+
+local CurrentChatTranslationLanguageIndex = nil
+for Index, Item in ipairs(ChatTranslationLanguageEntries) do
+	if NormalizeChatTranslationLocale(Item[2]) == CurrentChatTranslationLocale then
+		CurrentChatTranslationLanguageIndex = Index
+		break
+	end
+end
+
+-- A missing/unknown locale must never silently become the first item (Arabic).
+-- English is the safe/default UI selection when Roblox has no usable saved locale.
+if not CurrentChatTranslationLanguageIndex then
+	for Index, Item in ipairs(ChatTranslationLanguageEntries) do
+		if NormalizeChatTranslationLocale(Item[2]) == "en-us" then
+			CurrentChatTranslationLanguageIndex = Index
+			break
+		end
+	end
+end
+CurrentChatTranslationLanguageIndex = CurrentChatTranslationLanguageIndex or 1
+
+ChatTranslationLanguageSelector = MakeDropDown(
+	GamePage,
+	"Chat Translation Language",
+	ChatTranslationLanguageNames,
+	CurrentChatTranslationLanguageIndex,
+	function(Index, Value)
+		local Locale = ChatTranslationLanguageCodes[Value]
+		if not Locale then return end
+
+		-- Update our UI state immediately; the hidden engine property may be delayed.
+		CurrentChatTranslationLocale = NormalizeChatTranslationLocale(Locale)
+		local EngineLocale = ChatTranslationLocaleForUserGameSettings(Locale)
+
+		if sethiddenproperty then
+			pcall(function()
+				sethiddenproperty(GameSettings, "ChatTranslationLocale", EngineLocale)
+			end)
+		end
+		Protect(function() GameSettings.ChatTranslationLocale = EngineLocale end)
+	end
+)
+
+-- The language row needs a little more left room than the generic dropdown layout.
+ChatTranslationLanguageSelector.DropDownFrame.Position =
+	UDim2.new(
+		1,
+		-410,
+		0.5,
+		-22
+	)
+
+Protect(function()
+	Connect(GameSettings:GetPropertyChangedSignal("ChatTranslationLocale"), function()
+		local Locale = NormalizeChatTranslationLocale(GetHiddenOrSetting(GameSettings, "ChatTranslationLocale", CurrentChatTranslationLocale))
+		CurrentChatTranslationLocale = Locale
+		for Index, Item in ipairs(ChatTranslationLanguageEntries) do
+			if NormalizeChatTranslationLocale(Item[2]) == Locale and ChatTranslationLanguageSelector:GetSelectedValue() ~= Item[1] then
+				ChatTranslationLanguageSelector:SetSelectionByValue(Item[1], false)
+				break
+			end
+		end
+	end)
+end)
+
+ViewUntranslatedMessagesSelector = MakeBooleanSelector(GamePage, "View Untranslated Messages", GameSettings, "ChatTranslationFTUXShown", "On", "Off")
+
 
 MakeSectionHeader(GamePage, "Display & Graphics")
 
@@ -8890,23 +10888,6 @@ MakeSelector(
 			if not Success and keypress and keyrelease then
 				keypress(0x7A)
 				keyrelease(0x7A)
-			end
-		end)
-	end
-)
-
-MakeBooleanSelector(GamePage, "Performance Stats", GameSettings, "PerformanceStatsVisible")
-
-MakeButtonRow(
-	GamePage,
-	"MicroProfiler",
-	"Open",
-	function()
-		RunAfterMenuCloses(function()
-			SetSetting(GameSettings, "OnScreenProfilerEnabled", true)
-			if keypress and keyrelease then
-				keypress(0x75)
-				keyrelease(0x75)
 			end
 		end)
 	end
@@ -9226,12 +11207,20 @@ SetGraphicsToManual =
 		SetGraphicsQuality(Value, false)
 	end
 
+GraphicsIsAutomatic = false
+Protect(function()
+	GraphicsIsAutomatic = GameSettings.SavedQualityLevel == Enum.SavedQualitySetting.Automatic
+		or RenderingSettings.QualityLevel == Enum.QualityLevel.Automatic
+		or GameSettings.SavedQualityLevel == 0
+		or RenderingSettings.QualityLevel == 0
+end)
+
 GraphicsMode =
 	MakeSelector(
 		GamePage,
 		"Graphics Mode",
 		{"Automatic", "Manual"},
-		1,
+		(GraphicsIsAutomatic and 1 or 2),
 		function(Index)
 			if Index == 1 then
 				SetGraphicsToAuto()
@@ -9268,189 +11257,26 @@ if
 	and GraphicsSlider
 	and GraphicsSlider.SliderFrame
 then
-
-	local Holder =
-		GraphicsSlider.SliderFrame
-
-	local Segments = {}
-	local LeftButton = nil
-	local RightButton = nil
-	local Capture = nil
-
-	for _, Child in ipairs(Holder:GetChildren()) do
-
-		if Child:IsA("ImageButton") then
-
-			local HasLeftImage = false
-			local HasRightImage = false
-
-			for _, SubChild in ipairs(Child:GetChildren()) do
-
-				if SubChild:IsA("ImageLabel") then
-
-					if SubChild.Image == SLIDER_LEFT_IMAGE then
-						HasLeftImage = true
-					elseif SubChild.Image == SLIDER_RIGHT_IMAGE then
-						HasRightImage = true
-					end
-
-				end
-
-			end
-
-			if HasLeftImage then
-				LeftButton = Child
-			elseif HasRightImage then
-				RightButton = Child
-			else
-				Insert(Segments, Child)
-			end
-
-		elseif Child:IsA("TextButton") then
-
-			Capture = Child
-
-		end
-
-	end
-
-	table.sort(
-		Segments,
-		function(A, B)
-			return A.Position.X.Offset < B.Position.X.Offset
-		end
-	)
-
-	local SliderStartX = 60
-	local SliderEndX = 411
-	local SliderRange = SliderEndX - SliderStartX
-	local StepSpacing = SliderRange / 20
-	local BarWidth = math.max(12, math.floor(StepSpacing - 2))
-
-	for Index, Segment in ipairs(Segments) do
-
-		if Index <= 21 then
-
-			local X =
-				SliderStartX
-				+ ((Index - 1) * StepSpacing)
-
-			Segment.Size =
-				UDim2.new(
-					0,
-					BarWidth,
-					0,
-					25
-				)
-
-			Segment.Position =
-				UDim2.new(
-					0,
-					math.floor(X + 0.5),
-					0.5,
-					-12
-				)
-
-		end
-
-	end
-
-	if LeftButton then
-
-		LeftButton.AnchorPoint =
-			Vector2.new(1, 0.5)
-
-		LeftButton.Position =
-			UDim2.new(
-				0,
-				SliderStartX - 8,
-				0.5,
-				0
-			)
-
-	end
-
-	if RightButton then
-
-		RightButton.AnchorPoint =
-			Vector2.new(0, 0.5)
-
-		RightButton.Position =
-			UDim2.new(
-				0,
-				SliderEndX + BarWidth + 8,
-				0.5,
-				0
-			)
-
-	end
-
-	if Capture then
-
-		Capture.Position =
-			UDim2.new(
-				0,
-				SliderStartX - 8,
-				0,
-				0
-			)
-
-		Capture.Size =
-			UDim2.new(
-				0,
-				SliderRange + BarWidth + 16,
-				1,
-				0
-			)
-
-		Capture.ZIndex =
-			SETTINGS_BASE_ZINDEX + 5
-
-	end
-
+	StretchSliderBars(GraphicsSlider, 60, 411, nil, 42)
 end
 
-if
-	GameSettings.SavedQualityLevel == Enum.SavedQualitySetting.Automatic
-	or RenderingSettings.QualityLevel == Enum.QualityLevel.Automatic
-	or GameSettings.SavedQualityLevel == 0
-	or RenderingSettings.QualityLevel == 0
-then
+if GraphicsIsAutomatic then
 	SetGraphicsToAuto()
 else
 	SetGraphicsToManual(GetGraphicsSliderStart())
 end
 
-MakeSelector(
-	GamePage,
-	"Haptics",
-	{"On", "Off"},
-	(
-		(
-			GetSetting(GameSettings, "HapticStrength", 1) or 0
-		)
-		> 0
-		and 1
-	)
-	or 2,
-	function(Index)
-		SetSetting(GameSettings, "HapticStrength", Index == 1 and 1 or 0)
-	end
-)
-
-MakeBooleanSelector(GamePage, "Reduce Motion", GameSettings, "ReducedMotion")
-
 FpsValues = {"60", "120", "144", "160", "165", "180", "200", "240"}
 FpsStart = 1
 CurrentFps = tostring(GetSetting(GameSettings, "FramerateCap", 60))
-
 for Index, Value in next, FpsValues do
 	if Value == CurrentFps then
 		FpsStart = Index
+		break
 	end
 end
 
-MakeSelector(
+MaximumFrameRateSelector = MakeSelector(
 	GamePage,
 	"Maximum Frame Rate",
 	FpsValues,
@@ -9464,7 +11290,358 @@ MakeSelector(
 	end
 )
 
-MakeBooleanSelector(GamePage, "VR", GameSettings, "VREnabled")
+GetReducedMotionValue = function()
+	local Value = nil
+	Protect(function() Value = GuiService.ReducedMotionEnabled end)
+	if Value == nil then
+		Value = GetSetting(GameSettings, "ReducedMotion", false)
+	end
+	return Value == true
+end
+
+SetReducedMotionValue = function(Value)
+	Value = Value == true
+	Protect(function() GuiService.ReducedMotionEnabled = Value end)
+	SetSetting(GameSettings, "ReducedMotion", Value)
+	if sethiddenproperty then
+		pcall(function() sethiddenproperty(GuiService, "ReducedMotionEnabled", Value) end)
+		pcall(function() sethiddenproperty(GameSettings, "ReducedMotion", Value) end)
+	end
+end
+
+ReduceMotionSelector = MakeSelector(
+	GamePage,
+	"Reduce Motion",
+	{"On", "Off"},
+	GetReducedMotionValue() and 1 or 2,
+	function(Index) SetReducedMotionValue(Index == 1) end
+)
+AddSettingDescription(GamePage, ReduceMotionSelector.RowFrame, "Stop or reduce motion effects")
+
+PreferredTransparencyCurrent = GetPreferredTransparency()
+BackgroundTransparencySelector = MakeSlider(
+	GamePage,
+	"Background Transparency",
+	10,
+	Clamp(math.floor(((1 - PreferredTransparencyCurrent) * 9) + 0.5) + 1, 1, 10),
+	function(Index)
+		local Value = 1 - ((Index - 1) / 9)
+		SetPreferredTransparency(Value)
+	end,
+	1,
+	true
+)
+AddSettingDescription(GamePage, BackgroundTransparencySelector.RowFrame, "Improve contrast by adjusting\ntransparency on some backgrounds.")
+StretchSliderBars(BackgroundTransparencySelector, 60, 414, nil, 42)
+
+BackgroundHolder = BackgroundTransparencySelector.SliderFrame
+Create("TextLabel", {
+	Name = "TransparentLabel",
+	Parent = BackgroundHolder,
+	BackgroundTransparency = 1,
+	Font = Enum.Font.SourceSans,
+	TextSize = 13,
+	TextColor3 = Color3.fromRGB(150, 150, 150),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "Transparent",
+	Size = UDim2.new(0, 95, 0, 18),
+	Position = UDim2.new(0, 60, 0, 54),
+	ZIndex = SETTINGS_BASE_ZINDEX + 4,
+})
+Create("TextLabel", {
+	Name = "OpaqueLabel",
+	Parent = BackgroundHolder,
+	BackgroundTransparency = 1,
+	Font = Enum.Font.SourceSans,
+	TextSize = 13,
+	TextColor3 = Color3.fromRGB(150, 150, 150),
+	TextXAlignment = Enum.TextXAlignment.Right,
+	Text = "Opaque",
+	Size = UDim2.new(0, 70, 0, 18),
+	Position = UDim2.new(0, 381, 0, 54),
+	ZIndex = SETTINGS_BASE_ZINDEX + 4,
+})
+
+Protect(function()
+	Connect(GuiService:GetPropertyChangedSignal("PreferredTransparency"), function()
+		local Value = GetPreferredTransparency()
+		BackgroundTransparencySelector:SetValue(Clamp(math.floor(((1 - Value) * 9) + 0.5) + 1, 1, 10))
+	end)
+end)
+
+TextSizeEnumValues = {
+	[1] = Enum.PreferredTextSize.Medium,
+	[2] = Enum.PreferredTextSize.Large,
+	[3] = Enum.PreferredTextSize.Largest,
+}
+TextSizeStart = 1
+Protect(function()
+	local Current = GuiService.PreferredTextSize
+	for Index, Value in ipairs(TextSizeEnumValues) do
+		if Current == Value then
+			TextSizeStart = Index
+			break
+		end
+	end
+end)
+
+TextSizeSelector = MakeSlider(
+	GamePage,
+	"Text Size",
+	3,
+	TextSizeStart,
+	function(Index)
+		if TextSizeEnumValues[Index] then
+			SetPreferredTextSize(TextSizeEnumValues[Index])
+			ApplyGamePageTextSize(Index)
+		end
+	end,
+	1,
+	true
+)
+StretchSliderBars(TextSizeSelector, 60, 414, nil, 42)
+TextSizeHolder = TextSizeSelector.SliderFrame
+Create("TextLabel", {
+	Name = "DefaultLabel",
+	Parent = TextSizeHolder,
+	BackgroundTransparency = 1,
+	Font = Enum.Font.SourceSans,
+	TextSize = 13,
+	TextColor3 = Color3.fromRGB(150, 150, 150),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "Default",
+	Size = UDim2.new(0, 70, 0, 18),
+	Position = UDim2.new(0, 60, 0, 54),
+	ZIndex = SETTINGS_BASE_ZINDEX + 4,
+})
+Create("TextLabel", {
+	Name = "LargestLabel",
+	Parent = TextSizeHolder,
+	BackgroundTransparency = 1,
+	Font = Enum.Font.SourceSans,
+	TextSize = 13,
+	TextColor3 = Color3.fromRGB(150, 150, 150),
+	TextXAlignment = Enum.TextXAlignment.Right,
+	Text = "Largest",
+	Size = UDim2.new(0, 70, 0, 18),
+	Position = UDim2.new(0, 360, 0, 54),
+	ZIndex = SETTINGS_BASE_ZINDEX + 4,
+})
+
+
+GetUINavigationPreference = function()
+	local Value = GetSetting(GuiService, "GuiNavigationEnabled", nil)
+	if Value ~= nil then
+		return Value == true
+	end
+	Value = GetHiddenOrSetting(GameSettings, "UiNavigationKeyBindEnabled", nil)
+	if Value ~= nil then
+		return Value == true
+	end
+	return false
+end
+
+SetUINavigationPreference = function(Enabled)
+	Enabled = Enabled == true
+	local Written = false
+	Written = Protect(function()
+		GuiService.GuiNavigationEnabled = Enabled
+		return true
+	end) or false
+	Protect(function() GuiService.AutoSelectGuiEnabled = Enabled end)
+	if sethiddenproperty then
+		local Ok = pcall(function() sethiddenproperty(GameSettings, "UiNavigationKeyBindEnabled", Enabled) end)
+		Written = Ok or Written
+	end
+	if not Written then
+		Written = SetSetting(GameSettings, "UiNavigationKeyBindEnabled", Enabled)
+	end
+	return Written
+end
+
+local UiNavigationInitial = false
+Protect(function() SetUINavigationPreference(false) end)
+
+UINavigationSelector = MakeSelector(
+	GamePage,
+	"UI Navigation",
+	{"On", "Off"},
+	UiNavigationInitial and 1 or 2,
+	function(Index)
+		SetUINavigationPreference(Index == 1)
+	end
+)
+AddSettingDescription(GamePage, UINavigationSelector.RowFrame, "Use the \\ key to enter and exit UI Navigation mode")
+
+PerformanceSelector = MakeBooleanSelector(GamePage, "Performance Stats", GameSettings, "PerformanceStatsVisible", "On", "Off")
+
+BindBooleanSettingRefresh = function(Selector, Object, Property)
+	if not Selector or not Object then return end
+	local function RefreshBoolean()
+		local Current = GetHiddenOrSetting(Object, Property, false) == true
+		local Index = Current and 1 or 2
+		if Selector:GetSelectedIndex() ~= Index then
+			Selector:SetSelectionIndex(Index, false)
+		end
+	end
+	Protect(function() Connect(Object:GetPropertyChangedSignal(Property), RefreshBoolean) end)
+	Spawn(function()
+		while Selector and Selector.RowFrame and Selector.RowFrame.Parent do
+			RefreshBoolean()
+			Wait(0.25)
+		end
+	end)
+end
+
+
+GetMicroProfilerEnabled = function()
+	return GetHiddenOrSetting(GameSettings, "OnScreenProfilerEnabled", false) == true
+end
+
+MicroProfilerState = GetMicroProfilerEnabled()
+
+SetMicroProfilerEnabled = function(Enabled)
+	Enabled = Enabled == true
+	local ChangedState = false
+	if sethiddenproperty then
+		ChangedState = pcall(function() sethiddenproperty(GameSettings, "OnScreenProfilerEnabled", Enabled) end) or ChangedState
+	end
+	if not ChangedState then
+		ChangedState = SetSetting(GameSettings, "OnScreenProfilerEnabled", Enabled)
+	end
+	return ChangedState
+end
+
+ToggleMicroProfilerHotkey = function()
+	if not keypress or not keyrelease then return false end
+	local Success = pcall(function()
+		keypress(0x11) -- Ctrl
+		keypress(0x12) -- Alt
+		keypress(0x75) -- F6
+		keyrelease(0x75)
+		keyrelease(0x12)
+		keyrelease(0x11)
+	end)
+	return Success
+end
+
+MicroProfilerButton, MicroProfilerRow = MakeButtonRow(
+	GamePage,
+	"MicroProfiler",
+	MicroProfilerState and "Close" or "Open",
+	function()
+		MicroProfilerState = not MicroProfilerState
+		SetMicroProfilerEnabled(MicroProfilerState)
+		ToggleMicroProfilerHotkey()
+		local ActionLabel = MicroProfilerButton and MicroProfilerButton:FindFirstChild("MicroProfilerActionTextLabel")
+		if ActionLabel then ActionLabel.Text = MicroProfilerState and "Close" or "Open" end
+	end
+)
+
+Protect(function()
+	Connect(GameSettings:GetPropertyChangedSignal("OnScreenProfilerEnabled"), function()
+		local Enabled = GetMicroProfilerEnabled()
+		if keypress and keyrelease then
+			-- When the engine exposes the profiler property, use it as the authoritative state.
+			MicroProfilerState = Enabled
+		end
+		local ActionLabel = MicroProfilerButton and MicroProfilerButton:FindFirstChild("MicroProfilerActionTextLabel")
+		if ActionLabel then ActionLabel.Text = MicroProfilerState and "Close" or "Open" end
+	end)
+end)
+
+CameraInvertedGetter = function()
+	local Value = GetHiddenOrSetting(GameSettings, "CameraYInverted", nil)
+	if Value ~= nil then return Value == true end
+	local Legacy = nil
+	Protect(function() Legacy = tonumber(GameSettings:GetCameraYInvertValue()) end)
+	return Legacy ~= nil and Legacy < 0
+end
+
+CameraInvertedSelector = MakeSelector(
+	GamePage,
+	"Camera Inverted",
+	{"On", "Off"},
+	CameraInvertedGetter() and 1 or 2,
+	function(Index)
+		local Desired = Index == 1
+		if sethiddenproperty then
+			pcall(function() sethiddenproperty(GameSettings, "CameraYInverted", Desired) end)
+		end
+		Protect(function() GameSettings.CameraYInverted = Desired end)
+	end
+)
+
+
+PeopleNamesSelector = MakeBooleanSelector(GamePage, "People's Names", GameSettings, "PlayerNamesEnabled", "Show", "Hide")
+AddSettingDescription(GamePage, PeopleNamesSelector.RowFrame, "Show or hide names above people in games. Some games may have custom settings that override your preference.")
+BindBooleanSettingRefresh(PeopleNamesSelector, GameSettings, "PlayerNamesEnabled")
+
+MyBadgesSelector = MakeBooleanSelector(GamePage, "My Badges", GameSettings, "BadgeVisible", "Show", "Hide")
+AddSettingDescription(GamePage, MyBadgesSelector.RowFrame, "Show or hide your badges from other people in games")
+BindBooleanSettingRefresh(MyBadgesSelector, GameSettings, "BadgeVisible")
+BindBooleanSettingRefresh(PerformanceSelector, GameSettings, "PerformanceStatsVisible")
+Protect(function()
+	Connect(GuiService:GetPropertyChangedSignal("GuiNavigationEnabled"), function()
+		if UINavigationSelector then
+			UINavigationSelector:SetSelectionIndex(GetUINavigationPreference() and 1 or 2, false)
+		end
+	end)
+end)
+Spawn(function()
+	while UINavigationSelector and UINavigationSelector.RowFrame and UINavigationSelector.RowFrame.Parent do
+		local Index = GetUINavigationPreference() and 1 or 2
+		if UINavigationSelector:GetSelectedIndex() ~= Index then
+			UINavigationSelector:SetSelectionIndex(Index, false)
+		end
+		Wait(0.25)
+	end
+end)
+
+GamePageTextTargets = {}
+GetGamePageTextScaleIndex = function()
+	local Preferred = GuiService.PreferredTextSize
+	if Preferred == Enum.PreferredTextSize.Large then return 2 end
+	if Preferred == Enum.PreferredTextSize.Larger then return 2 end
+	if Preferred == Enum.PreferredTextSize.Largest then return 3 end
+	return 1
+end
+
+RegisterGamePageTextTargets = function()
+	GamePageTextTargets = {}
+	if not GamePage or not GamePage.Frame then return end
+	for _, Object in ipairs(GamePage.Frame:GetDescendants()) do
+		if (Object:IsA("TextLabel") or Object:IsA("TextButton") or Object:IsA("TextBox"))
+			and Object.TextScaled ~= true then
+			GamePageTextTargets[Object] = Object.TextSize
+		end
+	end
+end
+
+ApplyGamePageTextSize = function(Index)
+	local Scale = ({[1] = 1, [2] = 1.14, [3] = 1.28})[Index or 1] or 1
+	for Object, BaseSize in next, GamePageTextTargets do
+		if Object and Object.Parent then
+			Object.TextSize = math.floor((BaseSize * Scale) + 0.5)
+		end
+	end
+	-- Do not resize description rows when Text Size changes. Their compact
+	-- geometry is fixed so changing text size cannot create huge vertical gaps.
+	RestoreFixedTextSizes()
+end
+
+RegisterFixedTextSizeObjects()
+RegisterGamePageTextTargets()
+ApplyGamePageTextSize(GetGamePageTextScaleIndex())
+Protect(function()
+	Connect(GuiService:GetPropertyChangedSignal("PreferredTextSize"), function()
+		local Index = GetGamePageTextScaleIndex()
+		if TextSizeSelector and TextSizeSelector:GetValue() ~= Index then
+			TextSizeSelector:SetValue(Index)
+		end
+		ApplyGamePageTextSize(Index)
+	end)
+end)
 
 -- ============================================================
 -- REPORT PAGE
@@ -10116,14 +12293,10 @@ PositionRecorderGui =
 			SystemPosition.Y
 			+ RECORDER_OFFSET_Y
 
-		-- When the custom ESC menu is closed, the 40x40
-		-- SystemMenuButton itself moves 4 px left/up.
-		-- Compensate the recorder by 4 px right/down so
-		-- the recorder stays in the same screen position.
-		if not Hub.Visible then
-			TargetX = TargetX + 4
-			TargetY = TargetY + 4
-		end
+		-- The visual SystemMenuButton remains fixed at 30x30 in the same
+		-- screen coordinates whether the ESC menu is open or closed.
+		-- Do not apply the old +4/+4 closed-state compensation here;
+		-- that compensation belonged to the previous 40x40 button layout.
 
 		Button.Position =
 			UDim2.fromOffset(
@@ -10131,6 +12304,24 @@ PositionRecorderGui =
 				TargetY - ParentPosition.Y
 			)
 
+	end
+
+-- Recorder display follows the ESC menu state, but RecorderRunning is never
+-- changed here. The native/custom recording may continue while the overlay is
+-- hidden behind the ESC menu.
+SetRecorderOverlayVisibility =
+	function(Visible)
+		if not RecorderGui then
+			return
+		end
+		if not RecorderRunning then
+			RecorderGui.Enabled = false
+			return
+		end
+		RecorderGui.Enabled = Visible == true
+		if Visible and PositionRecorderGui then
+			PositionRecorderGui()
+		end
 	end
 
 ToggleNativeRecording =
@@ -10245,12 +12436,18 @@ StartCustomRecording =
 		RecorderRunning = true
 		RecorderStartedAt = tick()
 		PositionRecorderGui()
-		RecorderGui.Enabled = true
+		RecorderGui.Enabled = not (Hub and Hub.Visible)
 		RecorderTimeLabel.Text = "0:00"
 		UpdateRecorderPageButton()
 
 		RecorderThread =
 			Spawn(function()
+
+				-- Original Roblox F12 recorder limit: 14 minutes.
+				-- Roblox stops the native recorder automatically at this point.
+				-- Therefore we only clear our overlay/state here; NEVER toggle
+				-- the native recorder when the time limit is reached.
+				local RecorderTimeLimit = 14 * 60
 
 				while
 					RecorderRunning
@@ -10258,20 +12455,25 @@ StartCustomRecording =
 					and RecorderGui.Parent
 				do
 
-					if RecorderTimeLabel then
-						RecorderTimeLabel.Text =
-							FormatRecorderTime(
-								tick()
-								- RecorderStartedAt
-							)
+					local Elapsed = tick() - RecorderStartedAt
+
+					if Elapsed >= RecorderTimeLimit then
+						-- Native F12 recording has reached its hard 14-minute limit.
+						-- It has already stopped itself, so do not call ToggleRecording.
+						StopCustomRecording(false)
+						break
 					end
 
-					Wait(1)
+					if RecorderTimeLabel then
+						RecorderTimeLabel.Text =
+							FormatRecorderTime(Elapsed)
+					end
+
+					Wait(0.25)
 
 				end
 
 			end)
-
 		return true
 
 	end
@@ -10435,7 +12637,7 @@ ResetMessage = MakeText(
 	ResetPage.Frame,
 	"Are you sure you want to reset your character?",
 	UDim2.new(1, -20, 0, 100),
-	UDim2.new(0, 10, 0, 78)
+	UDim2.new(0, 10, 0, 108)
 )
 ResetMessage.TextSize = 36
 
@@ -10540,7 +12742,7 @@ LeaveMessage = MakeText(
 	LeavePage.Frame,
 	"Are you sure you want to leave the game?",
 	UDim2.new(1, -20, 0, 100),
-	UDim2.new(0, 10, 0, 78)
+	UDim2.new(0, 10, 0, 108)
 )
 LeaveMessage.TextSize = 36
 
@@ -10627,7 +12829,7 @@ PositionMobileConfirmationButtons =
 			local Message = Frame:FindFirstChildWhichIsA("TextLabel")
 			if Message then
 				Message.Size = UDim2.new(1, -20, 0, 88)
-				Message.Position = UDim2.new(0, 10, 0, 12)
+				Message.Position = UDim2.new(0, 10, 0, 42)
 			end
 			LeftButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
 			RightButton.Size = UDim2.new(0, ButtonWidth, 0, 50)
@@ -10781,7 +12983,7 @@ MobileActionButtons.Reset = MakeBottomButton(
 
 MobileActionButtons.Leave = MakeBottomButton(
 	"LeaveGame",
-	"Leave Game",
+	"Leave",
 	"rbxasset://textures/ui/Settings/Help/LeaveIcon.png",
 	UDim2.new(0, 270, 0.5, -32),
 	function() PushPage(LeavePage) end,
@@ -10790,12 +12992,102 @@ MobileActionButtons.Leave = MakeBottomButton(
 
 MobileActionButtons.Resume = MakeBottomButton(
 	"Resume",
-	"Resume Game",
+	"Resume",
 	"rbxasset://textures/ui/Settings/Help/EscapeIcon.png",
 	UDim2.new(0, 536, 0.5, -32),
 	function() SetVisibility(false) end,
 	BottomButtonSize
 )
+
+-- ============================================================
+-- LEGACY RED CONNECTION-ERROR BANNER (MIC ACTION FALLBACK)
+-- Matches the old LoadingScript ErrorFrame appearance without changing
+-- GuiService's real connection-error state.
+-- ============================================================
+local VoiceMuteErrorOverlay = nil
+local VoiceMuteErrorFrame = nil
+local VoiceMuteErrorLabel = nil
+local VoiceMuteErrorGeneration = 0
+
+local function EnsureVoiceMuteErrorBanner()
+	if VoiceMuteErrorOverlay and VoiceMuteErrorOverlay.Parent and VoiceMuteErrorFrame and VoiceMuteErrorFrame.Parent then
+		return VoiceMuteErrorFrame, VoiceMuteErrorLabel
+	end
+
+	local Existing = nil
+	pcall(function()
+		Existing = CoreGui:FindFirstChild("Settings2016VoiceMuteErrorOverlay")
+	end)
+
+	if Existing and Existing:IsA("ScreenGui") then
+		VoiceMuteErrorOverlay = Existing
+	else
+		local Screen = Instance.new("ScreenGui")
+		Screen.Name = "Settings2016VoiceMuteErrorOverlay"
+		Screen.IgnoreGuiInset = true
+		Screen.ResetOnSpawn = false
+		Screen.DisplayOrder = 100000
+		Screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		Screen.Parent = CoreGui
+		VoiceMuteErrorOverlay = Screen
+	end
+
+	local Frame = VoiceMuteErrorOverlay:FindFirstChild("ErrorFrame")
+	if not (Frame and Frame:IsA("Frame")) then
+		Frame = Instance.new("Frame")
+		Frame.Name = "ErrorFrame"
+		Frame.Parent = VoiceMuteErrorOverlay
+	end
+	Frame.BackgroundColor3 = Color3.fromRGB(253, 68, 72)
+	Frame.BackgroundTransparency = 0
+	Frame.BorderSizePixel = 0
+	Frame.Position = UDim2.new(0.25, 0, 0, 0)
+	Frame.Size = UDim2.new(0.5, 0, 0, 80)
+	Frame.ZIndex = 8
+	Frame.Visible = false
+
+	local Label = Frame:FindFirstChild("ErrorText")
+	if not (Label and Label:IsA("TextLabel")) then
+		Label = Instance.new("TextLabel")
+		Label.Name = "ErrorText"
+		Label.Parent = Frame
+	end
+	Label.BackgroundTransparency = 1
+	Label.Size = UDim2.new(1, 0, 1, 0)
+	Label.Position = UDim2.new(0, 0, 0, 0)
+	Label.Font = Enum.Font.SourceSansBold
+	Label.TextSize = 14
+	Label.TextWrapped = true
+	Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	Label.Text = ""
+	Label.ZIndex = 9
+
+	VoiceMuteErrorFrame = Frame
+	VoiceMuteErrorLabel = Label
+	return Frame, Label
+end
+
+local function ShowVoiceMuteError(TargetMuted)
+	local Action = TargetMuted and "mute" or "unmute"
+	local Message = "An error occurred while trying to " .. Action .. ". Please try the voice chat bubble to " .. Action .. "."
+
+	local Ok = pcall(function()
+		local Frame, Label = EnsureVoiceMuteErrorBanner()
+		Label.Text = Message
+		Frame.Visible = true
+	end)
+	if not Ok then return false end
+
+	VoiceMuteErrorGeneration = VoiceMuteErrorGeneration + 1
+	local ThisGeneration = VoiceMuteErrorGeneration
+	task.spawn(function()
+		task.wait(4)
+		if ThisGeneration == VoiceMuteErrorGeneration and VoiceMuteErrorFrame then
+			pcall(function() VoiceMuteErrorFrame.Visible = false end)
+		end
+	end)
+	return true
+end
 
 VoiceChatButton = MakeBottomButton(
 	"VoiceChat",
@@ -10803,26 +13095,45 @@ VoiceChatButton = MakeBottomButton(
 	VOICE_MIC_ROOT .. "Unmuted0@3x.png",
 	UDim2.new(0, 716, 0.5, -32),
 	function()
-		if not VoiceChatEnabled or not LocalVoiceEnabled then return end
-		local CurrentMuted = GetLocalVoiceMuted()
-		SetLocalVoiceMuted(not CurrentMuted)
-		LocalVoiceMuted = not CurrentMuted
-		if VoiceChatIcon then
-			VoiceChatIcon.Image = LocalVoiceMuted and VOICE_MIC_ROOT .. "Muted@3x.png" or FindNativeVoiceIcon(LocalPlayer) or VOICE_MIC_ROOT .. "Unmuted0@3x.png"
+		if not VoiceOptionAvailable then
+			return
 		end
+		-- Bottom microphone is exclusively mute/unmute. Connection is managed
+		-- separately by the voice runtime; this button never acts as a Connect UI.
+		local CurrentOk, CurrentMuted = pcall(function() return GetLocalVoiceMuted() end)
+		local NativeMicImage = FindNativeVoiceIcon(LocalPlayer)
+		if type(NativeMicImage) == "string" then
+			if NativeMicImage:find("Muted", 1, true) then
+				CurrentOk, CurrentMuted = true, true
+			elseif NativeMicImage:find("Unmuted", 1, true) then
+				CurrentOk, CurrentMuted = true, false
+			end
+		end
+		if not CurrentOk then
+			return
+		end
+		local TargetMuted = not (CurrentMuted == true)
+		-- This build intentionally reports the old red-banner error and leaves
+		-- the real mute state untouched. Use Roblox's voice bubble to change it.
+		ShowVoiceMuteError(TargetMuted)
+		return
+
 	end,
 	UDim2.new(0, 64, 0, 64)
 )
-VoiceChatButton.Visible = LocalVoiceEnabled and VoiceChatEnabled
+VoiceChatButton.Visible = VoiceChatDesiredOn == true and VoiceOptionAvailable == true and not IsMobile
 
 VoiceChatIcon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 if VoiceChatIcon then
-	VoiceChatIcon.Size = UDim2.fromOffset(44, 44)
-	VoiceChatIcon.Position = UDim2.new(0.5, -22, 0.5, -22)
+	VoiceChatIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+	VoiceChatIcon.Size = UDim2.fromOffset(50, 50)
+	VoiceChatIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
 end
 
 ConfigureMobileActionButtons = function()
-	local VoiceActive = LocalVoiceEnabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport
+	-- Show a mute/unmute button whenever voice is available for this account/place.
+	-- It is not a separate Voice Chat Connected toggle and does not initiate joins.
+	local VoiceActive = VoiceChatDesiredOn == true and VoiceOptionAvailable == true and not IsMobile
 	local UiScale = GetMobileUiScale()
 	local ActionHeight = 62
 	local Gap = math.max(4, math.floor(MOBILE_LAYOUT_GAP * UiScale + 0.5))
@@ -10897,17 +13208,41 @@ ConfigureMobileActionButtons = function()
 		end
 		VoiceChatButton.Visible = false
 	else
-		-- PC desktop: the three fixed 260x70 buttons live in BottomButtonFrame.
-		MobileActionButtons.Reset.Size = UDim2.new(0,260,0,70)
-		MobileActionButtons.Leave.Size = UDim2.new(0,260,0,70)
-		MobileActionButtons.Resume.Size = UDim2.new(0,260,0,70)
-		MobileActionButtons.Reset.Position = UDim2.new(0,0,0.5,-35)
-		MobileActionButtons.Leave.Position = UDim2.new(0,270,0.5,-35)
-		MobileActionButtons.Resume.Position = UDim2.new(0,540,0.5,-35)
+		-- PC desktop: reserve space for the mic and resize all three action buttons to match.
+		local FrameWidth = tonumber(Hub.BottomButtonFrame.AbsoluteSize.X) or 0
+		if FrameWidth <= 0 then FrameWidth = Hub.BottomButtonFrame.Size.X.Offset end
+		if FrameWidth <= 0 then FrameWidth = 800 end
+		local FrameHeight = 70
+		-- The original frame was only 60px tall while its three action buttons were
+		-- 70px tall. Match the frame to the buttons so the mic is not clipped/squashed.
+		Hub.BottomButtonFrame.Size = UDim2.new(0, FrameWidth, 0, FrameHeight)
+		local ActionGap = VoiceActive and 8 or 10
+		local VoiceButtonWidth = VoiceActive and FrameHeight or 0
+		local ActionWidth = 260
+		if VoiceActive then
+			ActionWidth = math.max(120, math.floor((FrameWidth - VoiceButtonWidth - (ActionGap * 3) - 2) / 3))
+		end
+		MobileActionButtons.Reset.Size = UDim2.new(0, ActionWidth, 0, FrameHeight)
+		MobileActionButtons.Leave.Size = UDim2.new(0, ActionWidth, 0, FrameHeight)
+		MobileActionButtons.Resume.Size = UDim2.new(0, ActionWidth, 0, FrameHeight)
+		MobileActionButtons.Reset.Position = UDim2.new(0, 0, 0.5, -FrameHeight / 2)
+		MobileActionButtons.Leave.Position = UDim2.new(0, ActionWidth + ActionGap, 0.5, -FrameHeight / 2)
+		MobileActionButtons.Resume.Position = UDim2.new(0, (ActionWidth + ActionGap) * 2, 0.5, -FrameHeight / 2)
 		MobileActionButtons.Reset.Visible = true
 		MobileActionButtons.Leave.Visible = true
 		MobileActionButtons.Resume.Visible = true
-		VoiceChatButton.Visible = false
+		VoiceChatButton.Parent = Hub.BottomButtonFrame
+		VoiceChatButton.AnchorPoint = Vector2.new(1, 0.5)
+		local ActualVoiceWidth = VoiceActive and VoiceButtonWidth or FrameHeight
+		VoiceChatButton.Size = UDim2.new(0, ActualVoiceWidth, 0, FrameHeight)
+		VoiceChatButton.Position = UDim2.new(1, -2, 0.5, 0)
+		VoiceChatButton.Visible = VoiceActive
+		VoiceChatButton.ClipsDescendants = false
+		if VoiceChatIcon and VoiceChatIcon.Parent then
+			VoiceChatIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+			VoiceChatIcon.Size = UDim2.fromOffset(50, 50)
+			VoiceChatIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
+		end
 	end
 end
 
@@ -10925,6 +13260,8 @@ end)
 -- VOICE CHAT UI UPDATES
 -- ============================================================
 
+VoiceAutoReconnectStamp = 0
+
 -- PeakLevel changes much faster than the GUI refresh loop. Keep the bottom
 -- microphone icon on a fast sampling loop so it follows live microphone peaks.
 Spawn(function()
@@ -10933,7 +13270,7 @@ Spawn(function()
 			LocalVoiceMuted = GetLocalVoiceMuted()
 			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 			if Icon then
-				local Image = GetVoiceIcon(LocalPlayer, LocalVoiceMuted)
+				local Image = VoiceContrastIcon(GetVoiceIcon(LocalPlayer))
 				if Icon.Image ~= Image then Icon.Image = Image end
 			end
 		end
@@ -10943,26 +13280,38 @@ end)
 
 Spawn(function()
 	while ScreenGui and ScreenGui.Parent do
-		if VoiceChatEnabled then
-			RefreshLocalVoiceState()
-			if NativeVoiceScanStamp == 0 or (os.clock() - NativeVoiceScanStamp) > 2 then
-				RefreshNativeVoiceMirrorCache(true)
+		if VoiceOptionAvailable then
+			local ConnectedNow = IsLocalVoiceConnectionReady()
+			if not VoiceChatDesiredOn then
+				SetVoiceChatPreference(true)
+			elseif ConnectedNow then
+				VoiceConnectionAttempting = false
+				VoiceChatEnabled = true
+				RefreshLocalVoiceState()
+			elseif not VoiceConnectionAttempting and (os.clock() - VoiceAutoReconnectStamp) >= 12 then
+				-- Retry quietly if the local voice session drops back to idle. Eligibility
+				-- gates this path; this does not grant voice to an ineligible account.
+				VoiceAutoReconnectStamp = os.clock()
+				SetVoiceChatPreference(true)
 			end
-			local Changed = RefreshVoiceParticipants()
-			if Changed and RebuildPlayersPage then RebuildPlayersPage() end
 		end
+		if VoiceGameSupported and NativeVoiceScanStamp == 0 then
+			ScheduleNativeVoiceMirrorRefresh()
+		end
+		local Changed = RefreshVoiceParticipants()
+		if Changed and RebuildPlayersPage then RebuildPlayersPage() end
 
 		if VoiceChatButton and VoiceChatButton.Parent then
-			local VoiceActive = LocalVoiceEnabled and VoiceChatEnabled and InviteFriends and DisplayNameSupport
+			local VoiceActive = VoiceChatDesiredOn == true and VoiceOptionAvailable == true and not IsMobile
 			VoiceChatButton.Visible = VoiceActive
 			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
-			if Icon and VoiceActive then
-				local Image = GetVoiceIcon(LocalPlayer, LocalVoiceMuted)
+			if Icon then
+				local Image = VoiceContrastIcon(GetVoiceIcon(LocalPlayer))
 				if Icon.Image ~= Image then Icon.Image = Image end
 			end
 		end
 
-		if VoiceChatEnabled then
+		if VoiceGameSupported then
 			for _, Player in next, Players:GetPlayers() do
 				if Player ~= LocalPlayer then
 					local UserId = tonumber(Player.UserId or Player.userId) or 0
@@ -10971,13 +13320,16 @@ Spawn(function()
 					local BeforeVoice = VoiceEnabledCache[UserId] == true
 					CheckVoiceForPlayer(Player)
 					local HasVoice = VoiceEnabledCache[UserId] == true
-					if BeforeVoice ~= HasVoice or HasVoice ~= (VoiceButton ~= nil) then
+					if BeforeVoice ~= HasVoice then
 						if RebuildPlayersPage then RebuildPlayersPage() end
 						break
 					elseif VoiceButton then
+						-- Remote eligibility cannot be queried client-side, so keep the button
+						-- visible and update its activity/mute image even before a native bubble exists.
+						VoiceButton.Visible = VoiceGameSupported == true and VoiceAccountAllowed == true
 						local VoiceIcon = VoiceButton:FindFirstChild("VoiceIcon")
 						if VoiceIcon then
-							local Image = GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true)
+							local Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
 							if VoiceIcon.Image ~= Image then VoiceIcon.Image = Image end
 						end
 					end
@@ -10985,8 +13337,28 @@ Spawn(function()
 			end
 		end
 
-		ConfigureMobileActionButtons()
-		Wait(1.0)
+			Wait(1.0)
+		end
+	end)
+
+-- Refresh visible player-row mic meters frequently; eligibility checks remain on the slower loop below.
+Spawn(function()
+	while ScreenGui and ScreenGui.Parent do
+		if VoiceGameSupported and Hub and Hub.Visible and PlayersPage and PlayersPage.Frame then
+			for _, Player in next, Players:GetPlayers() do
+				if Player ~= LocalPlayer then
+					local UserId = tonumber(Player.UserId or Player.userId) or 0
+					local Row = PlayersPage.Frame:FindFirstChild("PlayerLabel" .. Player.Name)
+					local VoiceButton = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
+					local VoiceIcon = VoiceButton and VoiceButton:FindFirstChild("VoiceIcon")
+					if VoiceIcon then
+						local Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
+						if VoiceIcon.Image ~= Image then VoiceIcon.Image = Image end
+					end
+				end
+			end
+		end
+		Wait(0.2)
 	end
 end)
 
@@ -10994,49 +13366,146 @@ Connect(LocalPlayer.ChildAdded, function(Child)
 	if Child:IsA("AudioDeviceInput") then
 		GetAudioDeviceInputCache[LocalPlayer] = Child
 		EnsureVoiceAnalyzer(LocalPlayer)
+		if VoiceChatDesiredOn and IsLocalVoiceConnectionReady() then
+			VoiceChatEnabled = true
+			RefreshLocalVoiceState()
+		end
+		if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
 	end
 end)
 
-for _, Player in next, Players:GetPlayers() do
-	if Player ~= LocalPlayer then
-		Connect(Player.ChildAdded, function(Child)
-			if Child:IsA("AudioDeviceInput") then
-				GetAudioDeviceInputCache[Player] = Child
-				VoiceEnabledCache[Player.UserId] = true
-				if RebuildPlayersPage then RebuildPlayersPage() end
-			end
-		end)
+Connect(SoundService.DescendantAdded, function(Descendant)
+	if not Descendant:IsA("AudioDeviceInput") then return end
+	local Owner = nil
+	pcall(function() Owner = Descendant.Player end)
+	if not Owner then return end
+	GetAudioDeviceInputCache[Owner] = Descendant
+	if Owner == LocalPlayer then
+		if VoiceChatDesiredOn and IsLocalVoiceConnectionReady() then
+			VoiceChatEnabled = true
+			RefreshLocalVoiceState()
+		end
+	else
+		local UserId = tonumber(Owner.UserId or Owner.userId) or 0
+		VoiceEnabledCache[UserId] = true
+		VoiceCheckError[UserId] = nil
+		local Override = VoiceMutedPlayers[UserId]
+		if Override ~= nil then
+			SetRemoteVoiceMuted(Owner, Override)
+		elseif VoiceMuteAllActive then
+			SetRemoteVoiceMuted(Owner, true)
+		end
 	end
+	EnsureVoiceAnalyzer(Owner)
+	if RebuildPlayersPage then RebuildPlayersPage() end
+	if ConfigureMobileActionButtons then ConfigureMobileActionButtons() end
+end)
+
+VoicePlayerAudioHooks = VoicePlayerAudioHooks or setmetatable({}, {__mode = "k"})
+
+local function WatchVoicePlayerAudio(Player)
+	if not Player or Player == LocalPlayer or VoicePlayerAudioHooks[Player] then return end
+	VoicePlayerAudioHooks[Player] = true
+	Connect(Player.ChildAdded, function(Child)
+		if not Child:IsA("AudioDeviceInput") then return end
+		GetAudioDeviceInputCache[Player] = Child
+		VoiceEnabledCache[Player.UserId] = true
+		VoiceEligibilityQueryStamp[Player.UserId] = nil
+		local Override = VoiceMutedPlayers[Player.UserId]
+		if Override ~= nil then SetRemoteVoiceMuted(Player, Override)
+		elseif VoiceMuteAllActive then SetRemoteVoiceMuted(Player, true) end
+		EnsureVoiceAnalyzer(Player)
+		if RebuildPlayersPage then RebuildPlayersPage() end
+	end)
+end
+
+for _, Player in ipairs(Players:GetPlayers()) do
+	WatchVoicePlayerAudio(Player)
 end
 
 Connect(Players.PlayerAdded, function(Player)
-	Connect(Player.ChildAdded, function(Child)
-		if Child:IsA("AudioDeviceInput") then
-			GetAudioDeviceInputCache[Player] = Child
-			VoiceEnabledCache[Player.UserId] = true
+	local UserId = tonumber(Player.UserId) or 0
+	VoiceEnabledCache[UserId] = nil
+	VoiceCheckError[UserId] = nil
+	VoiceEligibilityQueryStamp[UserId] = nil
+	VoiceActivityPeak[UserId] = nil
+	VoiceActivityStamp[UserId] = nil
+	VoiceActivityPeakMeasured[UserId] = nil
+	VoiceActivityActive[UserId] = nil
+	WatchVoicePlayerAudio(Player)
+	ScheduleNativeVoiceMirrorRefresh()
+	-- Build the row immediately instead of waiting for this player to create an input.
+	if RebuildPlayersPage then task.defer(function() if Player.Parent then RebuildPlayersPage() end end) end
+	task.defer(function()
+		if not Player.Parent then return end
+		CheckVoiceForPlayer(Player, function(Enabled, IsUnknown)
+			if Enabled then VoiceEnabledCache[UserId] = true
+			elseif not IsUnknown then VoiceEnabledCache[UserId] = nil end
 			if RebuildPlayersPage then RebuildPlayersPage() end
-		end
+		end)
 	end)
+end)
+
+Connect(Players.PlayerRemoving, function(Player)
+	local UserId = tonumber(Player.UserId) or 0
+	GetAudioDeviceInputCache[Player] = nil
+	VoiceEnabledCache[UserId] = nil
+	VoiceEligibilityQueryStamp[UserId] = nil
+	VoiceActivityPeak[UserId] = nil
+	VoiceActivityStamp[UserId] = nil
+	VoiceActivityPeakMeasured[UserId] = nil
+	VoiceActivityActive[UserId] = nil
+	NativeVoiceIconObjects[UserId] = nil
+	NativeVoiceIconImages[UserId] = nil
+	NativeVoiceIconLastImages[UserId] = nil
+	local Connection = NativeVoiceIconConnections[UserId]
+	if Connection then pcall(function() Connection:Disconnect() end) end
+	NativeVoiceIconConnections[UserId] = nil
+	NativeVoiceIconConnectedObjects[UserId] = nil
+	if RebuildPlayersPage then task.defer(RebuildPlayersPage) end
 end)
 
 if VoiceChatInternal then
 	Protect(function()
 		Connect(VoiceChatInternal.ParticipantsStateChanged, function()
-			if not VoiceChatEnabled then return end
+			if not VoiceGameSupported then return end
 			RefreshVoiceParticipants()
 			if RebuildPlayersPage then RebuildPlayersPage() end
 		end)
 	end)
 	Protect(function()
-		Connect(VoiceChatInternal.PlayerMicActivitySignalChange, function(ActivityInfo)
-			if not VoiceChatEnabled then return end
-			VoiceProcessActivityInfo(ActivityInfo)
+		Connect(VoiceChatInternal.PlayerMicActivitySignalChange, function(ActivityInfo, SpeakingOrInfo, PeakValue)
+			if not VoiceGameSupported then return end
+			local Payload = {}
+			if type(ActivityInfo) == "table" then
+				for Key, Value in next, ActivityInfo do Payload[Key] = Value end
+			elseif typeof(ActivityInfo) == "Instance" then
+				local UserId = nil
+				pcall(function() if ActivityInfo:IsA("Player") then UserId = ActivityInfo.UserId end end)
+				if not UserId then return end
+				Payload.userId = UserId
+			else
+				local UserId = tonumber(ActivityInfo)
+				if not UserId then return end
+				Payload.userId = UserId
+			end
+			if type(SpeakingOrInfo) == "boolean" then
+				Payload.isSpeaking = SpeakingOrInfo
+			elseif type(SpeakingOrInfo) == "number" then
+				Payload.peakLevel = SpeakingOrInfo
+			elseif type(SpeakingOrInfo) == "table" then
+				for Key, Value in next, SpeakingOrInfo do
+					if Payload[Key] == nil then Payload[Key] = Value end
+				end
+			end
+			if type(PeakValue) == "number" then Payload.peakLevel = PeakValue end
+			VoiceProcessActivityInfo(Payload)
 		end)
 	end)
 end
 
 Connect(CoreGui.DescendantAdded, function(Descendant)
-	if not VoiceChatEnabled then return end
+	if not VoiceGameSupported then return end
 	if Descendant:IsA("ImageLabel") or Descendant:IsA("ImageButton") then
 		local Image = tostring(Descendant.Image or "")
 		if Image:find("VoiceChat", 1, true) then
@@ -11049,25 +13518,83 @@ end)
 -- NATIVE SETTINGS HIDING
 -- ============================================================
 
+NativeSettingsSuppressionSnapshots = NativeSettingsSuppressionSnapshots or setmetatable({}, {__mode = "k"})
+
+CaptureNativeSettingsSuppressionSnapshot = function(Shield, AddedObject)
+	if not Shield then return end
+	local Snapshot = NativeSettingsSuppressionSnapshots[Shield]
+	if not Snapshot then
+		Snapshot = {Objects = {}, ByObject = {}, Initialized = false}
+		NativeSettingsSuppressionSnapshots[Shield] = Snapshot
+	end
+	local Properties = {"Visible", "Active", "Selectable", "AutoButtonColor", "BackgroundTransparency", "ImageTransparency", "TextTransparency"}
+	local function SaveObject(Object)
+		if not Object then return end
+		local IsGuiOk, IsGui = pcall(function() return Object:IsA("GuiObject") end)
+		if not IsGuiOk or not IsGui then return end
+		local SavedProps = Snapshot.ByObject[Object]
+		if not SavedProps then
+			SavedProps = {}
+			Snapshot.ByObject[Object] = SavedProps
+			table.insert(Snapshot.Objects, Object)
+		end
+		for _, Property in ipairs(Properties) do
+			if SavedProps[Property] == nil then
+				local ReadOk, Value = pcall(function() return Object[Property] end)
+				if ReadOk then SavedProps[Property] = Value end
+			end
+		end
+	end
+	if not Snapshot.Initialized then
+		SaveObject(Shield)
+		local Ok, Descendants = pcall(function() return Shield:GetDescendants() end)
+		if Ok then for _, Object in ipairs(Descendants) do SaveObject(Object) end end
+		Snapshot.Initialized = true
+	elseif AddedObject then
+		SaveObject(AddedObject)
+	end
+end
+
+SuppressNativeSettingsObject = function(Object)
+	if not Object then return end
+	local IsGuiOk, IsGui = pcall(function() return Object:IsA("GuiObject") end)
+	if not IsGuiOk or not IsGui then return end
+	pcall(function() Object.Visible = false end)
+	pcall(function() Object.Active = false end)
+	pcall(function() Object.Selectable = false end)
+	pcall(function() Object.AutoButtonColor = false end)
+	pcall(function() Object.BackgroundTransparency = 1 end)
+	pcall(function() Object.ImageTransparency = 1 end)
+	pcall(function() Object.TextTransparency = 1 end)
+end
+
+RestoreNativeSettingsSuppressionSnapshot = function(Shield)
+	local Snapshot = Shield and NativeSettingsSuppressionSnapshots[Shield]
+	if not Snapshot then return false end
+	local Properties = {"Active", "Selectable", "AutoButtonColor", "BackgroundTransparency", "ImageTransparency", "TextTransparency", "Visible"}
+	for _, Object in ipairs(Snapshot.Objects) do
+		local SavedProps = Snapshot.ByObject[Object]
+		if SavedProps then
+			for _, Property in ipairs(Properties) do
+				local Value = SavedProps[Property]
+				if Value ~= nil then pcall(function() Object[Property] = Value end) end
+			end
+		end
+	end
+	return true
+end
+
 HideNativeSettingsMenu =
 	function()
+		if Hub and Hub.NativeMuteTransaction then return end
 		local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
 		local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
-		if Shield then
-			local HideGuiObject = function(Object)
-				if not Object:IsA("GuiObject") then return end
-				pcall(function() Object.Visible = false end)
-				pcall(function() Object.Active = false end)
-				pcall(function() Object.Selectable = false end)
-				pcall(function() Object.AutoButtonColor = false end)
-				pcall(function() Object.BackgroundTransparency = 1 end)
-				pcall(function() Object.ImageTransparency = 1 end)
-				pcall(function() Object.TextTransparency = 1 end)
-			end
-			HideGuiObject(Shield)
-			for _, Child in next, Shield:GetDescendants() do
-				HideGuiObject(Child)
-			end
+		if not Shield then return end
+		CaptureNativeSettingsSuppressionSnapshot(Shield)
+		local Snapshot = NativeSettingsSuppressionSnapshots[Shield]
+		if not Snapshot then return end
+		for _, Object in ipairs(Snapshot.Objects) do
+			if Object and Object.Parent then SuppressNativeSettingsObject(Object) end
 		end
 	end
 
@@ -11198,6 +13725,11 @@ SetVisibility =
 
 		if not Visible then
 			Hub.InInviteMenu = false
+			InviteSelectedIndex = 0
+			InviteSelectedFriendId = nil
+			HideInviteSelection()
+			Protect(function() GuiService.SelectedObject = nil end)
+			Protect(function() GuiService.SelectedCoreObject = nil end)
 			Hub.InConfirmation = false
 			if InviteHeader then InviteHeader.Visible = false end
 			if InviteList then InviteList.Visible = false end
@@ -11209,7 +13741,17 @@ SetVisibility =
 		SetGameplayInputLocked(Visible)
 
 		if Visible then
+			SystemMenuButtonClosing = false
+			-- ESC menu is open: hide the recorder overlay, but keep its timer
+			-- and recording state running.
+			SetRecorderOverlayVisibility(false)
+			if SystemMenuHitbox then
+				SystemMenuHitbox.Visible = true
+				SystemMenuHitbox.Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X - 4, SYSTEM_MENU_OFFSET_Y - 4)
+				SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
+			end
 			HideNativeSettingsMenu()
+			SetTopBarAppEnabled(false)
 			SetTopbarCoreGuiEnabled(false)
 			Hub.Shield.Visible = true
 			Hub.HubBar.Visible = not Hub.InInviteMenu and not Hub.InConfirmation
@@ -11220,7 +13762,7 @@ SetVisibility =
 			end
 			if SystemMenuButton then
 				SystemMenuButton.Visible = true
-				SystemMenuButton.Size = UDim2.fromOffset(32, 32)
+				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 			end
 
 			if NoAnimation then
@@ -11230,7 +13772,8 @@ SetVisibility =
 				TweenTo(Hub.Shield, SETTINGS_ACTIVE_POSITION, Enum.EasingDirection.InOut, Enum.EasingStyle.Quart, 0.5)
 			end
 
-			RefreshNativeVoiceMirrorCache(true)
+			-- Native voice icons are refreshed asynchronously by CoreGui events and the
+			-- throttled voice cache loop; don't scan GUI descendants in the opening frame.
 			SwitchToPage(CustomPage or PlayersPage, true)
 			if PendingPlayerListRefresh and PlayersPage then
 				RebuildPlayersPage()
@@ -11250,24 +13793,55 @@ SetVisibility =
 				end)
 			end
 		else
+			-- Keep the native TopBarApp disabled while the custom menu is closing.
+			-- It is re-enabled only after the closing tween has actually finished.
+			SetTopBarAppEnabled(false)
 			SetTopbarCoreGuiEnabled(true)
 			Hub.HubBar.Visible = false
 			Hub.BottomButtonFrame.Visible = false
 			Hub.PageClipper.Visible = false
 			if HomeButton then HomeButton.Visible = false end
 			if SystemMenuButton then
-				SystemMenuButton.Visible = true
-				SystemMenuButton.Size = UDim2.fromOffset(40, 40)
+				-- Keep the visible 30x30 SystemMenuButton unchanged for the entire
+				-- closing tween. Only hide it in the tween completion callback below.
+				SystemMenuButton.Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X, SYSTEM_MENU_OFFSET_Y)
+				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+				SystemMenuButton.Active = true
+				SystemMenuButton.Selectable = true
 				pcall(function()
-					SystemMenuButton.ImageTransparency = 1
+					SystemMenuButton.ImageTransparency = 0
 				end)
 			end
 			if NoAnimation then
+				SystemMenuButtonClosing = false
+				SyncTopBarAppVisibility()
+				SetRecorderOverlayVisibility(true)
+				if SystemMenuHitbox then SystemMenuHitbox.Visible = true end
+				if SystemMenuButton then SystemMenuButton.Visible = false end
 				Hub.Shield.Position = SETTINGS_INACTIVE_POSITION
 				Hub.Shield.Visible = false
 			else
+				SystemMenuButtonClosing = true
+				if SystemMenuHitbox then
+					SystemMenuHitbox.Visible = true
+					SystemMenuHitbox.Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X - 4, SYSTEM_MENU_OFFSET_Y - 4)
+					SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
+				end
+				if SystemMenuButton then SystemMenuButton.Visible = true end
 				TweenTo(Hub.Shield, SETTINGS_INACTIVE_POSITION, Enum.EasingDirection.In, Enum.EasingStyle.Quad, 0.4, function()
-					if not Hub.Visible then Hub.Shield.Visible = false end
+					if not Hub.Visible then
+						Hub.Shield.Visible = false
+						SystemMenuButtonClosing = false
+						SyncTopBarAppVisibility()
+						SetRecorderOverlayVisibility(true)
+						-- Keep the invisible 40x40 shield permanently over the native top-left button.
+						if SystemMenuHitbox then
+							SystemMenuHitbox.Visible = true
+							SystemMenuHitbox.Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X - 4, SYSTEM_MENU_OFFSET_Y - 4)
+							SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
+						end
+						if SystemMenuButton then SystemMenuButton.Visible = false end
+					end
 				end)
 			end
 		end
@@ -11276,6 +13850,9 @@ SetVisibility =
 -- ============================================================
 -- SYSTEM MENU BUTTON
 -- ============================================================
+
+SystemMenuButtonClosing = false
+SystemMenuHitbox = nil
 
 SystemMenuButton =
 	Create(
@@ -11287,11 +13864,13 @@ SystemMenuButton =
 			BorderSizePixel = 0,
 			Image = SYSTEM_MENU_ICON,
 
+			-- Original visual SystemMenuButton: 30x30.
+			-- The separate 40x40 SystemMenuHitbox provides the larger click area.
 			ImageTransparency = 0,
 			ScaleType = Enum.ScaleType.Fit,
 			ImageRectOffset = SYSTEM_MENU_ICON_RECT_OFFSET,
 			ImageRectSize = SYSTEM_MENU_ICON_RECT_SIZE,
-			Size = UDim2.fromOffset(SYSTEM_MENU_SIZE.X, SYSTEM_MENU_SIZE.Y),
+			Size = UDim2.fromOffset(30, 30),
 			Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X, SYSTEM_MENU_OFFSET_Y),
 			AutoButtonColor = false,
 			Visible = false,
@@ -11303,6 +13882,8 @@ SystemMenuButton =
 
 Insert(Data.Objects, SystemMenuButton)
 Create("UICorner", {Parent = SystemMenuButton, CornerRadius = UDim.new(0, 8)})
+
+-- Original SystemMenuButton image is rendered directly by the 30x30 ImageButton.
 
 SystemMenuSelection = Create(
 	"ImageLabel",
@@ -11319,10 +13900,49 @@ SystemMenuSelection = Create(
 Create("UICorner", {Parent = SystemMenuSelection, CornerRadius = UDim.new(0, 8)})
 SystemMenuButton.SelectionImageObject = SystemMenuSelection
 
+-- 40x40 transparent custom hitbox. The visible SystemMenuButton stays 30x30,
+-- while this larger shield sits over the same native top-left click area.
+SystemMenuHitbox = Create(
+	"ImageButton",
+	{
+		Name = "SystemMenuButtonHitbox",
+		Parent = ScreenGui,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Image = "",
+		ImageTransparency = 1,
+		AutoButtonColor = false,
+		Active = true,
+		Selectable = false,
+		Size = UDim2.fromOffset(40, 40),
+		Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X - 4, SYSTEM_MENU_OFFSET_Y - 4),
+		Visible = false,
+		ZIndex = SETTINGS_BASE_ZINDEX + 102,
+	}
+)
+Insert(Data.Objects, SystemMenuHitbox)
+
+NativeSystemMenuButtonCache = NativeSystemMenuButtonCache or {}
+NativeSystemMenuButtonCacheInitialized = NativeSystemMenuButtonCacheInitialized or false
+
 HideNativeSystemMenuButtons =
 	function()
-		for _, Object in next, CoreGui:GetDescendants() do
-			if Object ~= SystemMenuButton and Object.Name == "SystemMenuButton" and Object:IsA("GuiObject") then
+		-- CoreGui is walked once, not on every 0.25s button-alignment pass.
+		if not NativeSystemMenuButtonCacheInitialized then
+			NativeSystemMenuButtonCacheInitialized = true
+			pcall(function()
+				for _, Object in ipairs(CoreGui:GetDescendants()) do
+					if Object ~= SystemMenuButton and Object.Name == "SystemMenuButton" and Object:IsA("GuiObject") then
+						table.insert(NativeSystemMenuButtonCache, Object)
+					end
+				end
+			end)
+		end
+		for Index = #NativeSystemMenuButtonCache, 1, -1 do
+			local Object = NativeSystemMenuButtonCache[Index]
+			if not Object or not Object.Parent then
+				table.remove(NativeSystemMenuButtonCache, Index)
+			elseif Object ~= SystemMenuButton then
 				pcall(function() Object.Visible = false end)
 				pcall(function() Object.Active = false end)
 				pcall(function() Object.Selectable = false end)
@@ -11333,8 +13953,22 @@ HideNativeSystemMenuButtons =
 AlignSystemMenuButton =
 	function()
 		if not SystemMenuButton then return end
+		if Hub and Hub.NativeMuteTransaction then
+			-- Do not let the 0.25s alignment loop put the custom transparent hitbox
+			-- back over the native topbar button while we're opening it for a mic click.
+			pcall(function() SystemMenuButton.Visible = false; SystemMenuButton.Active = false end)
+			if SystemMenuHitbox then pcall(function() SystemMenuHitbox.Visible = false; SystemMenuHitbox.Active = false end) end
+			HideNativeSystemMenuButtons()
+			return
+		end
 
 		SystemMenuButton.Visible = true
+		SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+		if SystemMenuHitbox then
+			SystemMenuHitbox.Visible = true
+			SystemMenuHitbox.Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X - 4, SYSTEM_MENU_OFFSET_Y - 4)
+			SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
+		end
 
 		if Hub.Visible then
 			SystemMenuButton.Position =
@@ -11342,22 +13976,36 @@ AlignSystemMenuButton =
 					SYSTEM_MENU_OFFSET_X,
 					SYSTEM_MENU_OFFSET_Y
 				)
-			SystemMenuButton.Size = UDim2.fromOffset(32, 32)
+			SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 			pcall(function()
 				SystemMenuButton.ImageTransparency = 0
 			end)
 		else
-			-- Closed state: keep the larger 40x40 clickable hitbox 4px left and 4px up,
-			-- but make the image itself invisible.
-			SystemMenuButton.Position =
-				UDim2.fromOffset(
-					SYSTEM_MENU_OFFSET_X - 4,
-					SYSTEM_MENU_OFFSET_Y - 4
-				)
-			SystemMenuButton.Size = UDim2.fromOffset(40, 40)
-			pcall(function()
-				SystemMenuButton.ImageTransparency = 1
-			end)
+			-- While closing, preserve the normal visible 30x30 button. After the
+			-- tween completes, SetVisibility hides the visual button permanently.
+			if SystemMenuButtonClosing then
+				SystemMenuButton.Position =
+					UDim2.fromOffset(
+						SYSTEM_MENU_OFFSET_X,
+						SYSTEM_MENU_OFFSET_Y
+					)
+				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+				pcall(function()
+					SystemMenuButton.ImageTransparency = 0
+				end)
+				SystemMenuButton.Visible = true
+			else
+				SystemMenuButton.Position =
+					UDim2.fromOffset(
+						SYSTEM_MENU_OFFSET_X,
+						SYSTEM_MENU_OFFSET_Y
+					)
+				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+				pcall(function()
+					SystemMenuButton.ImageTransparency = 0
+				end)
+				SystemMenuButton.Visible = false
+			end
 		end
 
 		-- Keep the real/native button hidden on every platform.
@@ -11367,20 +14015,43 @@ AlignSystemMenuButton =
 		end
 	end
 
-Connect(SystemMenuButton.MouseButton1Click, function()
+local ActivateCustomSystemMenu = function()
+	if Hub and Hub.NativeMuteTransaction then return end
+	Hub.SuppressNativeOpenUntil = tick() + 1.0
+	HideNativeSettingsMenu()
+	HideNativeSystemMenuButtons()
 	SetVisibility(not Hub.Visible)
 	AlignSystemMenuButton()
-end)
+end
+
+Connect(SystemMenuButton.MouseButton1Click, ActivateCustomSystemMenu)
+Connect(SystemMenuHitbox.MouseButton1Click, ActivateCustomSystemMenu)
 AlignSystemMenuButton()
 Connect(CoreGui.ChildAdded, function()
 	task.defer(function()
+		SyncTopBarAppVisibility()
 		HideNativeSystemMenuButtons()
 		AlignSystemMenuButton()
 		PositionRecorderGui()
 	end)
 end)
+
+Connect(CoreGui.DescendantAdded, function(Descendant)
+	if Descendant.Name == "TopBarApp" then
+		task.defer(function()
+			SyncTopBarAppVisibility()
+		end)
+	end
+end)
 Connect(CoreGui.DescendantAdded, function(Descendant)
 	if Descendant.Name == "SystemMenuButton" and Descendant ~= SystemMenuButton then
+		if NativeSystemMenuButtonCacheInitialized then
+			local Found = false
+			for _, Cached in ipairs(NativeSystemMenuButtonCache) do
+				if Cached == Descendant then Found = true; break end
+			end
+			if not Found then table.insert(NativeSystemMenuButtonCache, Descendant) end
+		end
 		task.defer(function()
 			pcall(function() Descendant.Visible = false end)
 			pcall(function() Descendant.Active = false end)
@@ -11407,6 +14078,9 @@ CloseInvitePage =
 		local Previous = Hub.PreviousMenuPage or PlayersPage
 		Hub.PreviousMenuPage = nil
 		Hub.InInviteMenu = false
+		Protect(function() GuiService.SelectedObject = nil end)
+		Protect(function() GuiService.SelectedCoreObject = nil end)
+		HideInviteSelection()
 		if SearchBox then
 			pcall(function() SearchBox:ReleaseFocus() end)
 		end
@@ -11426,10 +14100,9 @@ CloseInvitePage =
 EscapeAction =
 	function(_, State)
 		if State ~= Enum.UserInputState.Begin then return Enum.ContextActionResult.Sink end
-		local Now = tick()
-		if Now - LastEscapeAction < 0.15 then return Enum.ContextActionResult.Sink end
-		LastEscapeAction = Now
-		HideNativeSettingsMenu()
+		local CurrentTime = tick()
+		if CurrentTime - LastEscapeAction < 0.18 then return Enum.ContextActionResult.Sink end
+		LastEscapeAction = CurrentTime
 		HideNativeSystemMenuButtons()
 
 		if Hub.Visible and Hub.InInviteMenu then
@@ -11450,12 +14123,18 @@ EscapeAction =
 			return Enum.ContextActionResult.Sink
 		end
 
-		if Hub.Visible then Hub.SuppressNativeOpenUntil = Now + 0.8 end
-		SetVisibility(not Hub.Visible)
+		local Target = not Hub.Visible
+		-- ESC directly controls the custom panel and suppresses native callbacks
+		-- that would otherwise reopen it while Roblox is processing the same key.
+		Hub.NativeMenuTarget = nil
+		Hub.SuppressNativeOpenUntil = CurrentTime + 1.5
+		SetVisibility(Target, true)
 		AlignSystemMenuButton()
-		Spawn(function()
-			Wait()
-			HideNativeSettingsMenu()
+		task.defer(function()
+			if not Hub.Visible then
+				pcall(function() Hub.Modal.Visible = false end)
+				pcall(function() Hub.Shield.Visible = false end)
+			end
 			HideNativeSystemMenuButtons()
 		end)
 		return Enum.ContextActionResult.Sink
@@ -11465,35 +14144,47 @@ Protect(function()
 	-- Give our custom ESC handler a higher input priority on desktop so the
 	-- Roblox/native menu cannot swallow the Escape key before we see it.
 	if not IsMobile then
-		pcall(function()
-			ContextActionService:BindActionAtPriority(
-				"Settings2016Escape",
-				function(_, State)
-					if State == Enum.UserInputState.Begin then
-						return EscapeAction(nil, State)
-					end
-					return Enum.ContextActionResult.Sink
-				end,
-				false,
-				20000,
-				Enum.KeyCode.Escape
-			)
+		pcall(function() ContextActionService:UnbindAction("Settings2016Escape") end)
+		pcall(function() ContextActionService:UnbindCoreAction("Settings2016Escape") end)
+		local EscapeCallback = function(_, State)
+			if State == Enum.UserInputState.Begin then
+				return EscapeAction(nil, State)
+			end
+			return Enum.ContextActionResult.Sink
+		end
+		local CoreBound = pcall(function()
+			ContextActionService:BindCoreActionAtPriority("Settings2016Escape", EscapeCallback, false, 20000, Enum.KeyCode.Escape)
 		end)
+		if not CoreBound then
+			pcall(function()
+				ContextActionService:BindActionAtPriority("Settings2016Escape", EscapeCallback, false, 20000, Enum.KeyCode.Escape)
+			end)
+		end
 	end
 
-	local BoundAtPriority = pcall(function()
-		ContextActionService:BindCoreActionAtPriority("RBXEscapeMainMenu", EscapeAction, false, 10000, Enum.KeyCode.Escape, Enum.KeyCode.ButtonStart)
-	end)
-	if not BoundAtPriority then
-		ContextActionService:BindCoreAction("RBXEscapeMainMenu", EscapeAction, false, Enum.KeyCode.Escape, Enum.KeyCode.ButtonStart)
-	end
+	-- Do not overwrite Roblox's reserved RBXEscapeMainMenu action. The single
+	-- high-priority Settings2016Escape action above owns ordinary ESC input.
 end)
 
 Connect(UserInputService.InputBegan, function(Input, Processed)
-	if Processed and Input.KeyCode ~= Enum.KeyCode.Escape then return end
-	if Input.KeyCode == Enum.KeyCode.Escape then
-		EscapeAction(nil, Enum.UserInputState.Begin)
-	elseif not IsMobile and Input.KeyCode == Enum.KeyCode.F12 then
+	-- Fallback for client builds where ContextActionService doesn't deliver Escape.
+	-- EscapeAction's shared debounce prevents this and the high-priority binding
+	-- from toggling the menu twice for the same keypress.
+	if not IsMobile and Input.KeyCode == Enum.KeyCode.Escape then
+		if Hub.Visible or not Processed then
+			EscapeAction("InputBeganFallback", Enum.UserInputState.Begin)
+		end
+		return
+	end
+	local InviteEnter =
+		Hub.Visible
+		and Hub.InInviteMenu
+		and not (SearchBox and SearchBox:IsFocused())
+		and (Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter)
+	if Processed and not InviteEnter then return end
+	-- Escape is handled only by the ContextActionService binding above. Handling
+	-- it again here toggled the custom menu twice and sometimes exposed CoreGui.
+	if not IsMobile and Input.KeyCode == Enum.KeyCode.F12 then
 		if tick() >= IgnoreRecorderF12Until then
 			ToggleCustomRecording()
 		end
@@ -11505,6 +14196,13 @@ Connect(UserInputService.InputBegan, function(Input, Processed)
 		end
 	elseif Hub.Visible and Input.KeyCode == Enum.KeyCode.L and not Hub.InInviteMenu and not Hub.InConfirmation then
 		PushPage(LeavePage)
+	elseif Hub.Visible and Hub.InInviteMenu and (Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter) then
+		local Friend = InviteSelectionFriends[InviteSelectedIndex]
+		local InviteButton = InviteSelectionInviteButtons[InviteSelectedIndex]
+		local InviteLabel = InviteSelectionInviteLabels[InviteSelectedIndex]
+		if Friend and InviteFriend then
+			InviteFriend(Friend, InviteButton, InviteLabel)
+		end
 	elseif Hub.Visible and (Input.KeyCode == Enum.KeyCode.Return or Input.KeyCode == Enum.KeyCode.KeypadEnter) then
 		if Hub.CurrentPage == ResetPage then
 			ResetCharacter()
@@ -11520,57 +14218,98 @@ end)
 
 HookNativeMenu =
 	function()
-		local HookedNative = {}
-		local GetNativeMenuTarget = function()
-			if Hub.NativeMenuTarget == nil then return true end
-			return Hub.NativeMenuTarget
+		local HookedRoots = setmetatable({}, {__mode = "k"})
+		local NativeMenuOpenQueued = false
+		local LastNativeMenuOpenHandled = 0
+		local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+		local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
+
+		local function NativeMenuOpened()
+			if Hub and Hub.NativeMuteTransaction then return end
+			local CurrentTime = tick()
+			if CurrentTime < (Hub.SuppressNativeOpenUntil or 0) then return end
+			if NativeMenuOpenQueued or (CurrentTime - LastNativeMenuOpenHandled) < 0.35 then return end
+			NativeMenuOpenQueued = true
+			LastNativeMenuOpenHandled = CurrentTime
+			task.defer(function()
+				NativeMenuOpenQueued = false
+				if not Hub or tick() < (Hub.SuppressNativeOpenUntil or 0) then return end
+				HideNativeSettingsMenu()
+				HideNativeSystemMenuButtons()
+				local Target = Hub.NativeMenuTarget
+				Hub.NativeMenuTarget = nil
+				if Target == nil then Target = true end
+				if Hub.Visible ~= Target then SetVisibility(Target, true) end
+			end)
 		end
-		local NativeMenuOpened = function()
-			HideNativeSettingsMenu()
-			HideNativeSystemMenuButtons()
-			if tick() < Hub.SuppressNativeOpenUntil then return end
-			SetVisibility(GetNativeMenuTarget())
-			Hub.NativeMenuTarget = nil
-		end
-		local HookNativeObject = function(Object)
-			if not Object or HookedNative[Object] or not Object:IsA("GuiObject") then return end
-			HookedNative[Object] = true
+
+		local function HookRoot(Object)
+			if not Object or HookedRoots[Object] then return end
+			local IsGuiOk, IsGui = pcall(function() return Object:IsA("GuiObject") end)
+			if not IsGuiOk or not IsGui then return end
+			HookedRoots[Object] = true
 			Connect(Object:GetPropertyChangedSignal("Visible"), function()
 				if Object.Visible then NativeMenuOpened() end
 			end)
 			if Object.Visible then NativeMenuOpened() end
 		end
-		local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
-		local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
-		local HookNativeContainer = function(NewShield)
+
+		local function HookShield(NewShield)
 			if not NewShield then return end
 			Shield = NewShield
+			CaptureNativeSettingsSuppressionSnapshot(Shield)
 			HideNativeSettingsMenu()
-			for _, Object in next, NewShield:GetDescendants() do HookNativeObject(Object) end
+			local SettingsShield = Shield:FindFirstChild("SettingsShield")
+			local MenuContainer = SettingsShield and SettingsShield:FindFirstChild("MenuContainer")
+			HookRoot(SettingsShield)
+			HookRoot(MenuContainer)
 		end
-		HookNativeContainer(Shield)
+
+		HookShield(Shield)
 		if RobloxGui then
 			Connect(RobloxGui.DescendantAdded, function(Descendant)
 				if Descendant.Name == "SettingsClippingShield" and Descendant.Parent == RobloxGui then
-					HookNativeContainer(Descendant)
-				elseif Shield and Descendant:IsDescendantOf(Shield) then
-					HookNativeObject(Descendant)
-					if Descendant:IsA("GuiObject") and Descendant.Visible then NativeMenuOpened() end
+					HookShield(Descendant)
+				elseif Shield then
+					local IsInside = false
+					pcall(function() IsInside = Descendant:IsDescendantOf(Shield) end)
+					if IsInside then
+						CaptureNativeSettingsSuppressionSnapshot(Shield, Descendant)
+						SuppressNativeSettingsObject(Descendant)
+						if Descendant.Name == "SettingsShield" or Descendant.Name == "MenuContainer" then HookRoot(Descendant) end
+					end
 				end
 			end)
 		end
+
+		-- On some client builds MenuIsOpen changes before a Settings root becomes visible.
+		pcall(function()
+			Connect(GuiService:GetPropertyChangedSignal("MenuIsOpen"), function()
+				local Open = false
+				pcall(function() Open = GuiService.MenuIsOpen == true end)
+				if Open then NativeMenuOpened() end
+			end)
+		end)
+
 		local TopBarApp = CoreGui:FindFirstChild("TopBarApp")
 		TopBarApp = TopBarApp and TopBarApp:FindFirstChild("TopBarApp")
+		if TopBarApp then SyncTopBarAppVisibility() end
 		local Holder = TopBarApp and TopBarApp:FindFirstChild("MenuIconHolder")
 		local Trigger = Holder and Holder:FindFirstChild("TriggerPoint")
 		local Hit = Trigger and Trigger:FindFirstChild("IconHitArea")
 		if Hit and Hit:IsA("GuiButton") then
+			Connect(Hit.MouseButton1Down, function()
+				if Hub and Hub.NativeMuteTransaction then return end
+				Hub.SuppressNativeOpenUntil = tick() + 1.0
+				HideNativeSystemMenuButtons()
+			end)
 			Connect(Hit.MouseButton1Click, function()
+				if Hub and Hub.NativeMuteTransaction then return end
+				Hub.SuppressNativeOpenUntil = tick() + 1.0
 				local Target = not Hub.Visible
 				Hub.NativeMenuTarget = Target
-				Spawn(function()
-					Wait()
-					SetVisibility(Target)
+				task.defer(function()
+					SetVisibility(Target, true)
 					if Hub.NativeMenuTarget == Target then Hub.NativeMenuTarget = nil end
 				end)
 			end)
@@ -11581,16 +14320,19 @@ if IsMobile then
 	BuildMobileHelpPage()
 	ApplyMobileReportLayout()
 end
-ApplyGraphicsMinusPlus()
 
 -- ============================================================
 -- INITIAL STATE
 -- ============================================================
 
+SetTopBarAppEnabled(true)
 SwitchToPage(GamePage, true, true)
 ConfigureMobileActionButtons()
 ResizeHub()
 ConfigureMobileActionButtons()
+if VoiceOptionAvailable and SetVoiceChatPreference then
+	SetVoiceChatPreference(true)
+end
 AlignSystemMenuButton()
 if not IsMobile then
 	FindRecorderControls()
