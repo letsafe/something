@@ -359,17 +359,15 @@ INVITE_SHARE_ROW_GAP = 8
 
 -- The 2016-style phone tab bar is compact; tablet and desktop keep their
 -- own heights below.
-MOBILE_HUBBAR_HEIGHT = 44
+MOBILE_HUBBAR_HEIGHT = 46
 TABLET_HUBBAR_HEIGHT = 48
 
 -- Custom SystemMenuButton offsets.
 SYSTEM_MENU_OFFSET_X = 16
 SYSTEM_MENU_OFFSET_Y = 4
-
-GetSystemMenuOffsetX = function()
-	-- The mobile ScreenGui uses the full viewport; compensate for the native
-	-- topbar's left safe-area gutter so the custom button does not sit too far left.
-	return IsPhone and 28 or SYSTEM_MENU_OFFSET_X
+MOBILE_SYSTEM_MENU_OFFSET_X = 32
+GetSystemMenuButtonOffsetX = function()
+    return IsPhone and MOBILE_SYSTEM_MENU_OFFSET_X or SYSTEM_MENU_OFFSET_X
 end
 
 -- Recorder overlay position relative to SystemMenuButton.
@@ -2201,7 +2199,7 @@ FitMenuButtonText = function(Object, AvailableWidth, BaseSize)
 	if AvailableWidth <= 0 then return end
 	local Text = tostring(Object.Text or "")
 	local FittedSize = BaseSize
-	for Size = math.floor(BaseSize), 10, -1 do
+	for Size = math.floor(BaseSize), 14, -1 do
 		if GetMenuMeasuredTextWidth(Object, Text, Size) <= AvailableWidth then
 			FittedSize = Size
 			break
@@ -2258,6 +2256,24 @@ ApplyMenuLocalizedText = function(Object, Source)
 	local Translation = GetMenuLocalizedText(Source, MenuLocalizationLocale)
 	MenuLocalizationRendered[Object] = Translation
 	if Object.Text ~= Translation then Object.Text = Translation end
+	if Object:IsA("TextLabel") then
+		local Parent = Object.Parent
+		if Object.Name == "NameLabel" and Parent and Parent.Name == "InviteFriendsToJoin" then
+			Object.Font = Enum.Font.SourceSans
+			Object.TextSize = 28
+			Object.TextScaled = true
+			Object.TextWrapped = true
+			local Constraint = Object:FindFirstChildOfClass("UITextSizeConstraint")
+			if Constraint then Constraint.MinTextSize = 24; Constraint.MaxTextSize = 28 end
+		elseif Object.Name == "MuteAllLabel" and Parent and Parent.Name == "MuteAllVoiceRow" then
+			Object.Font = Enum.Font.SourceSans
+			Object.TextSize = 28
+			Object.TextScaled = true
+			Object.TextWrapped = true
+			local Constraint = Object:FindFirstChildOfClass("UITextSizeConstraint")
+			if Constraint then Constraint.MinTextSize = 24; Constraint.MaxTextSize = 28 end
+		end
+	end
 	if ApplyMenuLocalizedButtonLayout then
 		pcall(function() ApplyMenuLocalizedButtonLayout(Object) end)
 	end
@@ -2307,6 +2323,8 @@ ApplyMenuLocalizationLocale = function(Locale)
 	for Object, Source in pairs(MenuLocalizationSources) do
 		if Object then ApplyMenuLocalizedText(Object, Source) end
 	end
+	if LayoutTabs then pcall(LayoutTabs) end
+	if ResizeHub then pcall(ResizeHub) end
 end
 
 RefreshMenuLocalization = function()
@@ -4330,14 +4348,61 @@ ResizeHub = nil
 
 ResizeHub = function()
 
-	local Viewport = ScreenGui and ScreenGui.AbsoluteSize or Vector2.new(0, 0)
-	if Viewport.X <= 0 or Viewport.Y <= 0 then
-		local Camera = workspace.CurrentCamera
-		Viewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
+	local Viewport =
+		ScreenGui.AbsoluteSize
+
+	if
+		Viewport.X <= 0
+		or Viewport.Y <= 0
+	then
+
+		local Camera =
+			workspace.CurrentCamera
+
+		Viewport =
+			(Camera and Camera.ViewportSize)
+			or Vector2.new(
+				1280,
+				720
+			)
+
 	end
 
 	local Height
 	UpdateTabletPlatform(Viewport)
+
+	-- On phones, Roblox normally maps IgnoreGuiInset=true to DeviceSafeInsets.
+	-- That leaves edge strips outside the ScreenGui's coordinate/clipping area,
+	-- so any GUI content extending into them becomes invisible. Use the actual
+	-- fullscreen rectangle on phones only; leave tablet and desktop behavior as-is.
+	if IsPhone then
+		pcall(function()
+			ScreenGui.ScreenInsets = Enum.ScreenInsets.None
+		end)
+		pcall(function()
+			ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None
+		end)
+		-- Read the full phone viewport AFTER removing safe insets. AbsoluteSize may
+		-- still reflect the old inset rectangle for this resize pass.
+		pcall(function()
+			local Camera = workspace.CurrentCamera
+			if Camera and Camera.ViewportSize.X > 0 and Camera.ViewportSize.Y > 0 then
+				Viewport = Camera.ViewportSize
+			end
+		end)
+	else
+		-- Keep physical-screen coordinates on desktop/macOS/tablets too. The menu
+		-- itself remains capped in its platform branch; this only fixes the origin.
+		pcall(function() ScreenGui.IgnoreGuiInset = true end)
+		pcall(function() ScreenGui.ScreenInsets = Enum.ScreenInsets.None end)
+		pcall(function() ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None end)
+		pcall(function()
+			local Camera = workspace.CurrentCamera
+			if Camera and Camera.ViewportSize.X > 0 and Camera.ViewportSize.Y > 0 then
+				Viewport = Camera.ViewportSize
+			end
+		end)
+	end
 
 	-- UIAspectRatioConstraint has no Enabled property. Use explicit viewport-
 	-- aware geometry on phones and desktop; retain the legacy ratio on tablets.
@@ -4377,14 +4442,14 @@ ResizeHub = function()
 
 		if IsPhone then
 
-			-- Apply the same capped shell before the invite subpage is displayed,
-			-- preventing a one-frame viewport-wide panel when Invite is first opened.
-			Width = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - 32 + 0.5)))
-			Hub.MenuContainer.Size = UDim2.new(0, Width, 1, 0)
-			Hub.MenuContainer.Position = UDim2.new(0.5, -Width / 2, 0, 0)
-			Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
+			-- Phone invite page is intentionally larger than the
+			-- normal ESC menu. Tablets keep a capped, PC-like width.
 
-			-- The invite panel stays within the shell; its list has its own inner padding.
+			local PhonePageSideInset = 16
+			Width = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - PhonePageSideInset * 2 + 0.5)))
+
+			-- Keep the invite page below the camera/notch region while the HubBar
+			-- itself remains edge-to-edge.
 			local PageTop = 48
 
 			PageHeight = math.max(160, math.floor(LayoutViewport.Y - PageTop - 12 + 0.5))
@@ -4403,7 +4468,13 @@ ResizeHub = function()
 					PageHeight
 				)
 
-			Hub.PageClipper.Position = UDim2.new(0, 0, 0, PageTop)
+			Hub.PageClipper.Position =
+				UDim2.new(
+					0.5,
+					-Width / 2 + TabletXOffset,
+					0,
+					PageTop
+				)
 
 		elseif IsTablet then
 
@@ -4648,13 +4719,14 @@ ResizeHub = function()
 
 		Hub.PageView.ScrollBarThickness = 0
 
-		-- Keep an 8px outer margin while letting the HubBar stay wider than page content.
-		local PhoneShellWidth = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - 16 + 0.5)))
-		Hub.MenuContainer.Size = UDim2.new(0, PhoneShellWidth, 1, 0)
-		Hub.MenuContainer.Position = UDim2.new(0.5, -PhoneShellWidth / 2, 0, 0)
+		-- Keep the transparent root viewport-sized for modal/shield positioning,
+		-- but keep every visible menu surface inset on phones.
+		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
+		Hub.MenuContainer.Position = UDim2.new(0, 0, 0, 0)
 		Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
-		local PhonePageSideInset = 8
-		local Width = math.max(1, PhoneShellWidth - PhonePageSideInset * 2)
+		local PhoneBarSideInset = 8
+		local PhonePageSideInset = 16
+		local Width = math.max(1, math.floor(LayoutViewport.X - PhonePageSideInset * 2 + 0.5))
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local MobileBarHeight = math.max(44, MOBILE_HUBBAR_HEIGHT)
@@ -4672,8 +4744,8 @@ ResizeHub = function()
 			PageHeight
 
 		Hub.HubBar.AnchorPoint = Vector2.new(0, 0)
-		Hub.HubBar.Size = UDim2.new(1, 0, 0, MobileBarHeight)
-		Hub.HubBar.Position = UDim2.new(0, 0, 0, GroupTop)
+		Hub.HubBar.Size = UDim2.new(1, -(PhoneBarSideInset * 2), 0, MobileBarHeight)
+		Hub.HubBar.Position = UDim2.new(0, PhoneBarSideInset, 0, GroupTop)
 
 		Hub.HubBarContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
@@ -4709,7 +4781,11 @@ ResizeHub = function()
 			MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
 
 			local ActionHeight = 62
-            local MobileVoiceIncluded = VoiceOptionAvailable == true and VoiceChatButton ~= nil
+            local MobileVoiceIncluded = VoiceOptionAvailable == true and VoiceChatButton ~= nil and not VOICE_CHAT_FORCE_OFF
+            if VoiceChatButton then
+                VoiceChatButton.Visible = MobileVoiceIncluded
+                if not MobileVoiceIncluded then VoiceChatButton.Parent = nil end
+            end
             local PhoneActionButtons = {
                 MobileActionButtons.Leave,
                 MobileActionButtons.Reset,
@@ -4717,7 +4793,7 @@ ResizeHub = function()
             }
             if MobileVoiceIncluded then table.insert(PhoneActionButtons, VoiceChatButton) end
             local ActionCount = #PhoneActionButtons
-            local ActionWidth = 1 / math.max(1, ActionCount)
+            local ActionWidth = MobileVoiceIncluded and 0.25 or (1 / math.max(1, ActionCount))
 
             if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
                 MobileButtonsContainer = Create("Frame", {
@@ -4736,26 +4812,26 @@ ResizeHub = function()
             for Index, Button in ipairs(PhoneActionButtons) do
                 if Button then
                     Button.Parent = MobileButtonsContainer
-                    Button.AnchorPoint = Vector2.new(0, 0)
-                    Button.Size = UDim2.new(ActionWidth, -4, 0, ActionHeight)
-                    Button.Position = UDim2.new((Index - 1) * ActionWidth, 2, 0, 0)
-                    Button.Visible = Button ~= VoiceChatButton or MobileVoiceIncluded
                     Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
+                    Button.Visible = Button ~= VoiceChatButton or MobileVoiceIncluded
 
                     if Button == VoiceChatButton then
+                        Button.AnchorPoint = Vector2.new(1, 0)
+                        Button.Size = UDim2.fromOffset(ActionHeight, ActionHeight)
+                        Button.Position = UDim2.new(1, -2, 0, 0)
                         Button.ClipsDescendants = true
                         local VoiceIcon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
                         if VoiceIcon then
                             VoiceIcon.Visible = true
                             VoiceIcon.AnchorPoint = Vector2.new(0.5, 0.5)
-                            VoiceIcon.Size = UDim2.fromOffset(34, 34)
+                            VoiceIcon.Size = UDim2.fromOffset(36, 36)
                             VoiceIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
                             pcall(function() VoiceIcon.ScaleType = Enum.ScaleType.Fit end)
-                            for _, Constraint in ipairs(VoiceIcon:GetChildren()) do
-                                if Constraint:IsA("UIAspectRatioConstraint") then Constraint.AspectRatio = 1 end
-                            end
                         end
                     else
+                        Button.AnchorPoint = Vector2.new(0, 0)
+                        Button.Size = UDim2.new(ActionWidth, -4, 0, ActionHeight)
+                        Button.Position = UDim2.new((Index - 1) * ActionWidth, 2, 0, 0)
                         local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
                         if Label then
                             Label.Position = UDim2.new(0, 0, 0, 0)
@@ -4763,13 +4839,13 @@ ResizeHub = function()
                             Label.ZIndex = SETTINGS_BASE_ZINDEX + 5
                             Label.TextWrapped = false
                             Label.TextScaled = true
-                            Label.TextSize = 16
+                            Label.TextSize = 18
                             local LabelConstraint = Label:FindFirstChildOfClass("UITextSizeConstraint")
                             if LabelConstraint then
-                                LabelConstraint.MinTextSize = 8
-                                LabelConstraint.MaxTextSize = 16
+                                LabelConstraint.MinTextSize = 15
+                                LabelConstraint.MaxTextSize = 18
                             else
-                                Create("UITextSizeConstraint", {Parent = Label, MinTextSize = 8, MaxTextSize = 16})
+                                Create("UITextSizeConstraint", {Parent = Label, MinTextSize = 15, MaxTextSize = 18})
                             end
                             Label.TextXAlignment = Enum.TextXAlignment.Center
                             Label.TextYAlignment = Enum.TextYAlignment.Center
@@ -5151,7 +5227,7 @@ LayoutTabs = function()
 		if Hub.HubBarContainerLayout then
 			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
 			Hub.HubBarContainerLayout.FillDirection = Enum.FillDirection.Horizontal
-			Hub.HubBarContainerLayout.HorizontalAlignment = IsPhone and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Center
+			Hub.HubBarContainerLayout.HorizontalAlignment = IsPhone and Enum.HorizontalAlignment.Right or Enum.HorizontalAlignment.Center
 			Hub.HubBarContainerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 			Hub.HubBarContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			Hub.HubBarContainerLayout.Padding = UDim.new(0, 0)
@@ -5183,54 +5259,48 @@ LayoutTabs = function()
 				Page.Icon.ImageTransparency = Selected and 0 or 0.5
 				local Title = Page.Icon:FindFirstChild("Title")
 				if IsMobile then
-					-- Fit one icon+text group in each equal-width tab cell, anchored to its right edge.
-					local CellWidth = 0
-					pcall(function() CellWidth = Tab.AbsoluteSize.X end)
-					if CellWidth <= 0 then
-						local BarWidth = 0
-						pcall(function() BarWidth = Hub.HubBarContainer.AbsoluteSize.X end)
-						if BarWidth <= 0 then BarWidth = Hub.MenuContainer.Size.X.Offset end
-						CellWidth = (BarWidth > 0 and BarWidth / Count) or 80
+					local IconWidth = 36
+					local IconHeight = 36
+					local GroupGap = 2
+					local LeftInset = 4
+					local RightInset = 8
+					local TabWidth = tonumber(Tab.AbsoluteSize.X) or 0
+					if TabWidth <= 0 then
+						local BarWidth = tonumber(Hub.HubBar.AbsoluteSize.X) or 0
+						TabWidth = BarWidth / Count
 					end
-					local IconSize = IsPhone and 24 or 26
-					local Gap, RightPad = 5, 5
-					local TextSize = IsPhone and 18 or 19
-					local MaxTextWidth = math.max(28, CellWidth - IconSize - Gap - RightPad)
-					local MeasuredTextWidth = MaxTextWidth
+					local TitleWidth = math.max(28, math.floor(TabWidth - LeftInset - IconWidth - GroupGap - RightInset))
+					Page.Icon.Size = UDim2.fromOffset(IconWidth, IconHeight)
+					Page.Icon.Position = UDim2.new(0, LeftInset, 0.5, -IconHeight / 2)
 					if Title then
-						Title.TextSize = TextSize
-						pcall(function()
-							MeasuredTextWidth = game:GetService("TextService"):GetTextSize(
-								Title.Text, TextSize, Title.Font, Vector2.new(1000, 40)
-							).X
-						end)
-					end
-					local TextWidth = math.max(24, math.min(MaxTextWidth, MeasuredTextWidth))
-					local IconX = math.max(2, CellWidth - IconSize - Gap - TextWidth - RightPad)
-					Page.Icon.Size = UDim2.fromOffset(IconSize, IconSize)
-					Page.Icon.Position = UDim2.new(0, IconX, 0.5, -IconSize / 2)
-					if Title then
-						Title.Size = UDim2.fromOffset(TextWidth, IsPhone and MOBILE_HUBBAR_HEIGHT or TABLET_HUBBAR_HEIGHT)
-						Title.Position = UDim2.new(1, Gap, 0.5, -(IsPhone and MOBILE_HUBBAR_HEIGHT or TABLET_HUBBAR_HEIGHT) / 2)
+						Title.TextColor3 = Color3.new(1, 1, 1)
+						Title.TextTransparency = Selected and 0 or 0.5
+						Title.Size = UDim2.new(0, TitleWidth, 1, 0)
+						Title.Position = UDim2.new(1, GroupGap, 0, 0)
+						Title.TextWrapped = true
+						Title.TextScaled = false
 						Title.TextXAlignment = Enum.TextXAlignment.Left
 						Title.TextYAlignment = Enum.TextYAlignment.Center
-						Title.TextScaled = true
-						Title.TextWrapped = false
-						Title.ClipsDescendants = true
-						local TextConstraint = Title:FindFirstChildOfClass("UITextSizeConstraint")
-						if not TextConstraint then TextConstraint = Create("UITextSizeConstraint", {Parent = Title, MinTextSize = 14, MaxTextSize = TextSize}) end
-						TextConstraint.MinTextSize = 14
-						TextConstraint.MaxTextSize = TextSize
+						local FittedTextSize = 16
+						for CandidateSize = 18, 15, -1 do
+							if GetMenuMeasuredTextWidth(Title, Title.Text, CandidateSize) <= TitleWidth then
+								FittedTextSize = CandidateSize
+								break
+							end
+							FittedTextSize = CandidateSize
+						end
+						Title.TextSize = FittedTextSize
+						Title.ClipsDescendants = false
 					end
-				elseif Title then
-					Title.TextSize = 24
-					Title.Size = UDim2.new(0, 190, 1, 0)
-					Title.Position = UDim2.new(0, 48, 0, 0)
-					Title.ClipsDescendants = false
-				end
-				if Title then
-					Title.TextColor3 = Color3.new(1, 1, 1)
-					Title.TextTransparency = Selected and 0 or 0.5
+				else
+					if Title then
+						Title.TextColor3 = Color3.new(1, 1, 1)
+						Title.TextTransparency = Selected and 0 or 0.5
+						Title.TextSize = 24
+						Title.Size = UDim2.new(0, 190, 1, 0)
+						Title.Position = UDim2.new(0, 48, 0, 0)
+						Title.ClipsDescendants = false
+					end
 				end
 			end
 		end
@@ -10711,7 +10781,7 @@ MakeInviteFriendsRow = function(Page)
 	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
 	local PhoneLayout = IsPhone == true
 	local RowHeight = 62
-	local SideBySide = VoiceActive and InviteFriends
+	local SideBySide = VoiceActive and InviteFriends and not PhoneLayout
 	local FullRowSize = UDim2.new(1, 0, 0, RowHeight)
 	local HalfRowSize = UDim2.new(0.5, -3, 0, RowHeight)
 	local function BaseRow(Name, Pos, Size)
@@ -10743,14 +10813,15 @@ MakeInviteFriendsRow = function(Page)
 		})
 		Create("TextLabel", {
 			Name = "NameLabel", Parent = Row, BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans, TextSize = PhoneLayout and (SideBySide and 15 or 20) or 24,
+			Font = Enum.Font.SourceSans, TextSize = 28,
 			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Center,
-			Text = "Invite friends to join", TextWrapped = false, TextScaled = false,
-			Size = UDim2.new(1, PhoneLayout and -44 or -86, 1, PhoneLayout and -4 or 0),
-			Position = UDim2.new(0, PhoneLayout and 42 or 54, 0, PhoneLayout and 2 or 0),
+			Text = "Invite friends to join", TextWrapped = true, TextScaled = true,
+			Size = UDim2.new(1, PhoneLayout and -42 or -78, 1, 0),
+			Position = UDim2.new(0, PhoneLayout and 36 or 50, 0, PhoneLayout and 2 or 0),
 			ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
+		Create("UITextSizeConstraint", {Name = "InviteFriendsTextConstraint", Parent = Row:FindFirstChild("NameLabel"), MinTextSize = 24, MaxTextSize = 28})
 	end
 
 	local MuteRow
@@ -10767,14 +10838,19 @@ MakeInviteFriendsRow = function(Page)
 		})
 		local Label = Create("TextLabel", {
 			Name = "MuteAllLabel", Parent = MuteRow, BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans, TextSize = PhoneLayout and (SideBySide and 16 or 20) or 24,
+			Font = Enum.Font.SourceSans, TextSize = 28,
 			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Center,
-			Text = "Mute All", TextWrapped = false, TextScaled = false,
+			Text = "Mute All", TextWrapped = true, TextScaled = true,
 			Size = UDim2.new(1, PhoneLayout and -44 or -56, 1, 0),
 			Position = UDim2.new(0, PhoneLayout and 36 or 52, 0, 0),
 			ZIndex = SETTINGS_BASE_ZINDEX + 4,
 		})
+		Create("UITextSizeConstraint", {Name = "MuteAllTextConstraint", Parent = Label, MinTextSize = 24, MaxTextSize = 28})
+		Label.Font = Enum.Font.SourceSans
+		Label.TextSize = 28
+		Label.TextScaled = true
+		Label.TextWrapped = true
 		local State = VoiceMuteAllActive == true
 		Label.Text = State and "Unmute All" or "Mute All"
 		Icon.Image = VOICE_MISC_ROOT .. (State and "UnmuteAll@3x.png" or "MuteAll@3x.png")
@@ -10804,17 +10880,19 @@ LayoutPhonePlayerActionRows = function(Frame, StartY)
 	local InviteRow = Frame:FindFirstChild("InviteFriendsToJoin")
 	local MuteRow = Frame:FindFirstChild("MuteAllVoiceRow")
 	local RowHeight = 62
+	local RowGap = 6
 	local Cursor = StartY or 72
 	local HasBothActions = InviteRow ~= nil and MuteRow ~= nil
 	local HalfWidth = UDim2.new(0.5, -3, 0, RowHeight)
 
 	if HasBothActions then
-		-- Keep Invite and Mute All side by side on phones; neither row is reduced in height.
-		InviteRow.Size = HalfWidth
+		-- Full-width stacked action rows leave enough room for the exact 24px
+		-- bottom-button typography used by both labels.
+		InviteRow.Size = UDim2.new(1, 0, 0, RowHeight)
 		InviteRow.Position = UDim2.new(0, 0, 0, Cursor)
-		MuteRow.Size = HalfWidth
-		MuteRow.Position = UDim2.new(0.5, 3, 0, Cursor)
-		Cursor = Cursor + RowHeight + 10
+		MuteRow.Size = UDim2.new(1, 0, 0, RowHeight)
+		MuteRow.Position = UDim2.new(0, 0, 0, Cursor + RowHeight + RowGap)
+		Cursor = Cursor + (RowHeight * 2) + RowGap + 10
 	else
 		local OnlyRow = InviteRow or MuteRow
 		if OnlyRow then
@@ -13038,11 +13116,8 @@ RebuildInviteList =
 		end
 
 		local ShareScrollOffset = USE_NEW_INVITE_MENU and (INVITE_SHARE_ROW_HEIGHT + INVITE_SHARE_ROW_GAP) or 0
-		local FriendRowsStart = USE_NEW_INVITE_MENU and ShareScrollOffset or PLAYER_LIST_OFFSET
 		local FriendRowsHeight = math.max(0, Count * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP) - INVITE_ROW_GAP)
-		-- Account for the old menu's top offset and leave room for the last row's full height.
-		local BottomScrollPadding = 14
-		InviteList.CanvasSize = UDim2.new(0, 0, 0, FriendRowsStart + FriendRowsHeight + BottomScrollPadding)
+		InviteList.CanvasSize = UDim2.new(0, 0, 0, ShareScrollOffset + FriendRowsHeight)
 
 		UpdateInviteListScrollbar()
 		Spawn(function()
@@ -13079,10 +13154,6 @@ OpenInviteFriends =
 
 		Hub.InConfirmation =
 			false
-
-		-- Apply the phone shell before showing the invite subpage, preventing a
-		-- first-frame viewport-wide layout while ResizeHub catches up.
-		if ResizeHub then ResizeHub() end
 
 		Hub.HubBar.Visible =
 			false
@@ -17470,7 +17541,7 @@ VoiceChatButton = MakeBottomButton(
 	end,
 	UDim2.new(0, 64, 0, 64)
 )
-VoiceChatButton.Visible = VoiceOptionAvailable == true
+VoiceChatButton.Visible = VoiceOptionAvailable == true and not VOICE_CHAT_FORCE_OFF
 
 VoiceChatIcon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 if VoiceChatIcon then
@@ -17480,11 +17551,12 @@ if VoiceChatIcon then
 end
 
 ConfigureMobileActionButtons = function()
-    local VoiceActive = VoiceOptionAvailable == true and VoiceChatButton ~= nil
+    local VoiceActive = VoiceOptionAvailable == true and VoiceChatButton ~= nil and not VOICE_CHAT_FORCE_OFF
     local ActionHeight = 62
 
     if IsMobile then
         VoiceChatButton.Visible = VoiceActive
+        if not VoiceActive then VoiceChatButton.Parent = nil end
         if IsTablet then
             Hub.BottomButtonFrame.Parent = Hub.MenuContainer
             Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
@@ -17492,7 +17564,6 @@ ConfigureMobileActionButtons = function()
             MobileActionButtons.Reset.Parent = Hub.BottomButtonFrame
             MobileActionButtons.Leave.Parent = Hub.BottomButtonFrame
             MobileActionButtons.Resume.Parent = Hub.BottomButtonFrame
-            VoiceChatButton.Parent = Hub.BottomButtonFrame
         elseif PlayersPage and PlayersPage.Frame then
             if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
                 MobileButtonsContainer = Create("Frame", {
@@ -17507,7 +17578,7 @@ ConfigureMobileActionButtons = function()
             MobileActionButtons.Reset.Parent = MobileButtonsContainer
             MobileActionButtons.Leave.Parent = MobileButtonsContainer
             MobileActionButtons.Resume.Parent = MobileButtonsContainer
-            VoiceChatButton.Parent = MobileButtonsContainer
+            if VoiceActive then VoiceChatButton.Parent = MobileButtonsContainer end
         end
 
         local ActionButtons = {MobileActionButtons.Leave, MobileActionButtons.Reset, MobileActionButtons.Resume}
@@ -17515,36 +17586,40 @@ ConfigureMobileActionButtons = function()
         local ButtonCount = #ActionButtons
         local Fraction = 1 / math.max(1, ButtonCount)
         for Index, Button in ipairs(ActionButtons) do
-            Button.AnchorPoint = Vector2.new(0, 0)
-            Button.Size = UDim2.new(Fraction, -4, 0, ActionHeight)
-            Button.Position = UDim2.new((Index - 1) * Fraction, 2, 0, 0)
             Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
             Button.Visible = Button ~= VoiceChatButton or VoiceActive
             if Button == VoiceChatButton then
+                Button.AnchorPoint = Vector2.new(1, 0)
+                Button.Size = UDim2.fromOffset(ActionHeight, ActionHeight)
+                Button.Position = UDim2.new(1, -2, 0, 0)
                 Button.ClipsDescendants = true
                 local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
                 if Icon then
                     Icon.Visible = true
                     Icon.AnchorPoint = Vector2.new(0.5, 0.5)
-                    Icon.Size = UDim2.fromOffset(34, 34)
+                    Icon.Size = UDim2.fromOffset(36, 36)
                     Icon.Position = UDim2.new(0.5, 0, 0.5, 0)
                     pcall(function() Icon.ScaleType = Enum.ScaleType.Fit end)
                 end
             else
+                Button.AnchorPoint = Vector2.new(0, 0)
+                local ActionFraction = VoiceActive and 0.25 or Fraction
+                Button.Size = UDim2.new(ActionFraction, -4, 0, ActionHeight)
+                Button.Position = UDim2.new((Index - 1) * ActionFraction, 2, 0, 0)
                 for _, Child in ipairs(Button:GetChildren()) do
                     if Child:IsA("ImageLabel") then Child.Visible = false end
                 end
                 local Label = Button:FindFirstChild(Button.Name .. "TextLabel")
                 if Label then
-                    Label.TextSize = 16
-                    Label.TextWrapped = false
+                    Label.TextSize = 18
+                    Label.TextWrapped = true
                     Label.TextScaled = true
                     local LabelConstraint = Label:FindFirstChildOfClass("UITextSizeConstraint")
                     if LabelConstraint then
-                        LabelConstraint.MinTextSize = 8
-                        LabelConstraint.MaxTextSize = 16
+                        LabelConstraint.MinTextSize = 15
+                        LabelConstraint.MaxTextSize = 18
                     else
-                        Create("UITextSizeConstraint", {Parent = Label, MinTextSize = 8, MaxTextSize = 16})
+                        Create("UITextSizeConstraint", {Parent = Label, MinTextSize = 15, MaxTextSize = 18})
                     end
                     Label.TextXAlignment = Enum.TextXAlignment.Center
                     Label.TextYAlignment = Enum.TextYAlignment.Center
@@ -17690,7 +17765,7 @@ Spawn(function()
 		if Changed and RebuildPlayersPage then RebuildPlayersPage() end
 
 		if VoiceChatButton and VoiceChatButton.Parent then
-			local VoiceActive = VoiceOptionAvailable == true
+			local VoiceActive = VoiceOptionAvailable == true and VoiceChatButton ~= nil and not VOICE_CHAT_FORCE_OFF
 			VoiceChatButton.Visible = VoiceActive
 			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 			if Icon then
@@ -18159,7 +18234,7 @@ SetVisibility =
 			SetRecorderOverlayVisibility(false)
 			if SystemMenuHitbox then
 				SystemMenuHitbox.Visible = true
-				SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
+				SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
 				SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
 			end
 			HideNativeSettingsMenu()
@@ -18212,7 +18287,7 @@ SetVisibility =
 			if SystemMenuButton then
 				-- Keep the visible 30x30 SystemMenuButton unchanged for the entire
 				-- closing tween. Only hide it in the tween completion callback below.
-				SystemMenuButton.Position = UDim2.fromOffset(GetSystemMenuOffsetX(), SYSTEM_MENU_OFFSET_Y)
+				SystemMenuButton.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX(), SYSTEM_MENU_OFFSET_Y)
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 				SystemMenuButton.Active = true
 				SystemMenuButton.Selectable = true
@@ -18238,7 +18313,7 @@ SetVisibility =
 				if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 				if SystemMenuHitbox then
 					SystemMenuHitbox.Visible = true
-					SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
+					SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
 					SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
 				end
 				if SystemMenuButton then SystemMenuButton.Visible = true end
@@ -18257,7 +18332,7 @@ SetVisibility =
 						-- Keep the invisible 40x40 shield permanently over the native top-left button.
 						if SystemMenuHitbox then
 							SystemMenuHitbox.Visible = true
-							SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
+							SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
 							SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
 						end
 						if SystemMenuButton then SystemMenuButton.Visible = false end
@@ -18291,7 +18366,7 @@ SystemMenuButton =
 			ImageRectOffset = SYSTEM_MENU_ICON_RECT_OFFSET,
 			ImageRectSize = SYSTEM_MENU_ICON_RECT_SIZE,
 			Size = UDim2.fromOffset(30, 30),
-			Position = UDim2.fromOffset(GetSystemMenuOffsetX(), SYSTEM_MENU_OFFSET_Y),
+			Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX(), SYSTEM_MENU_OFFSET_Y),
 			AutoButtonColor = false,
 			Visible = false,
 			Active = true,
@@ -18335,7 +18410,7 @@ SystemMenuHitbox = Create(
 		Active = true,
 		Selectable = false,
 		Size = UDim2.fromOffset(40, 40),
-		Position = UDim2.fromOffset(GetSystemMenuOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4),
+		Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4),
 		Visible = false,
 		ZIndex = SETTINGS_BASE_ZINDEX + 102,
 	}
@@ -18386,14 +18461,14 @@ AlignSystemMenuButton =
 		SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 		if SystemMenuHitbox then
 			SystemMenuHitbox.Visible = true
-			SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
+			SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
 			SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
 		end
 
 		if Hub.Visible then
 			SystemMenuButton.Position =
 				UDim2.fromOffset(
-					GetSystemMenuOffsetX(),
+					GetSystemMenuButtonOffsetX(),
 					SYSTEM_MENU_OFFSET_Y
 				)
 			SystemMenuButton.Size = UDim2.fromOffset(30, 30)
@@ -18406,7 +18481,7 @@ AlignSystemMenuButton =
 			if SystemMenuButtonClosing then
 				SystemMenuButton.Position =
 					UDim2.fromOffset(
-						GetSystemMenuOffsetX(),
+						GetSystemMenuButtonOffsetX(),
 						SYSTEM_MENU_OFFSET_Y
 					)
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
@@ -18417,7 +18492,7 @@ AlignSystemMenuButton =
 			else
 				SystemMenuButton.Position =
 					UDim2.fromOffset(
-						GetSystemMenuOffsetX(),
+						GetSystemMenuButtonOffsetX(),
 						SYSTEM_MENU_OFFSET_Y
 					)
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
