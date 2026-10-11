@@ -3,7 +3,7 @@
 -- VOICE CHAT CONFIGURATION:
 --   "NORMAL" = use the script's usual Roblox voice support / eligibility checks.
 --   "NEVER"  = never show or enable this script's VC controls; leave the local voice session.
-VOICE_CHAT_MODE = "NEVER"
+VOICE_CHAT_MODE = "NORMAL"
 VOICE_CHAT_MODE = string.upper(tostring(VOICE_CHAT_MODE or "NORMAL"))
 if VOICE_CHAT_MODE ~= "NORMAL" and VOICE_CHAT_MODE ~= "NEVER" then
     VOICE_CHAT_MODE = "NORMAL"
@@ -318,13 +318,16 @@ UpdateTabletPlatform = function(Viewport)
 	return IsTablet
 end
 
--- Resolve this before any mobile/tablet-only page code is constructed.
+-- Resolve platform from the live camera before building platform-specific UI.
 do
-	local InitialViewport = ScreenGui and ScreenGui.AbsoluteSize
-	if not InitialViewport or InitialViewport.X <= 0 or InitialViewport.Y <= 0 then
+	local InitialViewport = nil
+	pcall(function()
 		local Camera = workspace.CurrentCamera
-		InitialViewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
-	end
+		if Camera and Camera.ViewportSize.X > 0 and Camera.ViewportSize.Y > 0 then
+			InitialViewport = Camera.ViewportSize
+		end
+	end)
+	if not InitialViewport then InitialViewport = Vector2.new(1280, 720) end
 	UpdateTabletPlatform(InitialViewport)
 end
 
@@ -363,7 +366,7 @@ MOBILE_HUBBAR_HEIGHT = 44
 TABLET_HUBBAR_HEIGHT = 48
 
 -- Custom SystemMenuButton offsets.
-SYSTEM_MENU_OFFSET_X = 16
+SYSTEM_MENU_OFFSET_X = 15
 SYSTEM_MENU_OFFSET_Y = 4
 
 -- Recorder overlay position relative to SystemMenuButton.
@@ -4324,24 +4327,15 @@ ResizeHub = nil
 
 ResizeHub = function()
 
-	local Viewport =
-		ScreenGui.AbsoluteSize
-
-	if
-		Viewport.X <= 0
-		or Viewport.Y <= 0
-	then
-
-		local Camera =
-			workspace.CurrentCamera
-
-		Viewport =
-			(Camera and Camera.ViewportSize)
-			or Vector2.new(
-				1280,
-				720
-			)
-
+	local Viewport = Vector2.new(0, 0)
+	pcall(function()
+		if ScreenGui and ScreenGui:IsA("GuiObject") then
+			Viewport = ScreenGui.AbsoluteSize
+		end
+	end)
+	if Viewport.X <= 0 or Viewport.Y <= 0 then
+		local Camera = workspace.CurrentCamera
+		Viewport = (Camera and Camera.ViewportSize) or Vector2.new(1280, 720)
 	end
 
 	local Height
@@ -4418,14 +4412,14 @@ ResizeHub = function()
 
 		if IsPhone then
 
-			-- Phone invite page is intentionally larger than the
-			-- normal ESC menu. Tablets keep a capped, PC-like width.
+			-- Apply the same capped shell before the invite subpage is displayed,
+			-- preventing a one-frame viewport-wide panel when Invite is first opened.
+			Width = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - 32 + 0.5)))
+			Hub.MenuContainer.Size = UDim2.new(0, Width, 1, 0)
+			Hub.MenuContainer.Position = UDim2.new(0.5, -Width / 2, 0, 0)
+			Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
 
-			local PhonePageSideInset = 16
-			Width = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - PhonePageSideInset * 2 + 0.5)))
-
-			-- Keep the invite page below the camera/notch region while the HubBar
-			-- itself remains edge-to-edge.
+			-- The invite panel stays within the shell; its list has its own inner padding.
 			local PageTop = 48
 
 			PageHeight = math.max(160, math.floor(LayoutViewport.Y - PageTop - 12 + 0.5))
@@ -4444,13 +4438,7 @@ ResizeHub = function()
 					PageHeight
 				)
 
-			Hub.PageClipper.Position =
-				UDim2.new(
-					0.5,
-					-Width / 2 + TabletXOffset,
-					0,
-					PageTop
-				)
+			Hub.PageClipper.Position = UDim2.new(0, 0, 0, PageTop)
 
 		elseif IsTablet then
 
@@ -4695,15 +4683,14 @@ ResizeHub = function()
 
 		Hub.PageView.ScrollBarThickness = 0
 
-		-- Phone-only edge-to-edge layout.  Tablets and desktop use their own
-		-- branches above/below and are deliberately left unchanged.
-		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
-		Hub.MenuContainer.Position = UDim2.new(0, 0, 0, 0)
+		-- A centered, capped phone shell prevents the menu from stretching to the
+		-- physical screen edges. The hubbar is the widest element; page content is inset.
+		local PhoneShellWidth = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - 32 + 0.5)))
+		Hub.MenuContainer.Size = UDim2.new(0, PhoneShellWidth, 1, 0)
+		Hub.MenuContainer.Position = UDim2.new(0.5, -PhoneShellWidth / 2, 0, 0)
 		Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
-		-- HubBar alone is edge-to-edge. Page content is kept 16px from each
-		-- phone edge so controls/backgrounds do not sit under rounded corners.
 		local PhonePageSideInset = 16
-		local Width = math.max(1, math.floor(LayoutViewport.X - PhonePageSideInset * 2 + 0.5))
+		local Width = math.max(1, PhoneShellWidth - PhonePageSideInset * 2)
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local MobileBarHeight = math.max(44, MOBILE_HUBBAR_HEIGHT)
@@ -5227,25 +5214,42 @@ LayoutTabs = function()
 
 			if Page.Icon then
 				Page.Icon.ImageTransparency = Selected and 0 or 0.5
-				if IsMobile then
-					Page.Icon.Size = UDim2.new(0, 34, 0, 28)
-					Page.Icon.Position = UDim2.new(0, 10, 0.5, -14)
-				end
 				local Title = Page.Icon:FindFirstChild("Title")
+				if IsMobile then
+					-- Right-align the icon+label group within each tab cell.
+					local BarWidth = 0
+					pcall(function() BarWidth = Hub.HubBarContainer.AbsoluteSize.X end)
+					if BarWidth <= 0 then BarWidth = Hub.MenuContainer.Size.X.Offset end
+					if BarWidth <= 0 then
+						local Camera = workspace.CurrentCamera
+						BarWidth = Camera and Camera.ViewportSize.X or 320
+					end
+					local CellWidth = BarWidth / Count
+					local IconWidth = IsPhone and 18 or 22
+					local IconHeight = IsPhone and 20 or 24
+					local Gap, RightPad = 4, 4
+					local TextWidth = math.max(28, CellWidth - IconWidth - Gap - RightPad)
+					local IconX = CellWidth - IconWidth - Gap - TextWidth - RightPad
+					Page.Icon.Size = UDim2.fromOffset(IconWidth, IconHeight)
+					Page.Icon.Position = UDim2.new(0, IconX, 0.5, -IconHeight / 2)
+					if Title then
+						Title.TextSize = IsPhone and 13 or 17
+						Title.Size = UDim2.new(0, TextWidth, 1, 0)
+						Title.Position = UDim2.new(1, Gap, 0, 0)
+						Title.TextXAlignment = Enum.TextXAlignment.Left
+						Title.TextScaled = false
+						Title.TextWrapped = false
+						Title.ClipsDescendants = true
+					end
+				elseif Title then
+					Title.TextSize = 24
+					Title.Size = UDim2.new(0, 190, 1, 0)
+					Title.Position = UDim2.new(0, 48, 0, 0)
+					Title.ClipsDescendants = false
+				end
 				if Title then
 					Title.TextColor3 = Color3.new(1, 1, 1)
 					Title.TextTransparency = Selected and 0 or 0.5
-					if IsMobile then
-						Title.TextSize = 20
-						Title.Size = UDim2.new(0, 140, 1, 0)
-						Title.Position = UDim2.new(1.2, 0, 0, 0)
-						Title.ClipsDescendants = false
-					else
-						Title.TextSize = 24
-						Title.Size = UDim2.new(0, 190, 1, 0)
-						Title.Position = UDim2.new(0, 48, 0, 0)
-						Title.ClipsDescendants = false
-					end
 				end
 			end
 		end
@@ -10725,7 +10729,7 @@ INVITE_MOBILE_HEADER_DIVIDER = nil
 MakeInviteFriendsRow = function(Page)
 	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
 	local PhoneLayout = IsPhone == true
-	local RowHeight = PhoneLayout and 52 or 62
+	local RowHeight = 62
 	local SideBySide = VoiceActive and InviteFriends and not PhoneLayout
 	local FullRowSize = UDim2.new(1, 0, 0, RowHeight)
 	local HalfRowSize = UDim2.new(0.5, -3, 0, RowHeight)
@@ -10752,8 +10756,8 @@ MakeInviteFriendsRow = function(Page)
 		Create("ImageLabel", {
 			Name = "Icon", Parent = Row, BackgroundTransparency = 1,
 			Image = "rbxassetid://80022950003290",
-			Size = UDim2.fromOffset(PhoneLayout and 20 or 24, PhoneLayout and 20 or 24),
-			Position = UDim2.new(0, PhoneLayout and 8 or 14, 0.5, PhoneLayout and -10 or -12),
+			Size = UDim2.fromOffset(PhoneLayout and 28 or 32, PhoneLayout and 28 or 32),
+			Position = UDim2.new(0, PhoneLayout and 8 or 14, 0.5, PhoneLayout and -14 or -16),
 			ScaleType = Enum.ScaleType.Fit, ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
 		Create("TextLabel", {
@@ -10762,8 +10766,8 @@ MakeInviteFriendsRow = function(Page)
 			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Center,
 			Text = "Invite friends to join", TextWrapped = false, TextScaled = false,
-			Size = UDim2.new(1, PhoneLayout and -42 or -78, 1, PhoneLayout and -4 or 0),
-			Position = UDim2.new(0, PhoneLayout and 36 or 50, 0, PhoneLayout and 2 or 0),
+			Size = UDim2.new(1, PhoneLayout and -44 or -86, 1, PhoneLayout and -4 or 0),
+			Position = UDim2.new(0, PhoneLayout and 42 or 54, 0, PhoneLayout and 2 or 0),
 			ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
 	end
@@ -10818,7 +10822,7 @@ LayoutPhonePlayerActionRows = function(Frame, StartY)
 	if not IsPhone or not Frame then return nil end
 	local InviteRow = Frame:FindFirstChild("InviteFriendsToJoin")
 	local MuteRow = Frame:FindFirstChild("MuteAllVoiceRow")
-	local RowHeight = 52
+	local RowHeight = 62
 	local RowGap = 6
 	local Cursor = StartY or 72
 	local HasBothActions = InviteRow ~= nil and MuteRow ~= nil
@@ -13055,8 +13059,11 @@ RebuildInviteList =
 		end
 
 		local ShareScrollOffset = USE_NEW_INVITE_MENU and (INVITE_SHARE_ROW_HEIGHT + INVITE_SHARE_ROW_GAP) or 0
+		local FriendRowsStart = USE_NEW_INVITE_MENU and ShareScrollOffset or PLAYER_LIST_OFFSET
 		local FriendRowsHeight = math.max(0, Count * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP) - INVITE_ROW_GAP)
-		InviteList.CanvasSize = UDim2.new(0, 0, 0, ShareScrollOffset + FriendRowsHeight)
+		-- Account for the old menu's top offset and leave room for the last row's full height.
+		local BottomScrollPadding = 14
+		InviteList.CanvasSize = UDim2.new(0, 0, 0, FriendRowsStart + FriendRowsHeight + BottomScrollPadding)
 
 		UpdateInviteListScrollbar()
 		Spawn(function()
@@ -13093,6 +13100,10 @@ OpenInviteFriends =
 
 		Hub.InConfirmation =
 			false
+
+		-- Apply the phone shell before showing the invite subpage, preventing a
+		-- first-frame viewport-wide layout while ResizeHub catches up.
+		if ResizeHub then ResizeHub() end
 
 		Hub.HubBar.Visible =
 			false
