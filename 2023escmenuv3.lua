@@ -11,6 +11,11 @@ UserInputService = game:GetService("UserInputService")
 GuiService = game:GetService("GuiService")
 StarterGui = game:GetService("StarterGui")
 TextChatService = game:GetService("TextChatService")
+LocalizationService = game:GetService("LocalizationService")
+TextService = nil
+pcall(function() TextService = game:GetService("TextService") end)
+VRService = nil
+pcall(function() VRService = game:GetService("VRService") end)
 HttpService = game:GetService("HttpService")
 HttpRbxApiService = nil
 pcall(function()
@@ -19,8 +24,64 @@ end)
 
 SoundService = game:GetService("SoundService")
 Players = game:GetService("Players")
+MarketplaceService = game:GetService("MarketplaceService")
 SocialService = game:GetService("SocialService")
 VoiceChatService = game:GetService("VoiceChatService")
+
+-- ============================================================
+-- INVITE-MENU FAST-FLAG COMPATIBILITY
+-- Keep the existing/old invite menu untouched only when ALL three flags
+-- can be read and are explicitly False. True or unknown selects our redesign.
+-- Executor getfflag is preferred; CoreScript settings():GetFFlag is fallback.
+-- ============================================================
+local function NormalizeInviteFlag(Value)
+    if type(Value) == "boolean" then return Value end
+    if type(Value) == "string" then
+        local Lower = string.lower(Value)
+        if Lower == "true" then return true end
+        if Lower == "false" then return false end
+    end
+    return nil
+end
+
+local function ReadInviteFlag(Name)
+    local BareName = string.gsub(Name, "^FFlag", "")
+    local NamesToTry = {BareName, Name}
+    local Getter = nil
+    pcall(function() Getter = getfflag end)
+    if type(Getter) ~= "function" then
+        pcall(function()
+            local Env = getgenv and getgenv() or nil
+            Getter = Env and Env.getfflag or nil
+        end)
+    end
+
+    if type(Getter) == "function" then
+        for _, Candidate in ipairs(NamesToTry) do
+            local Ok, Value = pcall(Getter, Candidate)
+            local Parsed = Ok and NormalizeInviteFlag(Value) or nil
+            if Parsed ~= nil then return Parsed, true end
+        end
+    end
+
+    for _, Candidate in ipairs(NamesToTry) do
+        local Ok, Value = pcall(function()
+            return settings():GetFFlag(Candidate)
+        end)
+        local Parsed = Ok and NormalizeInviteFlag(Value) or nil
+        if Parsed ~= nil then return Parsed, true end
+    end
+    return nil, false
+end
+
+local InviteFlagNewMenu, InviteFlagNewMenuReadable = ReadInviteFlag("FFlagEnableNewInviteMenuIXP2")
+local InviteFlagGameInviteUnification, InviteFlagGameInviteUnificationReadable = ReadInviteFlag("FFlagLuaInExperienceCoreScriptsGameInviteUnificationV3")
+local InviteFlagUniversalUnification, InviteFlagUniversalUnificationReadable = ReadInviteFlag("FFlagEnableUniversalAppGameInviteUnification")
+local UseOriginalInviteMenu =
+    InviteFlagNewMenuReadable and InviteFlagNewMenu == false
+    and InviteFlagGameInviteUnificationReadable and InviteFlagGameInviteUnification == false
+    and InviteFlagUniversalUnificationReadable and InviteFlagUniversalUnification == false
+USE_NEW_INVITE_MENU = not UseOriginalInviteMenu
 
 -- The voice probe confirmed this service is exposed by this client. The
 -- earlier Settings2016 branch never assigned VoiceChatInternal, so every
@@ -172,8 +233,8 @@ SLIDER_BAR_RIGHT_IMAGE =
 	"rbxasset://textures/ui/Settings/Slider/BarRight.png"
 
 PLAYER_LIST_OFFSET = 20
-DESCRIPTION_PLACEHOLDER = "Short Description (Optional)"
-REPORT_DESCRIPTION_FALLBACK = "Report Reason"
+DESCRIPTION_PLACEHOLDER = "In your own words, help us understand what went wrong."
+REPORT_DESCRIPTION_FALLBACK = ""
 PAGE_TOP_PADDING = 0
 
 KEY_F12 = 0x7B
@@ -280,11 +341,16 @@ HOME_HEIGHT = 60
 HOME_WIDTH = 60
 
 HUBBAR_HEIGHT = 60
+
+-- The new invite menu puts the share control inside InviteList so it scrolls
+-- away with the friends instead of remaining pinned over the list.
+INVITE_SHARE_ROW_HEIGHT = 50
+INVITE_SHARE_ROW_GAP = 8
+
 -- The 2016-style phone tab bar is compact; tablet and desktop keep their
 -- own heights below.
 MOBILE_HUBBAR_HEIGHT = 44
 TABLET_HUBBAR_HEIGHT = 48
-
 
 -- Custom SystemMenuButton offsets.
 SYSTEM_MENU_OFFSET_X = 16
@@ -346,12 +412,33 @@ Data = {
 
 getgenv().Settings2016Data = Data
 
-for _, Object in next, CoreGui:GetChildren() do
-	if
-		Object.Name == "Settings2016Gui"
-		or Object.Name == "Core2016SettingsGui"
-	then
-		Object:Destroy()
+-- Remove every old Settings2016 menu root before constructing this copy.
+-- Search descendants as well as CoreGui's direct children so a previously
+-- reparented/nested copy cannot survive and compete with the new menu.
+local OldMenuRoots = {}
+local function IsOldSettings2016Root(Object)
+	local Name = tostring(Object and Object.Name or "")
+	return Name == "Settings2016Gui"
+		or Name == "Core2016SettingsGui"
+		or Name == "Settings2016VoiceMuteErrorOverlay"
+end
+pcall(function()
+	for _, Object in ipairs(CoreGui:GetDescendants()) do
+		if IsOldSettings2016Root(Object) then
+			table.insert(OldMenuRoots, Object)
+		end
+	end
+end)
+for _, Object in ipairs(CoreGui:GetChildren()) do
+	if IsOldSettings2016Root(Object) then
+		table.insert(OldMenuRoots, Object)
+	end
+end
+local DestroyedRoots = {}
+for _, Object in ipairs(OldMenuRoots) do
+	if Object and not DestroyedRoots[Object] then
+		DestroyedRoots[Object] = true
+		pcall(function() Object:Destroy() end)
 	end
 end
 
@@ -365,6 +452,1876 @@ Connect = function(Signal, Callback)
 	return Connection
 end
 
+-- ============================================================
+-- MENU LOCALIZATION
+-- Match the same GetCurrentExperienceLocale() helper used by the Experience
+-- Language selector. Before that later-declared helper exists during startup,
+-- use Player.LocaleId, then CoreGui/system locales as safe fallbacks.
+-- Prefer installed CoreScript translations, then bundled custom-menu strings.
+-- ============================================================
+MenuLocalizationLocale = "en-us"
+-- A user choice in this custom menu is kept locally when the client blocks
+-- Roblox's native experience-language setter. A real native locale change
+-- clears this override and becomes authoritative again.
+MenuLocalizationOverrideLocale = nil
+MenuLastObservedExperienceLocale = nil
+MenuLocalizationSources = setmetatable({}, {__mode = "k"})
+MenuLocalizationRendered = setmetatable({}, {__mode = "k"})
+MenuCoreTranslationsBySource = {}
+
+NormalizeMenuLocale = function(Locale)
+	return (tostring(Locale or "en-us"):lower():gsub("_", "-"))
+end
+
+GetMenuExperienceLocale = function()
+	-- The custom Experience Language setting defines the locale the user wants
+	-- inside this experience. Its helper is declared later with the settings UI,
+	-- so use it when available and a safe player/CoreGui fallback during startup.
+	local ExperienceLocale = nil
+	if type(GetCurrentExperienceLocale) == "function" then
+		pcall(function() ExperienceLocale = GetCurrentExperienceLocale() end)
+	end
+	if type(ExperienceLocale) == "string" and ExperienceLocale ~= "" then
+		return NormalizeMenuLocale(ExperienceLocale)
+	end
+
+	local Player = LocalPlayer
+	if not Player then
+		pcall(function() Player = Players.LocalPlayer end)
+	end
+
+	local Locale = nil
+	if Player then
+		pcall(function() Locale = Player.LocaleId end)
+
+		-- LocaleId is hidden in Roblox's public API. Executors that expose a
+		-- hidden-property getter can still read the exact player locale.
+		if type(Locale) ~= "string" or Locale == "" then
+			local HiddenGetter = nil
+			pcall(function() HiddenGetter = gethiddenproperty end)
+			if type(HiddenGetter) ~= "function" then
+				pcall(function()
+					local Env = getgenv and getgenv() or nil
+					HiddenGetter = Env and Env.gethiddenproperty or nil
+				end)
+			end
+			if type(HiddenGetter) == "function" then
+				local Ok, Value = pcall(HiddenGetter, Player, "LocaleId")
+				if Ok and type(Value) == "string" and Value ~= "" then
+					Locale = Value
+				end
+			end
+		end
+	end
+
+	if type(Locale) == "string" and Locale ~= "" then
+		return NormalizeMenuLocale(Locale)
+	end
+
+	-- These describe CoreGui and the operating system, respectively; use them
+	-- only when the actual in-experience player locale is unavailable.
+	Locale = nil
+	pcall(function() Locale = LocalizationService.RobloxLocaleId end)
+	if type(Locale) == "string" and Locale ~= "" then
+		return NormalizeMenuLocale(Locale)
+	end
+	Locale = nil
+	pcall(function() Locale = LocalizationService.SystemLocaleId end)
+	if type(Locale) == "string" and Locale ~= "" then
+		return NormalizeMenuLocale(Locale)
+	end
+	return "en-us"
+end
+
+-- These are fallback strings for custom/reworked wording. The installed
+-- CoreScript localization tables are checked first for matching stock text.
+MenuFallbackTranslations = {
+	ru = {
+		["Settings"]="Настройки", ["People"]="Игроки", ["Help"]="Справка", ["Report"]="Пожаловаться",
+		["Invite friends to join"]="Пригласить друзей", ["Invite"]="Пригласить", ["Invited..."]="Приглашено...",
+		["Mute All"]="Отключить звук всем", ["Unmute All"]="Включить звук всем", ["Share Invite Link"]="Поделиться ссылкой-приглашением",
+		["Share"]="Поделиться", ["Search for friends"]="Поиск друзей", ["Back"]="Назад",
+		["Reset"]="Сбросить", ["Don't Reset"]="Не сбрасывать", ["Reset Character"]="Сбросить персонажа",
+		["Leave"]="Выйти", ["Don't Leave"]="Остаться", ["Leave Game"]="Выйти из игры", ["Resume Game"]="Продолжить игру",
+		["Are you sure you want to reset your character?"]="Вы уверены, что хотите сбросить персонажа?",
+		["Are you sure you want to leave the game?"]="Вы уверены, что хотите выйти из игры?",
+		["Game or Player?"]="Игра или игрок?", ["Which Player?"]="Какой игрок?", ["Type Of Abuse"]="Тип нарушения",
+		["In your own words, help us understand what went wrong."]="Опишите своими словами, что произошло.",
+		["Submit"]="Отправить", ["Game"]="Игра", ["Player"]="Игрок", ["Shift Lock"]="Фиксация камеры",
+		["Camera Mode"]="Режим камеры", ["Movement Mode"]="Режим движения", ["Experience Language"]="Язык игры",
+		["Camera Sensitivity"]="Чувствительность камеры", ["Volume"]="Громкость", ["Input Device"]="Устройство ввода",
+		["Output Device"]="Устройство вывода", ["Fullscreen"]="Полный экран", ["Graphics Mode"]="Режим графики",
+		["Graphics Quality"]="Качество графики", ["Performance Stats"]="Статистика производительности",
+		["Camera Inverted"]="Инверсия камеры", ["Video Camera"]="Видеокамера", ["On"]="Вкл.", ["Off"]="Выкл.",
+		["Show"]="Показать", ["Hide"]="Скрыть", ["Tap to Move"]="Перемещение касанием", ["Click to Move"]="Перемещение нажатием",
+		["Experience Invite could not be sent. Please try again later."]="Не удалось отправить приглашение в игру. Повторите попытку позже.",
+		["Set by Developer"]="Задано разработчиком", ["Automatic Chat Translation"]="Автоматический перевод чата",
+		["Give Feedback"]="Оставить отзыв", ["Give Translation Feedback"]="Оставить отзыв о переводе",
+		["View Untranslated Messages"]="Показывать непереведённые сообщения", ["Transparent"]="Прозрачность", ["Opaque"]="Непрозрачность",
+		["Largest"]="Самый крупный", ["Learn More"]="Подробнее",
+	},
+	uk = {
+		["Settings"]="Налаштування", ["People"]="Гравці", ["Help"]="Довідка", ["Report"]="Поскаржитися",
+		["Invite friends to join"]="Запросити друзів", ["Invite"]="Запросити", ["Invited..."]="Запрошено...",
+		["Mute All"]="Вимкнути звук усім", ["Unmute All"]="Увімкнути звук усім", ["Share Invite Link"]="Поділитися посиланням-запрошенням",
+		["Share"]="Поділитися", ["Search for friends"]="Пошук друзів", ["Back"]="Назад",
+		["Reset"]="Скинути", ["Don't Reset"]="Не скидати", ["Reset Character"]="Скинути персонажа",
+		["Leave"]="Вийти", ["Don't Leave"]="Залишитися", ["Leave Game"]="Вийти з гри", ["Resume Game"]="Продовжити гру",
+		["Are you sure you want to reset your character?"]="Ви впевнені, що хочете скинути персонажа?",
+		["Are you sure you want to leave the game?"]="Ви впевнені, що хочете вийти з гри?",
+		["Game or Player?"]="Гра чи гравець?", ["Which Player?"]="Який гравець?", ["Type Of Abuse"]="Тип порушення",
+		["In your own words, help us understand what went wrong."]="Опишіть своїми словами, що сталося.",
+		["Submit"]="Надіслати", ["Game"]="Гра", ["Player"]="Гравець", ["Shift Lock"]="Фіксація камери",
+		["Camera Mode"]="Режим камери", ["Movement Mode"]="Режим руху", ["Experience Language"]="Мова гри",
+		["Camera Sensitivity"]="Чутливість камери", ["Volume"]="Гучність", ["Input Device"]="Пристрій введення",
+		["Output Device"]="Пристрій виведення", ["Fullscreen"]="На весь екран", ["Graphics Mode"]="Режим графіки",
+		["Graphics Quality"]="Якість графіки", ["Performance Stats"]="Статистика продуктивності",
+		["Camera Inverted"]="Інверсія камери", ["Video Camera"]="Відеокамера", ["On"]="Увімкнено", ["Off"]="Вимкнено",
+		["Show"]="Показати", ["Hide"]="Приховати", ["Tap to Move"]="Рух дотиком", ["Click to Move"]="Рух натисканням",
+		["Experience Invite could not be sent. Please try again later."]="Не вдалося надіслати запрошення до гри. Спробуйте пізніше.",
+		["Set by Developer"]="Установлено розробником", ["Automatic Chat Translation"]="Автоматичний переклад чату",
+		["Give Feedback"]="Залишити відгук", ["Give Translation Feedback"]="Відгук про переклад",
+		["View Untranslated Messages"]="Показувати неперекладені повідомлення", ["Transparent"]="Прозорість", ["Opaque"]="Непрозорість",
+		["Largest"]="Найбільший", ["Learn More"]="Докладніше",
+	},
+	es = {
+		["Settings"]="Configuración", ["People"]="Personas", ["Help"]="Ayuda", ["Report"]="Denunciar",
+		["Invite friends to join"]="Invitar amigos", ["Invite"]="Invitar", ["Invited..."]="Invitado...",
+		["Mute All"]="Silenciar a todos", ["Unmute All"]="Activar el sonido de todos", ["Share Invite Link"]="Compartir enlace de invitación",
+		["Share"]="Compartir", ["Search for friends"]="Buscar amigos", ["Back"]="Atrás",
+		["Reset"]="Restablecer", ["Don't Reset"]="No restablecer", ["Reset Character"]="Restablecer personaje",
+		["Leave"]="Salir", ["Don't Leave"]="Quedarse", ["Leave Game"]="Salir del juego", ["Resume Game"]="Reanudar juego",
+		["Are you sure you want to reset your character?"]="¿Seguro que quieres restablecer tu personaje?",
+		["Are you sure you want to leave the game?"]="¿Seguro que quieres salir del juego?",
+		["Game or Player?"]="¿Juego o jugador?", ["Which Player?"]="¿Qué jugador?", ["Type Of Abuse"]="Tipo de abuso",
+		["In your own words, help us understand what went wrong."]="Con tus propias palabras, ayúdanos a entender qué ocurrió.",
+		["Submit"]="Enviar", ["Game"]="Juego", ["Player"]="Jugador", ["Shift Lock"]="Bloqueo de cámara",
+		["Camera Mode"]="Modo de cámara", ["Movement Mode"]="Modo de movimiento", ["Experience Language"]="Idioma de la experiencia",
+		["Camera Sensitivity"]="Sensibilidad de cámara", ["Volume"]="Volumen", ["Input Device"]="Dispositivo de entrada",
+		["Output Device"]="Dispositivo de salida", ["Fullscreen"]="Pantalla completa", ["Graphics Mode"]="Modo de gráficos",
+		["Graphics Quality"]="Calidad gráfica", ["Performance Stats"]="Estadísticas de rendimiento",
+		["Camera Inverted"]="Cámara invertida", ["Video Camera"]="Cámara de video", ["On"]="Activado", ["Off"]="Desactivado",
+		["Show"]="Mostrar", ["Hide"]="Ocultar", ["Tap to Move"]="Tocar para moverse", ["Click to Move"]="Clic para moverse",
+		["Experience Invite could not be sent. Please try again later."]="No se pudo enviar la invitación a la experiencia. Inténtalo de nuevo más tarde.",
+		["Set by Developer"]="Configurado por el desarrollador", ["Automatic Chat Translation"]="Traducción automática del chat",
+		["Give Feedback"]="Enviar comentarios", ["Give Translation Feedback"]="Enviar comentarios sobre la traducción",
+		["View Untranslated Messages"]="Ver mensajes sin traducir", ["Transparent"]="Transparente", ["Opaque"]="Opaco",
+		["Largest"]="El más grande", ["Learn More"]="Más información",
+	},
+	pt = {
+		["Settings"]="Configurações", ["People"]="Pessoas", ["Help"]="Ajuda", ["Report"]="Denunciar",
+		["Invite friends to join"]="Convidar amigos", ["Invite"]="Convidar", ["Invited..."]="Convidado...",
+		["Mute All"]="Silenciar todos", ["Unmute All"]="Ativar som de todos", ["Share Invite Link"]="Compartilhar link de convite",
+		["Share"]="Compartilhar", ["Search for friends"]="Buscar amigos", ["Back"]="Voltar",
+		["Reset"]="Redefinir", ["Don't Reset"]="Não redefinir", ["Reset Character"]="Redefinir personagem",
+		["Leave"]="Sair", ["Don't Leave"]="Ficar", ["Leave Game"]="Sair do jogo", ["Resume Game"]="Retomar jogo",
+		["Are you sure you want to reset your character?"]="Tem certeza de que deseja redefinir seu personagem?",
+		["Are you sure you want to leave the game?"]="Tem certeza de que deseja sair do jogo?",
+		["Game or Player?"]="Jogo ou jogador?", ["Which Player?"]="Qual jogador?", ["Type Of Abuse"]="Tipo de abuso",
+		["In your own words, help us understand what went wrong."]="Com suas próprias palavras, ajude-nos a entender o que aconteceu.",
+		["Submit"]="Enviar", ["Game"]="Jogo", ["Player"]="Jogador", ["Shift Lock"]="Travar câmera",
+		["Camera Mode"]="Modo da câmera", ["Movement Mode"]="Modo de movimento", ["Experience Language"]="Idioma da experiência",
+		["Camera Sensitivity"]="Sensibilidade da câmera", ["Volume"]="Volume", ["Input Device"]="Dispositivo de entrada",
+		["Output Device"]="Dispositivo de saída", ["Fullscreen"]="Tela cheia", ["Graphics Mode"]="Modo gráfico",
+		["Graphics Quality"]="Qualidade gráfica", ["Performance Stats"]="Estatísticas de desempenho",
+		["Camera Inverted"]="Câmera invertida", ["Video Camera"]="Câmera de vídeo", ["On"]="Ativado", ["Off"]="Desativado",
+		["Show"]="Mostrar", ["Hide"]="Ocultar", ["Tap to Move"]="Toque para mover", ["Click to Move"]="Clique para mover",
+		["Experience Invite could not be sent. Please try again later."]="Não foi possível enviar o convite para a experiência. Tente novamente mais tarde.",
+		["Set by Developer"]="Definido pelo desenvolvedor", ["Automatic Chat Translation"]="Tradução automática do chat",
+		["Give Feedback"]="Enviar feedback", ["Give Translation Feedback"]="Enviar feedback sobre a tradução",
+		["View Untranslated Messages"]="Ver mensagens não traduzidas", ["Transparent"]="Transparente", ["Opaque"]="Opaco",
+		["Largest"]="Maior", ["Learn More"]="Saiba mais",
+	},
+	["zh-cn"] = {
+		["Settings"]="设置", ["People"]="玩家", ["Help"]="帮助", ["Report"]="举报",
+		["Invite friends to join"]="邀请好友加入", ["Invite"]="邀请", ["Invited..."]="已邀请...",
+		["Mute All"]="全部静音", ["Unmute All"]="取消全部静音", ["Share Invite Link"]="分享邀请链接",
+		["Share"]="分享", ["Search for friends"]="搜索好友", ["Back"]="返回",
+		["Reset"]="重置", ["Don't Reset"]="不重置", ["Reset Character"]="重置角色",
+		["Leave"]="离开", ["Don't Leave"]="不离开", ["Leave Game"]="离开游戏", ["Resume Game"]="继续游戏",
+		["Are you sure you want to reset your character?"]="确定要重置角色吗？",
+		["Are you sure you want to leave the game?"]="确定要离开游戏吗？",
+		["Game or Player?"]="游戏还是玩家？", ["Which Player?"]="选择玩家", ["Type Of Abuse"]="违规类型",
+		["In your own words, help us understand what went wrong."]="请用自己的话描述发生的问题。",
+		["Submit"]="提交", ["Game"]="游戏", ["Player"]="玩家", ["Shift Lock"]="锁定视角",
+		["Camera Mode"]="镜头模式", ["Movement Mode"]="移动模式", ["Experience Language"]="体验语言",
+		["Camera Sensitivity"]="镜头灵敏度", ["Volume"]="音量", ["Input Device"]="输入设备",
+		["Output Device"]="输出设备", ["Fullscreen"]="全屏", ["Graphics Mode"]="图形模式",
+		["Graphics Quality"]="画质", ["Performance Stats"]="性能统计",
+		["Camera Inverted"]="反转镜头", ["Video Camera"]="摄像头", ["On"]="开启", ["Off"]="关闭",
+		["Show"]="显示", ["Hide"]="隐藏", ["Tap to Move"]="点击移动", ["Click to Move"]="单击移动",
+		["Experience Invite could not be sent. Please try again later."]="无法发送体验邀请。请稍后重试。",
+		["Set by Developer"]="由开发者设置", ["Automatic Chat Translation"]="自动聊天翻译",
+		["Give Feedback"]="提交反馈", ["Give Translation Feedback"]="提交翻译反馈",
+		["View Untranslated Messages"]="显示未翻译的消息", ["Transparent"]="透明", ["Opaque"]="不透明",
+		["Largest"]="最大", ["Learn More"]="了解更多",
+	},
+	["zh-tw"] = {
+		["Settings"]="設定", ["People"]="玩家", ["Help"]="說明", ["Report"]="檢舉",
+		["Invite friends to join"]="邀請好友加入", ["Invite"]="邀請", ["Invited..."]="已邀請...",
+		["Mute All"]="全部靜音", ["Unmute All"]="取消全部靜音", ["Share Invite Link"]="分享邀請連結",
+		["Share"]="分享", ["Search for friends"]="搜尋好友", ["Back"]="返回",
+		["Reset"]="重設", ["Don't Reset"]="不要重設", ["Reset Character"]="重設角色",
+		["Leave"]="離開", ["Don't Leave"]="不要離開", ["Leave Game"]="離開遊戲", ["Resume Game"]="繼續遊戲",
+		["Are you sure you want to reset your character?"]="確定要重設角色嗎？",
+		["Are you sure you want to leave the game?"]="確定要離開遊戲嗎？",
+		["Game or Player?"]="遊戲還是玩家？", ["Which Player?"]="選擇玩家", ["Type Of Abuse"]="違規類型",
+		["In your own words, help us understand what went wrong."]="請用自己的話描述發生的問題。",
+		["Submit"]="提交", ["Game"]="遊戲", ["Player"]="玩家", ["Shift Lock"]="鎖定視角",
+		["Camera Mode"]="鏡頭模式", ["Movement Mode"]="移動模式", ["Experience Language"]="體驗語言",
+		["Camera Sensitivity"]="鏡頭靈敏度", ["Volume"]="音量", ["Input Device"]="輸入裝置",
+		["Output Device"]="輸出裝置", ["Fullscreen"]="全螢幕", ["Graphics Mode"]="圖形模式",
+		["Graphics Quality"]="畫質", ["Performance Stats"]="效能統計",
+		["Camera Inverted"]="反轉鏡頭", ["Video Camera"]="攝影機", ["On"]="開啟", ["Off"]="關閉",
+		["Show"]="顯示", ["Hide"]="隱藏", ["Tap to Move"]="點擊移動", ["Click to Move"]="按一下移動",
+		["Experience Invite could not be sent. Please try again later."]="無法傳送體驗邀請。請稍後再試。",
+		["Set by Developer"]="由開發者設定", ["Automatic Chat Translation"]="自動聊天翻譯",
+		["Give Feedback"]="提供意見", ["Give Translation Feedback"]="提供翻譯意見",
+		["View Untranslated Messages"]="顯示未翻譯的訊息", ["Transparent"]="透明", ["Opaque"]="不透明",
+		["Largest"]="最大", ["Learn More"]="瞭解更多",
+	},
+	hi = {
+		["Settings"]="सेटिंग्स", ["People"]="लोग", ["Help"]="मदद", ["Report"]="रिपोर्ट करें",
+		["Invite friends to join"]="दोस्तों को आमंत्रित करें", ["Invite"]="आमंत्रित करें", ["Invited..."]="आमंत्रित किया गया...",
+		["Mute All"]="सभी को म्यूट करें", ["Unmute All"]="सभी का म्यूट हटाएँ", ["Share Invite Link"]="आमंत्रण लिंक साझा करें",
+		["Share"]="साझा करें", ["Search for friends"]="दोस्तों को खोजें", ["Back"]="वापस",
+		["Reset"]="रीसेट करें", ["Don't Reset"]="रीसेट न करें", ["Reset Character"]="कैरेक्टर रीसेट करें",
+		["Leave"]="बाहर जाएँ", ["Don't Leave"]="बाहर न जाएँ", ["Leave Game"]="गेम छोड़ें", ["Resume Game"]="गेम जारी रखें",
+		["Are you sure you want to reset your character?"]="क्या आप वाकई अपना कैरेक्टर रीसेट करना चाहते हैं?",
+		["Are you sure you want to leave the game?"]="क्या आप वाकई गेम छोड़ना चाहते हैं?",
+		["Game or Player?"]="गेम या खिलाड़ी?", ["Which Player?"]="कौन-सा खिलाड़ी?", ["Type Of Abuse"]="दुर्व्यवहार का प्रकार",
+		["In your own words, help us understand what went wrong."]="अपने शब्दों में बताएँ कि क्या हुआ, ताकि हम समझ सकें।",
+		["Submit"]="सबमिट करें", ["Game"]="गेम", ["Player"]="खिलाड़ी", ["Shift Lock"]="कैमरा लॉक",
+		["Camera Mode"]="कैमरा मोड", ["Movement Mode"]="मूवमेंट मोड", ["Experience Language"]="अनुभव की भाषा",
+		["Camera Sensitivity"]="कैमरा संवेदनशीलता", ["Volume"]="वॉल्यूम", ["Input Device"]="इनपुट डिवाइस",
+		["Output Device"]="आउटपुट डिवाइस", ["Fullscreen"]="फ़ुलस्क्रीन", ["Graphics Mode"]="ग्राफ़िक्स मोड",
+		["Graphics Quality"]="ग्राफ़िक्स गुणवत्ता", ["Performance Stats"]="प्रदर्शन आँकड़े", ["Camera Inverted"]="उल्टा कैमरा",
+		["Video Camera"]="वीडियो कैमरा", ["On"]="चालू", ["Off"]="बंद", ["Show"]="दिखाएँ", ["Hide"]="छिपाएँ",
+		["Tap to Move"]="टैप करके चलें", ["Click to Move"]="क्लिक करके चलें",
+		["Experience Invite could not be sent. Please try again later."]="अनुभव का आमंत्रण नहीं भेजा जा सका। कृपया बाद में फिर कोशिश करें।",
+		["Set by Developer"]="डेवलपर द्वारा सेट", ["Automatic Chat Translation"]="स्वचालित चैट अनुवाद",
+		["Give Feedback"]="प्रतिक्रिया दें", ["Give Translation Feedback"]="अनुवाद पर प्रतिक्रिया दें",
+		["View Untranslated Messages"]="अनुवाद न किए गए संदेश दिखाएँ", ["Transparent"]="पारदर्शी", ["Opaque"]="अपारदर्शी",
+		["Largest"]="सबसे बड़ा", ["Learn More"]="और जानें",
+	},
+	fr = {
+		["Settings"]="Paramètres", ["People"]="Joueurs", ["Help"]="Aide", ["Report"]="Signaler",
+		["Invite friends to join"]="Inviter des amis", ["Invite"]="Inviter", ["Invited..."]="Invité...",
+		["Mute All"]="Couper le son de tous", ["Unmute All"]="Réactiver le son de tous", ["Share Invite Link"]="Partager le lien d’invitation",
+		["Share"]="Partager", ["Search for friends"]="Rechercher des amis", ["Back"]="Retour",
+		["Reset"]="Réinitialiser", ["Don't Reset"]="Ne pas réinitialiser", ["Reset Character"]="Réinitialiser le personnage",
+		["Leave"]="Quitter", ["Don't Leave"]="Rester", ["Leave Game"]="Quitter le jeu", ["Resume Game"]="Reprendre le jeu",
+		["Are you sure you want to reset your character?"]="Voulez-vous vraiment réinitialiser votre personnage ?",
+		["Are you sure you want to leave the game?"]="Voulez-vous vraiment quitter le jeu ?",
+		["Game or Player?"]="Jeu ou joueur ?", ["Which Player?"]="Quel joueur ?", ["Type Of Abuse"]="Type d’abus",
+		["In your own words, help us understand what went wrong."]="Expliquez avec vos propres mots ce qui s’est passé.",
+		["Submit"]="Envoyer", ["Game"]="Jeu", ["Player"]="Joueur", ["Shift Lock"]="Verrouillage de caméra",
+		["Camera Mode"]="Mode de caméra", ["Movement Mode"]="Mode de déplacement", ["Experience Language"]="Langue de l’expérience",
+		["Camera Sensitivity"]="Sensibilité de la caméra", ["Volume"]="Volume", ["Input Device"]="Périphérique d’entrée",
+		["Output Device"]="Périphérique de sortie", ["Fullscreen"]="Plein écran", ["Graphics Mode"]="Mode graphique",
+		["Graphics Quality"]="Qualité graphique", ["Performance Stats"]="Statistiques de performance", ["Camera Inverted"]="Caméra inversée",
+		["Video Camera"]="Caméra vidéo", ["On"]="Activé", ["Off"]="Désactivé", ["Show"]="Afficher", ["Hide"]="Masquer",
+		["Tap to Move"]="Appuyer pour se déplacer", ["Click to Move"]="Cliquer pour se déplacer",
+		["Experience Invite could not be sent. Please try again later."]="Impossible d’envoyer l’invitation à l’expérience. Réessayez plus tard.",
+		["Set by Developer"]="Défini par le développeur", ["Automatic Chat Translation"]="Traduction automatique du chat",
+		["Give Feedback"]="Envoyer des commentaires", ["Give Translation Feedback"]="Commenter la traduction",
+		["View Untranslated Messages"]="Afficher les messages non traduits", ["Transparent"]="Transparent", ["Opaque"]="Opaque",
+		["Largest"]="Le plus grand", ["Learn More"]="En savoir plus",
+	},
+	de = {
+		["Settings"]="Einstellungen", ["People"]="Spieler", ["Help"]="Hilfe", ["Report"]="Melden",
+		["Invite friends to join"]="Freunde einladen", ["Invite"]="Einladen", ["Invited..."]="Eingeladen...",
+		["Mute All"]="Alle stummschalten", ["Unmute All"]="Stummschaltung für alle aufheben", ["Share Invite Link"]="Einladungslink teilen",
+		["Share"]="Teilen", ["Search for friends"]="Freunde suchen", ["Back"]="Zurück",
+		["Reset"]="Zurücksetzen", ["Don't Reset"]="Nicht zurücksetzen", ["Reset Character"]="Charakter zurücksetzen",
+		["Leave"]="Verlassen", ["Don't Leave"]="Nicht verlassen", ["Leave Game"]="Spiel verlassen", ["Resume Game"]="Spiel fortsetzen",
+		["Are you sure you want to reset your character?"]="Möchtest du deinen Charakter wirklich zurücksetzen?",
+		["Are you sure you want to leave the game?"]="Möchtest du das Spiel wirklich verlassen?",
+		["Game or Player?"]="Spiel oder Spieler?", ["Which Player?"]="Welcher Spieler?", ["Type Of Abuse"]="Art des Verstoßes",
+		["In your own words, help us understand what went wrong."]="Beschreibe mit eigenen Worten, was passiert ist.",
+		["Submit"]="Senden", ["Game"]="Spiel", ["Player"]="Spieler", ["Shift Lock"]="Kamerasperre",
+		["Camera Mode"]="Kameramodus", ["Movement Mode"]="Bewegungsmodus", ["Experience Language"]="Erlebnissprache",
+		["Camera Sensitivity"]="Kameraempfindlichkeit", ["Volume"]="Lautstärke", ["Input Device"]="Eingabegerät",
+		["Output Device"]="Ausgabegerät", ["Fullscreen"]="Vollbild", ["Graphics Mode"]="Grafikmodus",
+		["Graphics Quality"]="Grafikqualität", ["Performance Stats"]="Leistungsstatistiken", ["Camera Inverted"]="Kamera umkehren",
+		["Video Camera"]="Videokamera", ["On"]="Ein", ["Off"]="Aus", ["Show"]="Anzeigen", ["Hide"]="Ausblenden",
+		["Tap to Move"]="Tippen zum Bewegen", ["Click to Move"]="Klicken zum Bewegen",
+		["Experience Invite could not be sent. Please try again later."]="Die Einladung zum Erlebnis konnte nicht gesendet werden. Bitte versuche es später erneut.",
+		["Set by Developer"]="Vom Entwickler festgelegt", ["Automatic Chat Translation"]="Automatische Chatübersetzung",
+		["Give Feedback"]="Feedback geben", ["Give Translation Feedback"]="Übersetzungsfeedback geben",
+		["View Untranslated Messages"]="Nicht übersetzte Nachrichten anzeigen", ["Transparent"]="Transparent", ["Opaque"]="Undurchsichtig",
+		["Largest"]="Größte", ["Learn More"]="Mehr erfahren",
+	},
+	it = {
+		["Settings"]="Impostazioni", ["People"]="Giocatori", ["Help"]="Aiuto", ["Report"]="Segnala",
+		["Invite friends to join"]="Invita amici", ["Invite"]="Invita", ["Invited..."]="Invitato...",
+		["Mute All"]="Disattiva audio per tutti", ["Unmute All"]="Riattiva audio per tutti", ["Share Invite Link"]="Condividi link d’invito",
+		["Share"]="Condividi", ["Search for friends"]="Cerca amici", ["Back"]="Indietro",
+		["Reset"]="Reimposta", ["Don't Reset"]="Non reimpostare", ["Reset Character"]="Reimposta personaggio",
+		["Leave"]="Esci", ["Don't Leave"]="Resta", ["Leave Game"]="Esci dal gioco", ["Resume Game"]="Riprendi gioco",
+		["Are you sure you want to reset your character?"]="Vuoi davvero reimpostare il tuo personaggio?",
+		["Are you sure you want to leave the game?"]="Vuoi davvero uscire dal gioco?",
+		["Game or Player?"]="Gioco o giocatore?", ["Which Player?"]="Quale giocatore?", ["Type Of Abuse"]="Tipo di abuso",
+		["In your own words, help us understand what went wrong."]="Descrivi con parole tue cosa è successo.",
+		["Submit"]="Invia", ["Game"]="Gioco", ["Player"]="Giocatore", ["Shift Lock"]="Blocco telecamera",
+		["Camera Mode"]="Modalità telecamera", ["Movement Mode"]="Modalità movimento", ["Experience Language"]="Lingua dell’esperienza",
+		["Camera Sensitivity"]="Sensibilità telecamera", ["Volume"]="Volume", ["Input Device"]="Dispositivo di input",
+		["Output Device"]="Dispositivo di output", ["Fullscreen"]="Schermo intero", ["Graphics Mode"]="Modalità grafica",
+		["Graphics Quality"]="Qualità grafica", ["Performance Stats"]="Statistiche prestazioni", ["Camera Inverted"]="Telecamera invertita",
+		["Video Camera"]="Videocamera", ["On"]="Attivo", ["Off"]="Disattivo", ["Show"]="Mostra", ["Hide"]="Nascondi",
+		["Tap to Move"]="Tocca per muoverti", ["Click to Move"]="Fai clic per muoverti",
+		["Experience Invite could not be sent. Please try again later."]="Impossibile inviare l’invito all’esperienza. Riprova più tardi.",
+		["Set by Developer"]="Impostato dallo sviluppatore", ["Automatic Chat Translation"]="Traduzione automatica della chat",
+		["Give Feedback"]="Invia feedback", ["Give Translation Feedback"]="Invia feedback sulla traduzione",
+		["View Untranslated Messages"]="Mostra messaggi non tradotti", ["Transparent"]="Trasparente", ["Opaque"]="Opaco",
+		["Largest"]="Più grande", ["Learn More"]="Scopri di più",
+	},
+	ja = {
+		["Settings"]="設定", ["People"]="プレイヤー", ["Help"]="ヘルプ", ["Report"]="報告",
+		["Invite friends to join"]="友達を招待", ["Invite"]="招待", ["Invited..."]="招待済み...",
+		["Mute All"]="全員をミュート", ["Unmute All"]="全員のミュートを解除", ["Share Invite Link"]="招待リンクを共有",
+		["Share"]="共有", ["Search for friends"]="友達を検索", ["Back"]="戻る",
+		["Reset"]="リセット", ["Don't Reset"]="リセットしない", ["Reset Character"]="キャラクターをリセット",
+		["Leave"]="退出", ["Don't Leave"]="退出しない", ["Leave Game"]="ゲームを退出", ["Resume Game"]="ゲームに戻る",
+		["Are you sure you want to reset your character?"]="本当にキャラクターをリセットしますか？",
+		["Are you sure you want to leave the game?"]="本当にゲームを退出しますか？",
+		["Game or Player?"]="ゲームまたはプレイヤー？", ["Which Player?"]="プレイヤーを選択", ["Type Of Abuse"]="違反の種類",
+		["In your own words, help us understand what went wrong."]="何が起きたのか、あなたの言葉で説明してください。",
+		["Submit"]="送信", ["Game"]="ゲーム", ["Player"]="プレイヤー", ["Shift Lock"]="カメラロック",
+		["Camera Mode"]="カメラモード", ["Movement Mode"]="移動モード", ["Experience Language"]="エクスペリエンスの言語",
+		["Camera Sensitivity"]="カメラ感度", ["Volume"]="音量", ["Input Device"]="入力デバイス",
+		["Output Device"]="出力デバイス", ["Fullscreen"]="全画面表示", ["Graphics Mode"]="グラフィックモード",
+		["Graphics Quality"]="グラフィック品質", ["Performance Stats"]="パフォーマンス統計", ["Camera Inverted"]="カメラ反転",
+		["Video Camera"]="ビデオカメラ", ["On"]="オン", ["Off"]="オフ", ["Show"]="表示", ["Hide"]="非表示",
+		["Tap to Move"]="タップして移動", ["Click to Move"]="クリックして移動",
+		["Experience Invite could not be sent. Please try again later."]="エクスペリエンスへの招待を送信できませんでした。後でもう一度お試しください。",
+		["Set by Developer"]="開発者が設定", ["Automatic Chat Translation"]="チャットの自動翻訳",
+		["Give Feedback"]="フィードバックを送信", ["Give Translation Feedback"]="翻訳についてフィードバック",
+		["View Untranslated Messages"]="未翻訳のメッセージを表示", ["Transparent"]="透明", ["Opaque"]="不透明",
+		["Largest"]="最大", ["Learn More"]="詳細を見る",
+	},
+	ko = {
+		["Settings"]="설정", ["People"]="플레이어", ["Help"]="도움말", ["Report"]="신고",
+		["Invite friends to join"]="친구 초대", ["Invite"]="초대", ["Invited..."]="초대됨...",
+		["Mute All"]="모두 음소거", ["Unmute All"]="모두 음소거 해제", ["Share Invite Link"]="초대 링크 공유",
+		["Share"]="공유", ["Search for friends"]="친구 검색", ["Back"]="뒤로",
+		["Reset"]="초기화", ["Don't Reset"]="초기화 안 함", ["Reset Character"]="캐릭터 초기화",
+		["Leave"]="나가기", ["Don't Leave"]="나가지 않기", ["Leave Game"]="게임 나가기", ["Resume Game"]="게임으로 돌아가기",
+		["Are you sure you want to reset your character?"]="캐릭터를 초기화하시겠습니까?",
+		["Are you sure you want to leave the game?"]="게임을 나가시겠습니까?",
+		["Game or Player?"]="게임 또는 플레이어?", ["Which Player?"]="플레이어 선택", ["Type Of Abuse"]="신고 유형",
+		["In your own words, help us understand what went wrong."]="무슨 일이 있었는지 직접 설명해 주세요.",
+		["Submit"]="제출", ["Game"]="게임", ["Player"]="플레이어", ["Shift Lock"]="카메라 고정",
+		["Camera Mode"]="카메라 모드", ["Movement Mode"]="이동 모드", ["Experience Language"]="체험 언어",
+		["Camera Sensitivity"]="카메라 감도", ["Volume"]="음량", ["Input Device"]="입력 장치",
+		["Output Device"]="출력 장치", ["Fullscreen"]="전체 화면", ["Graphics Mode"]="그래픽 모드",
+		["Graphics Quality"]="그래픽 품질", ["Performance Stats"]="성능 통계", ["Camera Inverted"]="카메라 반전",
+		["Video Camera"]="비디오 카메라", ["On"]="켜기", ["Off"]="끄기", ["Show"]="표시", ["Hide"]="숨기기",
+		["Tap to Move"]="탭하여 이동", ["Click to Move"]="클릭하여 이동",
+		["Experience Invite could not be sent. Please try again later."]="체험 초대를 보낼 수 없습니다. 나중에 다시 시도해 주세요.",
+		["Set by Developer"]="개발자가 설정함", ["Automatic Chat Translation"]="자동 채팅 번역",
+		["Give Feedback"]="의견 보내기", ["Give Translation Feedback"]="번역 의견 보내기",
+		["View Untranslated Messages"]="번역되지 않은 메시지 보기", ["Transparent"]="투명", ["Opaque"]="불투명",
+		["Largest"]="가장 크게", ["Learn More"]="자세히 알아보기",
+	},
+	ar = {
+		["Settings"]="الإعدادات", ["People"]="اللاعبون", ["Help"]="المساعدة", ["Report"]="إبلاغ",
+		["Invite friends to join"]="دعوة الأصدقاء", ["Invite"]="دعوة", ["Invited..."]="تمت الدعوة...",
+		["Mute All"]="كتم صوت الجميع", ["Unmute All"]="إلغاء كتم صوت الجميع", ["Share Invite Link"]="مشاركة رابط الدعوة",
+		["Share"]="مشاركة", ["Search for friends"]="البحث عن الأصدقاء", ["Back"]="رجوع",
+		["Reset"]="إعادة ضبط", ["Don't Reset"]="عدم إعادة الضبط", ["Reset Character"]="إعادة ضبط الشخصية",
+		["Leave"]="مغادرة", ["Don't Leave"]="عدم المغادرة", ["Leave Game"]="مغادرة اللعبة", ["Resume Game"]="متابعة اللعبة",
+		["Are you sure you want to reset your character?"]="هل أنت متأكد من رغبتك في إعادة ضبط شخصيتك؟",
+		["Are you sure you want to leave the game?"]="هل أنت متأكد من رغبتك في مغادرة اللعبة؟",
+		["Game or Player?"]="اللعبة أم اللاعب؟", ["Which Player?"]="أي لاعب؟", ["Type Of Abuse"]="نوع الإساءة",
+		["In your own words, help us understand what went wrong."]="اشرح بكلماتك ما حدث لمساعدتنا على فهم المشكلة.",
+		["Submit"]="إرسال", ["Game"]="اللعبة", ["Player"]="اللاعب", ["Shift Lock"]="قفل الكاميرا",
+		["Camera Mode"]="وضع الكاميرا", ["Movement Mode"]="وضع الحركة", ["Experience Language"]="لغة التجربة",
+		["Camera Sensitivity"]="حساسية الكاميرا", ["Volume"]="مستوى الصوت", ["Input Device"]="جهاز الإدخال",
+		["Output Device"]="جهاز الإخراج", ["Fullscreen"]="ملء الشاشة", ["Graphics Mode"]="وضع الرسومات",
+		["Graphics Quality"]="جودة الرسومات", ["Performance Stats"]="إحصاءات الأداء", ["Camera Inverted"]="عكس الكاميرا",
+		["Video Camera"]="كاميرا الفيديو", ["On"]="تشغيل", ["Off"]="إيقاف", ["Show"]="إظهار", ["Hide"]="إخفاء",
+		["Tap to Move"]="اضغط للتحرك", ["Click to Move"]="انقر للتحرك",
+		["Experience Invite could not be sent. Please try again later."]="تعذر إرسال دعوة التجربة. يُرجى المحاولة لاحقًا.",
+		["Set by Developer"]="تم التعيين بواسطة المطوّر", ["Automatic Chat Translation"]="ترجمة الدردشة تلقائيًا",
+		["Give Feedback"]="إرسال ملاحظات", ["Give Translation Feedback"]="إرسال ملاحظات الترجمة",
+		["View Untranslated Messages"]="عرض الرسائل غير المترجمة", ["Transparent"]="شفاف", ["Opaque"]="معتم",
+		["Largest"]="الأكبر", ["Learn More"]="معرفة المزيد",
+	},
+	tr = {
+		["Settings"]="Ayarlar", ["People"]="Oyuncular", ["Help"]="Yardım", ["Report"]="Bildir",
+		["Invite friends to join"]="Arkadaşları davet et", ["Invite"]="Davet et", ["Invited..."]="Davet edildi...",
+		["Mute All"]="Herkesi sessize al", ["Unmute All"]="Herkesin sesini aç", ["Share Invite Link"]="Davet bağlantısını paylaş",
+		["Share"]="Paylaş", ["Search for friends"]="Arkadaş ara", ["Back"]="Geri",
+		["Reset"]="Sıfırla", ["Don't Reset"]="Sıfırlama", ["Reset Character"]="Karakteri sıfırla",
+		["Leave"]="Ayrıl", ["Don't Leave"]="Ayrılma", ["Leave Game"]="Oyundan ayrıl", ["Resume Game"]="Oyuna dön",
+		["Are you sure you want to reset your character?"]="Karakterini sıfırlamak istediğinden emin misin?",
+		["Are you sure you want to leave the game?"]="Oyundan ayrılmak istediğinden emin misin?",
+		["Game or Player?"]="Oyun mu oyuncu mu?", ["Which Player?"]="Hangi oyuncu?", ["Type Of Abuse"]="İhlal türü",
+		["In your own words, help us understand what went wrong."]="Ne olduğunu anlamamıza yardımcı olmak için kendi sözlerinle açıkla.",
+		["Submit"]="Gönder", ["Game"]="Oyun", ["Player"]="Oyuncu", ["Shift Lock"]="Kamera kilidi",
+		["Camera Mode"]="Kamera modu", ["Movement Mode"]="Hareket modu", ["Experience Language"]="Deneyim dili",
+		["Camera Sensitivity"]="Kamera hassasiyeti", ["Volume"]="Ses düzeyi", ["Input Device"]="Giriş aygıtı",
+		["Output Device"]="Çıkış aygıtı", ["Fullscreen"]="Tam ekran", ["Graphics Mode"]="Grafik modu",
+		["Graphics Quality"]="Grafik kalitesi", ["Performance Stats"]="Performans istatistikleri", ["Camera Inverted"]="Ters kamera",
+		["Video Camera"]="Video kamera", ["On"]="Açık", ["Off"]="Kapalı", ["Show"]="Göster", ["Hide"]="Gizle",
+		["Tap to Move"]="Hareket etmek için dokun", ["Click to Move"]="Hareket etmek için tıkla",
+		["Experience Invite could not be sent. Please try again later."]="Deneyim daveti gönderilemedi. Lütfen daha sonra tekrar deneyin.",
+		["Set by Developer"]="Geliştirici tarafından ayarlandı", ["Automatic Chat Translation"]="Otomatik sohbet çevirisi",
+		["Give Feedback"]="Geri bildirim gönder", ["Give Translation Feedback"]="Çeviri hakkında geri bildirim gönder",
+		["View Untranslated Messages"]="Çevrilmemiş mesajları göster", ["Transparent"]="Şeffaf", ["Opaque"]="Opak",
+		["Largest"]="En büyük", ["Learn More"]="Daha fazla bilgi",
+	},
+	pl = {
+		["Settings"]="Ustawienia", ["People"]="Gracze", ["Help"]="Pomoc", ["Report"]="Zgłoś",
+		["Invite friends to join"]="Zaproś znajomych", ["Invite"]="Zaproś", ["Invited..."]="Zaproszono...",
+		["Mute All"]="Wycisz wszystkich", ["Unmute All"]="Włącz dźwięk wszystkim", ["Share Invite Link"]="Udostępnij link zaproszenia",
+		["Share"]="Udostępnij", ["Search for friends"]="Szukaj znajomych", ["Back"]="Wstecz",
+		["Reset"]="Resetuj", ["Don't Reset"]="Nie resetuj", ["Reset Character"]="Resetuj postać",
+		["Leave"]="Wyjdź", ["Don't Leave"]="Nie wychodź", ["Leave Game"]="Opuść grę", ["Resume Game"]="Wznów grę",
+		["Are you sure you want to reset your character?"]="Czy na pewno chcesz zresetować postać?",
+		["Are you sure you want to leave the game?"]="Czy na pewno chcesz opuścić grę?",
+		["Game or Player?"]="Gra czy gracz?", ["Which Player?"]="Który gracz?", ["Type Of Abuse"]="Rodzaj naruszenia",
+		["In your own words, help us understand what went wrong."]="Opisz własnymi słowami, co się stało.",
+		["Submit"]="Prześlij", ["Game"]="Gra", ["Player"]="Gracz", ["Shift Lock"]="Blokada kamery",
+		["Camera Mode"]="Tryb kamery", ["Movement Mode"]="Tryb poruszania", ["Experience Language"]="Język doświadczenia",
+		["Camera Sensitivity"]="Czułość kamery", ["Volume"]="Głośność", ["Input Device"]="Urządzenie wejściowe",
+		["Output Device"]="Urządzenie wyjściowe", ["Fullscreen"]="Pełny ekran", ["Graphics Mode"]="Tryb grafiki",
+		["Graphics Quality"]="Jakość grafiki", ["Performance Stats"]="Statystyki wydajności", ["Camera Inverted"]="Odwrócona kamera",
+		["Video Camera"]="Kamera wideo", ["On"]="Wł.", ["Off"]="Wył.", ["Show"]="Pokaż", ["Hide"]="Ukryj",
+		["Tap to Move"]="Dotknij, aby się poruszyć", ["Click to Move"]="Kliknij, aby się poruszyć",
+		["Experience Invite could not be sent. Please try again later."]="Nie udało się wysłać zaproszenia do gry. Spróbuj ponownie później.",
+		["Set by Developer"]="Ustawione przez twórcę", ["Automatic Chat Translation"]="Automatyczne tłumaczenie czatu",
+		["Give Feedback"]="Przekaż opinię", ["Give Translation Feedback"]="Przekaż opinię o tłumaczeniu",
+		["View Untranslated Messages"]="Pokaż nieprzetłumaczone wiadomości", ["Transparent"]="Przezroczysty", ["Opaque"]="Nieprzezroczysty",
+		["Largest"]="Największy", ["Learn More"]="Dowiedz się więcej",
+	},
+	id = {
+		["Settings"]="Pengaturan", ["People"]="Pemain", ["Help"]="Bantuan", ["Report"]="Laporkan",
+		["Invite friends to join"]="Undang teman", ["Invite"]="Undang", ["Invited..."]="Diundang...",
+		["Mute All"]="Bisukan semua", ["Unmute All"]="Bunyikan semua", ["Share Invite Link"]="Bagikan tautan undangan",
+		["Share"]="Bagikan", ["Search for friends"]="Cari teman", ["Back"]="Kembali",
+		["Reset"]="Atur ulang", ["Don't Reset"]="Jangan atur ulang", ["Reset Character"]="Atur ulang karakter",
+		["Leave"]="Keluar", ["Don't Leave"]="Jangan keluar", ["Leave Game"]="Keluar dari game", ["Resume Game"]="Lanjutkan game",
+		["Are you sure you want to reset your character?"]="Yakin ingin mengatur ulang karakter?",
+		["Are you sure you want to leave the game?"]="Yakin ingin keluar dari game?",
+		["Game or Player?"]="Game atau pemain?", ["Which Player?"]="Pemain yang mana?", ["Type Of Abuse"]="Jenis pelanggaran",
+		["In your own words, help us understand what went wrong."]="Jelaskan dengan kata-kata sendiri apa yang terjadi.",
+		["Submit"]="Kirim", ["Game"]="Game", ["Player"]="Pemain", ["Shift Lock"]="Kunci kamera",
+		["Camera Mode"]="Mode kamera", ["Movement Mode"]="Mode gerakan", ["Experience Language"]="Bahasa pengalaman",
+		["Camera Sensitivity"]="Sensitivitas kamera", ["Volume"]="Volume", ["Input Device"]="Perangkat input",
+		["Output Device"]="Perangkat output", ["Fullscreen"]="Layar penuh", ["Graphics Mode"]="Mode grafis",
+		["Graphics Quality"]="Kualitas grafis", ["Performance Stats"]="Statistik performa", ["Camera Inverted"]="Kamera terbalik",
+		["Video Camera"]="Kamera video", ["On"]="Aktif", ["Off"]="Nonaktif", ["Show"]="Tampilkan", ["Hide"]="Sembunyikan",
+		["Tap to Move"]="Ketuk untuk bergerak", ["Click to Move"]="Klik untuk bergerak",
+		["Experience Invite could not be sent. Please try again later."]="Undangan pengalaman tidak dapat dikirim. Coba lagi nanti.",
+		["Set by Developer"]="Diatur oleh pengembang", ["Automatic Chat Translation"]="Terjemahan chat otomatis",
+		["Give Feedback"]="Kirim masukan", ["Give Translation Feedback"]="Kirim masukan terjemahan",
+		["View Untranslated Messages"]="Lihat pesan yang belum diterjemahkan", ["Transparent"]="Transparan", ["Opaque"]="Buram",
+		["Largest"]="Terbesar", ["Learn More"]="Pelajari lebih lanjut",
+	},
+	vi = {
+		["Settings"]="Cài đặt", ["People"]="Người chơi", ["Help"]="Trợ giúp", ["Report"]="Báo cáo",
+		["Invite friends to join"]="Mời bạn bè tham gia", ["Invite"]="Mời", ["Invited..."]="Đã mời...",
+		["Mute All"]="Tắt tiếng tất cả", ["Unmute All"]="Bật tiếng tất cả", ["Share Invite Link"]="Chia sẻ liên kết mời",
+		["Share"]="Chia sẻ", ["Search for friends"]="Tìm bạn bè", ["Back"]="Quay lại",
+		["Reset"]="Đặt lại", ["Don't Reset"]="Không đặt lại", ["Reset Character"]="Đặt lại nhân vật",
+		["Leave"]="Rời khỏi", ["Don't Leave"]="Không rời khỏi", ["Leave Game"]="Thoát trò chơi", ["Resume Game"]="Tiếp tục trò chơi",
+		["Are you sure you want to reset your character?"]="Bạn có chắc muốn đặt lại nhân vật không?",
+		["Are you sure you want to leave the game?"]="Bạn có chắc muốn thoát trò chơi không?",
+		["Game or Player?"]="Trò chơi hay người chơi?", ["Which Player?"]="Người chơi nào?", ["Type Of Abuse"]="Loại vi phạm",
+		["In your own words, help us understand what went wrong."]="Hãy mô tả bằng lời của bạn để giúp chúng tôi hiểu chuyện gì đã xảy ra.",
+		["Submit"]="Gửi", ["Game"]="Trò chơi", ["Player"]="Người chơi", ["Shift Lock"]="Khóa camera",
+		["Camera Mode"]="Chế độ camera", ["Movement Mode"]="Chế độ di chuyển", ["Experience Language"]="Ngôn ngữ trải nghiệm",
+		["Camera Sensitivity"]="Độ nhạy camera", ["Volume"]="Âm lượng", ["Input Device"]="Thiết bị đầu vào",
+		["Output Device"]="Thiết bị đầu ra", ["Fullscreen"]="Toàn màn hình", ["Graphics Mode"]="Chế độ đồ họa",
+		["Graphics Quality"]="Chất lượng đồ họa", ["Performance Stats"]="Thống kê hiệu suất", ["Camera Inverted"]="Đảo ngược camera",
+		["Video Camera"]="Máy quay video", ["On"]="Bật", ["Off"]="Tắt", ["Show"]="Hiện", ["Hide"]="Ẩn",
+		["Tap to Move"]="Chạm để di chuyển", ["Click to Move"]="Nhấp để di chuyển",
+		["Experience Invite could not be sent. Please try again later."]="Không thể gửi lời mời trải nghiệm. Vui lòng thử lại sau.",
+		["Set by Developer"]="Do nhà phát triển đặt", ["Automatic Chat Translation"]="Tự động dịch trò chuyện",
+		["Give Feedback"]="Gửi phản hồi", ["Give Translation Feedback"]="Gửi phản hồi về bản dịch",
+		["View Untranslated Messages"]="Xem tin nhắn chưa dịch", ["Transparent"]="Trong suốt", ["Opaque"]="Đục",
+		["Largest"]="Lớn nhất", ["Learn More"]="Tìm hiểu thêm",
+	},
+	th = {
+		["Settings"]="การตั้งค่า", ["People"]="ผู้เล่น", ["Help"]="ช่วยเหลือ", ["Report"]="รายงาน",
+		["Invite friends to join"]="เชิญเพื่อนเข้าร่วม", ["Invite"]="เชิญ", ["Invited..."]="เชิญแล้ว...",
+		["Mute All"]="ปิดเสียงทั้งหมด", ["Unmute All"]="เปิดเสียงทั้งหมด", ["Share Invite Link"]="แชร์ลิงก์คำเชิญ",
+		["Share"]="แชร์", ["Search for friends"]="ค้นหาเพื่อน", ["Back"]="ย้อนกลับ",
+		["Reset"]="รีเซ็ต", ["Don't Reset"]="ไม่รีเซ็ต", ["Reset Character"]="รีเซ็ตตัวละคร",
+		["Leave"]="ออก", ["Don't Leave"]="ไม่ออก", ["Leave Game"]="ออกจากเกม", ["Resume Game"]="เล่นเกมต่อ",
+		["Are you sure you want to reset your character?"]="คุณแน่ใจหรือไม่ว่าต้องการรีเซ็ตตัวละคร?",
+		["Are you sure you want to leave the game?"]="คุณแน่ใจหรือไม่ว่าต้องการออกจากเกม?",
+		["Game or Player?"]="เกมหรือผู้เล่น?", ["Which Player?"]="ผู้เล่นคนใด?", ["Type Of Abuse"]="ประเภทการละเมิด",
+		["In your own words, help us understand what went wrong."]="โปรดอธิบายด้วยคำพูดของคุณเองว่าเกิดอะไรขึ้น",
+		["Submit"]="ส่ง", ["Game"]="เกม", ["Player"]="ผู้เล่น", ["Shift Lock"]="ล็อกกล้อง",
+		["Camera Mode"]="โหมดกล้อง", ["Movement Mode"]="โหมดการเคลื่อนไหว", ["Experience Language"]="ภาษาในประสบการณ์",
+		["Camera Sensitivity"]="ความไวของกล้อง", ["Volume"]="ระดับเสียง", ["Input Device"]="อุปกรณ์อินพุต",
+		["Output Device"]="อุปกรณ์เอาต์พุต", ["Fullscreen"]="เต็มหน้าจอ", ["Graphics Mode"]="โหมดกราฟิก",
+		["Graphics Quality"]="คุณภาพกราฟิก", ["Performance Stats"]="สถิติประสิทธิภาพ", ["Camera Inverted"]="กลับด้านกล้อง",
+		["Video Camera"]="กล้องวิดีโอ", ["On"]="เปิด", ["Off"]="ปิด", ["Show"]="แสดง", ["Hide"]="ซ่อน",
+		["Tap to Move"]="แตะเพื่อเคลื่อนที่", ["Click to Move"]="คลิกเพื่อเคลื่อนที่",
+		["Experience Invite could not be sent. Please try again later."]="ส่งคำเชิญเข้าประสบการณ์ไม่สำเร็จ โปรดลองอีกครั้งในภายหลัง",
+		["Set by Developer"]="ตั้งค่าโดยผู้พัฒนา", ["Automatic Chat Translation"]="แปลแชทอัตโนมัติ",
+		["Give Feedback"]="ส่งความคิดเห็น", ["Give Translation Feedback"]="ส่งความคิดเห็นเกี่ยวกับคำแปล",
+		["View Untranslated Messages"]="แสดงข้อความที่ยังไม่ได้แปล", ["Transparent"]="โปร่งใส", ["Opaque"]="ทึบ",
+		["Largest"]="ใหญ่ที่สุด", ["Learn More"]="เรียนรู้เพิ่มเติม",
+	},
+	nl = {
+		["Settings"]="Instellingen", ["People"]="Spelers", ["Help"]="Help", ["Report"]="Melden",
+		["Invite friends to join"]="Vrienden uitnodigen", ["Invite"]="Uitnodigen", ["Invited..."]="Uitgenodigd...",
+		["Mute All"]="Iedereen dempen", ["Unmute All"]="Dempen voor iedereen opheffen", ["Share Invite Link"]="Uitnodigingslink delen",
+		["Share"]="Delen", ["Search for friends"]="Vrienden zoeken", ["Back"]="Terug",
+		["Reset"]="Resetten", ["Don't Reset"]="Niet resetten", ["Reset Character"]="Personage resetten",
+		["Leave"]="Verlaten", ["Don't Leave"]="Niet verlaten", ["Leave Game"]="Spel verlaten", ["Resume Game"]="Spel hervatten",
+		["Are you sure you want to reset your character?"]="Weet je zeker dat je je personage wilt resetten?",
+		["Are you sure you want to leave the game?"]="Weet je zeker dat je het spel wilt verlaten?",
+		["Game or Player?"]="Spel of speler?", ["Which Player?"]="Welke speler?", ["Type Of Abuse"]="Soort overtreding",
+		["In your own words, help us understand what went wrong."]="Beschrijf in je eigen woorden wat er is gebeurd.",
+		["Submit"]="Verzenden", ["Game"]="Spel", ["Player"]="Speler", ["Shift Lock"]="Cameravergrendeling",
+		["Camera Mode"]="Cameramodus", ["Movement Mode"]="Bewegingsmodus", ["Experience Language"]="Ervaringstaal",
+		["Camera Sensitivity"]="Cameragevoeligheid", ["Volume"]="Volume", ["Input Device"]="Invoerapparaat",
+		["Output Device"]="Uitvoerapparaat", ["Fullscreen"]="Volledig scherm", ["Graphics Mode"]="Grafische modus",
+		["Graphics Quality"]="Grafische kwaliteit", ["Performance Stats"]="Prestatiestatistieken", ["Camera Inverted"]="Camera omkeren",
+		["Video Camera"]="Videocamera", ["On"]="Aan", ["Off"]="Uit", ["Show"]="Tonen", ["Hide"]="Verbergen",
+		["Tap to Move"]="Tik om te bewegen", ["Click to Move"]="Klik om te bewegen",
+		["Experience Invite could not be sent. Please try again later."]="De uitnodiging voor de ervaring kon niet worden verzonden. Probeer het later opnieuw.",
+		["Set by Developer"]="Ingesteld door ontwikkelaar", ["Automatic Chat Translation"]="Automatische chatvertaling",
+		["Give Feedback"]="Feedback geven", ["Give Translation Feedback"]="Feedback over vertaling geven",
+		["View Untranslated Messages"]="Niet-vertaalde berichten tonen", ["Transparent"]="Transparant", ["Opaque"]="Ondoorzichtig",
+		["Largest"]="Grootst", ["Learn More"]="Meer informatie",
+	},
+}
+
+-- Extra fallbacks for more Roblox-supported languages. The full CoreScript
+-- localization tables still take priority for stock phrases; these cover the
+-- custom invite/report wording most likely to be absent from historical tables.
+MenuFallbackTranslations.ms = {
+	["Invite friends to join"]="Jemput rakan untuk menyertai", ["Share Invite Link"]="Kongsi pautan jemputan",
+	["Search for friends"]="Cari rakan", ["Mute All"]="Senyapkan semua", ["Unmute All"]="Nyahsenyap semua",
+	["Reset"]="Tetapkan semula", ["Don't Reset"]="Jangan tetapkan semula", ["Reset Character"]="Tetapkan semula watak",
+	["Leave"]="Keluar", ["Don't Leave"]="Jangan keluar", ["Resume Game"]="Sambung permainan",
+	["Experience Language"]="Bahasa pengalaman", ["Game or Player?"]="Permainan atau pemain?",
+	["Which Player?"]="Pemain yang mana?", ["Type Of Abuse"]="Jenis salah laku", ["Submit"]="Hantar",
+	["In your own words, help us understand what went wrong."]="Terangkan dengan kata-kata anda sendiri perkara yang berlaku.",
+	["Experience Invite could not be sent. Please try again later."]="Jemputan pengalaman tidak dapat dihantar. Sila cuba lagi kemudian.",
+}
+MenuFallbackTranslations.fil = {
+	["Invite friends to join"]="Imbitahan ang mga kaibigan", ["Share Invite Link"]="Ibahagi ang link ng imbitasyon",
+	["Search for friends"]="Maghanap ng mga kaibigan", ["Mute All"]="I-mute ang lahat", ["Unmute All"]="I-unmute ang lahat",
+	["Reset"]="I-reset", ["Don't Reset"]="Huwag i-reset", ["Reset Character"]="I-reset ang karakter",
+	["Leave"]="Umalis", ["Don't Leave"]="Huwag umalis", ["Resume Game"]="Ipagpatuloy ang laro",
+	["Experience Language"]="Wika ng experience", ["Game or Player?"]="Laro o manlalaro?",
+	["Which Player?"]="Aling manlalaro?", ["Type Of Abuse"]="Uri ng pang-aabuso", ["Submit"]="Isumite",
+	["In your own words, help us understand what went wrong."]="Sa sarili mong mga salita, ipaliwanag kung ano ang nangyari.",
+	["Experience Invite could not be sent. Please try again later."]="Hindi naipadala ang imbitasyon sa experience. Pakisubukang muli mamaya.",
+}
+MenuFallbackTranslations.bn = {
+	["Invite friends to join"]="বন্ধুদের আমন্ত্রণ জানান", ["Share Invite Link"]="আমন্ত্রণের লিংক শেয়ার করুন",
+	["Search for friends"]="বন্ধু খুঁজুন", ["Mute All"]="সবাইকে মিউট করুন", ["Unmute All"]="সবার মিউট বন্ধ করুন",
+	["Reset"]="রিসেট", ["Don't Reset"]="রিসেট করবেন না", ["Reset Character"]="চরিত্র রিসেট করুন",
+	["Leave"]="বেরিয়ে যান", ["Don't Leave"]="বেরিয়ে যাবেন না", ["Resume Game"]="গেম চালিয়ে যান",
+	["Experience Language"]="অভিজ্ঞতার ভাষা", ["Game or Player?"]="গেম নাকি খেলোয়াড়?",
+	["Which Player?"]="কোন খেলোয়াড়?", ["Type Of Abuse"]="অপব্যবহারের ধরন", ["Submit"]="জমা দিন",
+	["In your own words, help us understand what went wrong."]="কী ঘটেছে তা বুঝতে নিজের ভাষায় ব্যাখ্যা করুন।",
+	["Experience Invite could not be sent. Please try again later."]="অভিজ্ঞতার আমন্ত্রণ পাঠানো যায়নি। অনুগ্রহ করে পরে আবার চেষ্টা করুন।",
+}
+MenuFallbackTranslations.ro = {
+	["Invite friends to join"]="Invită prieteni", ["Share Invite Link"]="Partajează linkul de invitație",
+	["Search for friends"]="Caută prieteni", ["Mute All"]="Dezactivează sunetul tuturor", ["Unmute All"]="Activează sunetul tuturor",
+	["Reset"]="Resetează", ["Don't Reset"]="Nu reseta", ["Reset Character"]="Resetează personajul",
+	["Leave"]="Ieși", ["Don't Leave"]="Rămâi", ["Resume Game"]="Reia jocul",
+	["Experience Language"]="Limba experienței", ["Game or Player?"]="Joc sau jucător?",
+	["Which Player?"]="Care jucător?", ["Type Of Abuse"]="Tipul abuzului", ["Submit"]="Trimite",
+	["In your own words, help us understand what went wrong."]="Descrie cu propriile cuvinte ce s-a întâmplat.",
+	["Experience Invite could not be sent. Please try again later."]="Invitația la experiență nu a putut fi trimisă. Încearcă din nou mai târziu.",
+}
+MenuFallbackTranslations.cs = {
+	["Invite friends to join"]="Pozvat přátele", ["Share Invite Link"]="Sdílet odkaz s pozvánkou",
+	["Search for friends"]="Hledat přátele", ["Mute All"]="Ztlumit všechny", ["Unmute All"]="Zapnout zvuk všem",
+	["Reset"]="Obnovit", ["Don't Reset"]="Neobnovovat", ["Reset Character"]="Obnovit postavu",
+	["Leave"]="Odejít", ["Don't Leave"]="Neodcházet", ["Resume Game"]="Pokračovat ve hře",
+	["Experience Language"]="Jazyk zážitku", ["Game or Player?"]="Hra nebo hráč?",
+	["Which Player?"]="Který hráč?", ["Type Of Abuse"]="Typ zneužití", ["Submit"]="Odeslat",
+	["In your own words, help us understand what went wrong."]="Vlastními slovy popište, co se stalo.",
+	["Experience Invite could not be sent. Please try again later."]="Pozvánku do zážitku se nepodařilo odeslat. Zkuste to prosím později.",
+}
+MenuFallbackTranslations.el = {
+	["Invite friends to join"]="Πρόσκληση φίλων", ["Share Invite Link"]="Κοινοποίηση συνδέσμου πρόσκλησης",
+	["Search for friends"]="Αναζήτηση φίλων", ["Mute All"]="Σίγαση όλων", ["Unmute All"]="Κατάργηση σίγασης όλων",
+	["Reset"]="Επαναφορά", ["Don't Reset"]="Να μην γίνει επαναφορά", ["Reset Character"]="Επαναφορά χαρακτήρα",
+	["Leave"]="Έξοδος", ["Don't Leave"]="Παραμονή", ["Resume Game"]="Συνέχεια παιχνιδιού",
+	["Experience Language"]="Γλώσσα εμπειρίας", ["Game or Player?"]="Παιχνίδι ή παίκτης;",
+	["Which Player?"]="Ποιος παίκτης;", ["Type Of Abuse"]="Τύπος παραβίασης", ["Submit"]="Υποβολή",
+	["In your own words, help us understand what went wrong."]="Περιγράψτε με δικά σας λόγια τι συνέβη.",
+	["Experience Invite could not be sent. Please try again later."]="Δεν ήταν δυνατή η αποστολή πρόσκλησης στην εμπειρία. Δοκιμάστε ξανά αργότερα.",
+}
+MenuFallbackTranslations.he = {
+	["Invite friends to join"]="הזמנת חברים להצטרף", ["Share Invite Link"]="שיתוף קישור להזמנה",
+	["Search for friends"]="חיפוש חברים", ["Mute All"]="השתקת כולם", ["Unmute All"]="ביטול השתקה לכולם",
+	["Reset"]="איפוס", ["Don't Reset"]="לא לאפס", ["Reset Character"]="איפוס הדמות",
+	["Leave"]="יציאה", ["Don't Leave"]="לא לצאת", ["Resume Game"]="חזרה למשחק",
+	["Experience Language"]="שפת החוויה", ["Game or Player?"]="משחק או שחקן?",
+	["Which Player?"]="איזה שחקן?", ["Type Of Abuse"]="סוג ההפרה", ["Submit"]="שליחה",
+	["In your own words, help us understand what went wrong."]="תארו במילים שלכם מה קרה כדי שנוכל להבין את הבעיה.",
+	["Experience Invite could not be sent. Please try again later."]="לא ניתן היה לשלוח את ההזמנה לחוויה. נסו שוב מאוחר יותר.",
+}
+MenuFallbackTranslations.sv = {
+	["Invite friends to join"]="Bjud in vänner", ["Share Invite Link"]="Dela inbjudningslänk", ["Search for friends"]="Sök efter vänner",
+	["Mute All"]="Ljud av för alla", ["Unmute All"]="Ljud på för alla", ["Reset"]="Återställ", ["Don't Reset"]="Återställ inte",
+	["Reset Character"]="Återställ karaktär", ["Leave"]="Lämna", ["Don't Leave"]="Stanna kvar", ["Resume Game"]="Återuppta spelet",
+	["Experience Language"]="Upplevelsespråk", ["Game or Player?"]="Spel eller spelare?", ["Which Player?"]="Vilken spelare?",
+	["Type Of Abuse"]="Typ av överträdelse", ["Submit"]="Skicka", ["In your own words, help us understand what went wrong."]="Beskriv med egna ord vad som hände.",
+	["Experience Invite could not be sent. Please try again later."]="Det gick inte att skicka inbjudan till upplevelsen. Försök igen senare.",
+}
+MenuFallbackTranslations.da = {
+	["Invite friends to join"]="Inviter venner", ["Share Invite Link"]="Del invitationslink", ["Search for friends"]="Søg efter venner",
+	["Mute All"]="Slå lyden fra for alle", ["Unmute All"]="Slå lyden til for alle", ["Reset"]="Nulstil", ["Don't Reset"]="Nulstil ikke",
+	["Reset Character"]="Nulstil figur", ["Leave"]="Forlad", ["Don't Leave"]="Bliv", ["Resume Game"]="Fortsæt spillet",
+	["Experience Language"]="Oplevelsessprog", ["Game or Player?"]="Spil eller spiller?", ["Which Player?"]="Hvilken spiller?",
+	["Type Of Abuse"]="Type af overtrædelse", ["Submit"]="Send", ["In your own words, help us understand what went wrong."]="Beskriv med dine egne ord, hvad der skete.",
+	["Experience Invite could not be sent. Please try again later."]="Invitationen til oplevelsen kunne ikke sendes. Prøv igen senere.",
+}
+MenuFallbackTranslations.nb = {
+	["Invite friends to join"]="Inviter venner", ["Share Invite Link"]="Del invitasjonslenke", ["Search for friends"]="Søk etter venner",
+	["Mute All"]="Demp alle", ["Unmute All"]="Slå på lyd for alle", ["Reset"]="Tilbakestill", ["Don't Reset"]="Ikke tilbakestill",
+	["Reset Character"]="Tilbakestill figur", ["Leave"]="Forlat", ["Don't Leave"]="Bli", ["Resume Game"]="Fortsett spillet",
+	["Experience Language"]="Opplevelsens språk", ["Game or Player?"]="Spill eller spiller?", ["Which Player?"]="Hvilken spiller?",
+	["Type Of Abuse"]="Type regelbrudd", ["Submit"]="Send inn", ["In your own words, help us understand what went wrong."]="Beskriv med egne ord hva som skjedde.",
+	["Experience Invite could not be sent. Please try again later."]="Kunne ikke sende invitasjonen til opplevelsen. Prøv igjen senere.",
+}
+MenuFallbackTranslations.fi = {
+	["Invite friends to join"]="Kutsu ystäviä", ["Share Invite Link"]="Jaa kutsulinkki", ["Search for friends"]="Etsi ystäviä",
+	["Mute All"]="Mykistä kaikki", ["Unmute All"]="Poista kaikkien mykistys", ["Reset"]="Nollaa", ["Don't Reset"]="Älä nollaa",
+	["Reset Character"]="Nollaa hahmo", ["Leave"]="Poistu", ["Don't Leave"]="Älä poistu", ["Resume Game"]="Jatka peliä",
+	["Experience Language"]="Kokemuksen kieli", ["Game or Player?"]="Peli vai pelaaja?", ["Which Player?"]="Mikä pelaaja?",
+	["Type Of Abuse"]="Rikkomuksen tyyppi", ["Submit"]="Lähetä", ["In your own words, help us understand what went wrong."]="Kuvaile omin sanoin, mitä tapahtui.",
+	["Experience Invite could not be sent. Please try again later."]="Kutsua kokemukseen ei voitu lähettää. Yritä myöhemmin uudelleen.",
+}
+MenuFallbackTranslations.hu = {
+	["Invite friends to join"]="Barátok meghívása", ["Share Invite Link"]="Meghívó hivatkozás megosztása", ["Search for friends"]="Barátok keresése",
+	["Mute All"]="Mindenki némítása", ["Unmute All"]="Mindenki némításának feloldása", ["Reset"]="Visszaállítás", ["Don't Reset"]="Ne állítsd vissza",
+	["Reset Character"]="Karakter visszaállítása", ["Leave"]="Kilépés", ["Don't Leave"]="Maradás", ["Resume Game"]="Játék folytatása",
+	["Experience Language"]="Élmény nyelve", ["Game or Player?"]="Játék vagy játékos?", ["Which Player?"]="Melyik játékos?",
+	["Type Of Abuse"]="Visszaélés típusa", ["Submit"]="Küldés", ["In your own words, help us understand what went wrong."]="Saját szavaiddal írd le, mi történt.",
+	["Experience Invite could not be sent. Please try again later."]="Nem sikerült elküldeni az élmény meghívóját. Próbáld újra később.",
+}
+MenuFallbackTranslations.bg = {
+	["Invite friends to join"]="Покани приятели", ["Share Invite Link"]="Сподели връзката за покана", ["Search for friends"]="Търси приятели",
+	["Mute All"]="Изключи звука на всички", ["Unmute All"]="Включи звука на всички", ["Reset"]="Нулиране", ["Don't Reset"]="Без нулиране",
+	["Reset Character"]="Нулиране на героя", ["Leave"]="Изход", ["Don't Leave"]="Остани", ["Resume Game"]="Продължи играта",
+	["Experience Language"]="Език на преживяването", ["Game or Player?"]="Игра или играч?", ["Which Player?"]="Кой играч?",
+	["Type Of Abuse"]="Вид нарушение", ["Submit"]="Изпрати", ["In your own words, help us understand what went wrong."]="Опиши със свои думи какво се случи.",
+	["Experience Invite could not be sent. Please try again later."]="Поканата за преживяването не можа да бъде изпратена. Опитай отново по-късно.",
+}
+
+-- Additional custom menu wording not normally found in stock CoreScript tables.
+MenuAdditionalTranslations = {
+	["ru"] = {
+		["Record"] = "Запись",
+		["Record Video"] = "Записать видео",
+		["Stop Recording"] = "Остановить запись",
+		["Screenshot"] = "Снимок экрана",
+		["Video"] = "Видео",
+		["Take Screenshot"] = "Сделать снимок экрана",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Нажмите «Сделать снимок экрана», чтобы закрыть меню, сделать снимок и сохранить его на компьютере.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Нажмите «Записать видео», чтобы начать запись. Нажмите ещё раз, чтобы остановить её.",
+		["In Experience"] = "В игре",
+		["In Studio"] = "В Roblox Studio",
+		["People's Names"] = "Имена игроков",
+		["My Badges"] = "Мои значки",
+		["Reduce Motion"] = "Уменьшить анимацию",
+		["Text Size"] = "Размер текста",
+		["Maximum Frame Rate"] = "Максимальная частота кадров",
+		["Chat & Language"] = "Чат и язык",
+		["Display & Graphics"] = "Экран и графика",
+		["View & Controls"] = "Обзор и управление",
+		["Inappropriate Content"] = "Неприемлемый контент",
+		["Swearing"] = "Нецензурная лексика",
+		["Inappropriate Username"] = "Неподходящее имя пользователя",
+		["Bullying"] = "Травля",
+		["Scamming"] = "Мошенничество",
+		["Dating"] = "Свидания",
+		["Cheating/Exploiting"] = "Читерство и эксплойты",
+		["Personal Question"] = "Личный вопрос",
+		["Offsite Links"] = "Внешние ссылки",
+	},
+	["uk"] = {
+		["Record"] = "Запис",
+		["Record Video"] = "Записати відео",
+		["Stop Recording"] = "Зупинити запис",
+		["Screenshot"] = "Знімок екрана",
+		["Video"] = "Відео",
+		["Take Screenshot"] = "Зробити знімок екрана",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Натисніть «Зробити знімок екрана», щоб закрити меню, зробити знімок і зберегти його на комп’ютері.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Натисніть «Записати відео», щоб почати запис. Натисніть ще раз, щоб зупинити його.",
+		["In Experience"] = "У грі",
+		["In Studio"] = "У Roblox Studio",
+		["People's Names"] = "Імена гравців",
+		["My Badges"] = "Мої значки",
+		["Reduce Motion"] = "Зменшити анімацію",
+		["Text Size"] = "Розмір тексту",
+		["Maximum Frame Rate"] = "Максимальна частота кадрів",
+		["Chat & Language"] = "Чат і мова",
+		["Display & Graphics"] = "Екран і графіка",
+		["View & Controls"] = "Перегляд і керування",
+		["Inappropriate Content"] = "Неприйнятний вміст",
+		["Swearing"] = "Лайка",
+		["Inappropriate Username"] = "Неприйнятне ім’я користувача",
+		["Bullying"] = "Булінг",
+		["Scamming"] = "Шахрайство",
+		["Dating"] = "Знайомства",
+		["Cheating/Exploiting"] = "Читерство та експлойти",
+		["Personal Question"] = "Особисте запитання",
+		["Offsite Links"] = "Зовнішні посилання",
+	},
+	["es"] = {
+		["Record"] = "Grabación",
+		["Record Video"] = "Grabar video",
+		["Stop Recording"] = "Detener grabación",
+		["Screenshot"] = "Captura de pantalla",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Tomar captura de pantalla",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Haz clic en «Tomar captura de pantalla» para cerrar el menú, tomar una captura y guardarla en tu computadora.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Haz clic en «Grabar video» para comenzar a grabar. Haz clic otra vez para detener la grabación.",
+		["In Experience"] = "En la experiencia",
+		["In Studio"] = "En Roblox Studio",
+		["People's Names"] = "Nombres de los jugadores",
+		["My Badges"] = "Mis insignias",
+		["Reduce Motion"] = "Reducir movimiento",
+		["Text Size"] = "Tamaño del texto",
+		["Maximum Frame Rate"] = "Frecuencia máxima de fotogramas",
+		["Chat & Language"] = "Chat e idioma",
+		["Display & Graphics"] = "Pantalla y gráficos",
+		["View & Controls"] = "Vista y controles",
+		["Inappropriate Content"] = "Contenido inapropiado",
+		["Swearing"] = "Insultos",
+		["Inappropriate Username"] = "Nombre de usuario inapropiado",
+		["Bullying"] = "Acoso",
+		["Scamming"] = "Estafas",
+		["Dating"] = "Citas",
+		["Cheating/Exploiting"] = "Trampas y exploits",
+		["Personal Question"] = "Pregunta personal",
+		["Offsite Links"] = "Enlaces externos",
+	},
+	["pt"] = {
+		["Record"] = "Gravação",
+		["Record Video"] = "Gravar vídeo",
+		["Stop Recording"] = "Parar gravação",
+		["Screenshot"] = "Captura de tela",
+		["Video"] = "Vídeo",
+		["Take Screenshot"] = "Fazer captura de tela",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Clique em «Fazer captura de tela» para fechar o menu, capturar a tela e salvar a imagem no computador.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Clique em «Gravar vídeo» para começar a gravar. Clique novamente para parar a gravação.",
+		["In Experience"] = "Na experiência",
+		["In Studio"] = "No Roblox Studio",
+		["People's Names"] = "Nomes dos jogadores",
+		["My Badges"] = "Meus emblemas",
+		["Reduce Motion"] = "Reduzir movimento",
+		["Text Size"] = "Tamanho do texto",
+		["Maximum Frame Rate"] = "Taxa máxima de quadros",
+		["Chat & Language"] = "Chat e idioma",
+		["Display & Graphics"] = "Tela e gráficos",
+		["View & Controls"] = "Visualização e controles",
+		["Inappropriate Content"] = "Conteúdo impróprio",
+		["Swearing"] = "Palavrões",
+		["Inappropriate Username"] = "Nome de usuário impróprio",
+		["Bullying"] = "Bullying",
+		["Scamming"] = "Golpes",
+		["Dating"] = "Namoro",
+		["Cheating/Exploiting"] = "Trapaças e exploits",
+		["Personal Question"] = "Pergunta pessoal",
+		["Offsite Links"] = "Links externos",
+	},
+	["zh-cn"] = {
+		["Record"] = "录制",
+		["Record Video"] = "录制视频",
+		["Stop Recording"] = "停止录制",
+		["Screenshot"] = "屏幕截图",
+		["Video"] = "视频",
+		["Take Screenshot"] = "截取屏幕截图",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "点击“截取屏幕截图”按钮后，菜单将关闭，截图会保存到你的电脑。",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "点击“录制视频”按钮开始录制。再次点击即可停止录制。",
+		["In Experience"] = "游戏中",
+		["In Studio"] = "在 Roblox Studio 中",
+		["People's Names"] = "玩家名称",
+		["My Badges"] = "我的徽章",
+		["Reduce Motion"] = "减少动态效果",
+		["Text Size"] = "文字大小",
+		["Maximum Frame Rate"] = "最高帧率",
+		["Chat & Language"] = "聊天与语言",
+		["Display & Graphics"] = "显示与图形",
+		["View & Controls"] = "视角与控制",
+		["Inappropriate Content"] = "不当内容",
+		["Swearing"] = "辱骂",
+		["Inappropriate Username"] = "不当用户名",
+		["Bullying"] = "欺凌",
+		["Scamming"] = "诈骗",
+		["Dating"] = "约会",
+		["Cheating/Exploiting"] = "作弊/利用漏洞",
+		["Personal Question"] = "个人问题",
+		["Offsite Links"] = "站外链接",
+	},
+	["zh-tw"] = {
+		["Record"] = "錄製",
+		["Record Video"] = "錄製影片",
+		["Stop Recording"] = "停止錄製",
+		["Screenshot"] = "螢幕截圖",
+		["Video"] = "影片",
+		["Take Screenshot"] = "擷取螢幕截圖",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "按一下「擷取螢幕截圖」按鈕後，選單會關閉，截圖會儲存到你的電腦。",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "按一下「錄製影片」按鈕開始錄製。再次按一下即可停止錄製。",
+		["In Experience"] = "遊戲中",
+		["In Studio"] = "在 Roblox Studio 中",
+		["People's Names"] = "玩家名稱",
+		["My Badges"] = "我的徽章",
+		["Reduce Motion"] = "減少動態效果",
+		["Text Size"] = "文字大小",
+		["Maximum Frame Rate"] = "最高影格率",
+		["Chat & Language"] = "聊天與語言",
+		["Display & Graphics"] = "顯示與圖形",
+		["View & Controls"] = "檢視與控制",
+		["Inappropriate Content"] = "不當內容",
+		["Swearing"] = "辱罵",
+		["Inappropriate Username"] = "不當使用者名稱",
+		["Bullying"] = "霸凌",
+		["Scamming"] = "詐騙",
+		["Dating"] = "約會",
+		["Cheating/Exploiting"] = "作弊／利用漏洞",
+		["Personal Question"] = "個人問題",
+		["Offsite Links"] = "站外連結",
+	},
+	["hi"] = {
+		["Record"] = "रिकॉर्डिंग",
+		["Record Video"] = "वीडियो रिकॉर्ड करें",
+		["Stop Recording"] = "रिकॉर्डिंग रोकें",
+		["Screenshot"] = "स्क्रीनशॉट",
+		["Video"] = "वीडियो",
+		["Take Screenshot"] = "स्क्रीनशॉट लें",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "स्क्रीनशॉट लेने के लिए बटन पर क्लिक करें। मेनू बंद हो जाएगा और स्क्रीनशॉट आपके कंप्यूटर पर सेव होगा।",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "रिकॉर्डिंग शुरू करने के लिए “वीडियो रिकॉर्ड करें” पर क्लिक करें। रोकने के लिए फिर से क्लिक करें।",
+		["In Experience"] = "अनुभव में",
+		["In Studio"] = "Roblox Studio में",
+		["People's Names"] = "खिलाड़ियों के नाम",
+		["My Badges"] = "मेरे बैज",
+		["Reduce Motion"] = "मोशन कम करें",
+		["Text Size"] = "टेक्स्ट आकार",
+		["Maximum Frame Rate"] = "अधिकतम फ्रेम दर",
+		["Chat & Language"] = "चैट और भाषा",
+		["Display & Graphics"] = "डिस्प्ले और ग्राफ़िक्स",
+		["View & Controls"] = "दृश्य और नियंत्रण",
+		["Inappropriate Content"] = "अनुचित सामग्री",
+		["Swearing"] = "गाली-गलौज",
+		["Inappropriate Username"] = "अनुचित यूज़रनेम",
+		["Bullying"] = "धौंस जमाना",
+		["Scamming"] = "धोखाधड़ी",
+		["Dating"] = "डेटिंग",
+		["Cheating/Exploiting"] = "चीटिंग/एक्सप्लॉइट",
+		["Personal Question"] = "व्यक्तिगत सवाल",
+		["Offsite Links"] = "बाहरी लिंक",
+	},
+	["fr"] = {
+		["Record"] = "Enregistrement",
+		["Record Video"] = "Enregistrer une vidéo",
+		["Stop Recording"] = "Arrêter l’enregistrement",
+		["Screenshot"] = "Capture d’écran",
+		["Video"] = "Vidéo",
+		["Take Screenshot"] = "Prendre une capture d’écran",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Cliquez sur « Prendre une capture d’écran » pour fermer le menu et enregistrer une capture sur votre ordinateur.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Cliquez sur « Enregistrer une vidéo » pour commencer. Cliquez à nouveau pour arrêter l’enregistrement.",
+		["In Experience"] = "Dans l’expérience",
+		["In Studio"] = "Dans Roblox Studio",
+		["People's Names"] = "Noms des joueurs",
+		["My Badges"] = "Mes badges",
+		["Reduce Motion"] = "Réduire les animations",
+		["Text Size"] = "Taille du texte",
+		["Maximum Frame Rate"] = "Fréquence d’images maximale",
+		["Chat & Language"] = "Chat et langue",
+		["Display & Graphics"] = "Affichage et graphismes",
+		["View & Controls"] = "Vue et commandes",
+		["Inappropriate Content"] = "Contenu inapproprié",
+		["Swearing"] = "Insultes",
+		["Inappropriate Username"] = "Nom d’utilisateur inapproprié",
+		["Bullying"] = "Harcèlement",
+		["Scamming"] = "Escroquerie",
+		["Dating"] = "Rencontres",
+		["Cheating/Exploiting"] = "Triche/exploits",
+		["Personal Question"] = "Question personnelle",
+		["Offsite Links"] = "Liens externes",
+	},
+	["de"] = {
+		["Record"] = "Aufnahme",
+		["Record Video"] = "Video aufnehmen",
+		["Stop Recording"] = "Aufnahme stoppen",
+		["Screenshot"] = "Screenshot",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Screenshot aufnehmen",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Klicke auf „Screenshot aufnehmen“, um das Menü zu schließen und einen Screenshot auf deinem Computer zu speichern.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Klicke auf „Video aufnehmen“, um die Aufnahme zu starten. Klicke erneut, um sie zu stoppen.",
+		["In Experience"] = "Im Erlebnis",
+		["In Studio"] = "In Roblox Studio",
+		["People's Names"] = "Spielernamen",
+		["My Badges"] = "Meine Abzeichen",
+		["Reduce Motion"] = "Bewegung reduzieren",
+		["Text Size"] = "Textgröße",
+		["Maximum Frame Rate"] = "Maximale Bildrate",
+		["Chat & Language"] = "Chat und Sprache",
+		["Display & Graphics"] = "Anzeige und Grafik",
+		["View & Controls"] = "Ansicht und Steuerung",
+		["Inappropriate Content"] = "Unangemessene Inhalte",
+		["Swearing"] = "Beleidigungen",
+		["Inappropriate Username"] = "Unangemessener Benutzername",
+		["Bullying"] = "Mobbing",
+		["Scamming"] = "Betrug",
+		["Dating"] = "Dating",
+		["Cheating/Exploiting"] = "Cheats/Exploits",
+		["Personal Question"] = "Persönliche Frage",
+		["Offsite Links"] = "Externe Links",
+	},
+	["it"] = {
+		["Record"] = "Registrazione",
+		["Record Video"] = "Registra video",
+		["Stop Recording"] = "Interrompi registrazione",
+		["Screenshot"] = "Screenshot",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Fai uno screenshot",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Fai clic su «Fai uno screenshot» per chiudere il menu e salvare uno screenshot sul computer.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Fai clic su «Registra video» per iniziare. Fai di nuovo clic per interrompere la registrazione.",
+		["In Experience"] = "Nell’esperienza",
+		["In Studio"] = "In Roblox Studio",
+		["People's Names"] = "Nomi dei giocatori",
+		["My Badges"] = "I miei distintivi",
+		["Reduce Motion"] = "Riduci movimento",
+		["Text Size"] = "Dimensione testo",
+		["Maximum Frame Rate"] = "Frequenza fotogrammi massima",
+		["Chat & Language"] = "Chat e lingua",
+		["Display & Graphics"] = "Schermo e grafica",
+		["View & Controls"] = "Visuale e controlli",
+		["Inappropriate Content"] = "Contenuti inappropriati",
+		["Swearing"] = "Volgarità",
+		["Inappropriate Username"] = "Nome utente inappropriato",
+		["Bullying"] = "Bullismo",
+		["Scamming"] = "Truffe",
+		["Dating"] = "Appuntamenti",
+		["Cheating/Exploiting"] = "Barare/exploit",
+		["Personal Question"] = "Domanda personale",
+		["Offsite Links"] = "Link esterni",
+	},
+	["ja"] = {
+		["Record"] = "録画",
+		["Record Video"] = "動画を録画",
+		["Stop Recording"] = "録画を停止",
+		["Screenshot"] = "スクリーンショット",
+		["Video"] = "動画",
+		["Take Screenshot"] = "スクリーンショットを撮る",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "「スクリーンショットを撮る」をクリックするとメニューが閉じ、画像がコンピューターに保存されます。",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "「動画を録画」をクリックして録画を開始します。もう一度クリックすると停止します。",
+		["In Experience"] = "エクスペリエンス内",
+		["In Studio"] = "Roblox Studio 内",
+		["People's Names"] = "プレイヤー名",
+		["My Badges"] = "マイバッジ",
+		["Reduce Motion"] = "動きを減らす",
+		["Text Size"] = "文字サイズ",
+		["Maximum Frame Rate"] = "最大フレームレート",
+		["Chat & Language"] = "チャットと言語",
+		["Display & Graphics"] = "表示とグラフィック",
+		["View & Controls"] = "視点と操作",
+		["Inappropriate Content"] = "不適切なコンテンツ",
+		["Swearing"] = "暴言",
+		["Inappropriate Username"] = "不適切なユーザー名",
+		["Bullying"] = "いじめ",
+		["Scamming"] = "詐欺",
+		["Dating"] = "出会い目的",
+		["Cheating/Exploiting"] = "チート／不正利用",
+		["Personal Question"] = "個人的な質問",
+		["Offsite Links"] = "外部リンク",
+	},
+	["ko"] = {
+		["Record"] = "녹화",
+		["Record Video"] = "비디오 녹화",
+		["Stop Recording"] = "녹화 중지",
+		["Screenshot"] = "스크린샷",
+		["Video"] = "비디오",
+		["Take Screenshot"] = "스크린샷 찍기",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "“스크린샷 찍기”를 클릭하면 메뉴가 닫히고 스크린샷이 컴퓨터에 저장됩니다.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "“비디오 녹화”를 클릭해 녹화를 시작하세요. 다시 클릭하면 녹화가 중지됩니다.",
+		["In Experience"] = "체험 내",
+		["In Studio"] = "Roblox Studio에서",
+		["People's Names"] = "플레이어 이름",
+		["My Badges"] = "내 배지",
+		["Reduce Motion"] = "움직임 줄이기",
+		["Text Size"] = "텍스트 크기",
+		["Maximum Frame Rate"] = "최대 프레임 속도",
+		["Chat & Language"] = "채팅 및 언어",
+		["Display & Graphics"] = "디스플레이 및 그래픽",
+		["View & Controls"] = "보기 및 조작",
+		["Inappropriate Content"] = "부적절한 콘텐츠",
+		["Swearing"] = "욕설",
+		["Inappropriate Username"] = "부적절한 사용자 이름",
+		["Bullying"] = "괴롭힘",
+		["Scamming"] = "사기",
+		["Dating"] = "데이트",
+		["Cheating/Exploiting"] = "치트/익스플로잇",
+		["Personal Question"] = "개인적인 질문",
+		["Offsite Links"] = "외부 링크",
+	},
+	["ar"] = {
+		["Record"] = "التسجيل",
+		["Record Video"] = "تسجيل فيديو",
+		["Stop Recording"] = "إيقاف التسجيل",
+		["Screenshot"] = "لقطة شاشة",
+		["Video"] = "فيديو",
+		["Take Screenshot"] = "التقاط لقطة شاشة",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "انقر على «التقاط لقطة شاشة» لإغلاق القائمة وحفظ لقطة الشاشة على جهاز الكمبيوتر.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "انقر على «تسجيل فيديو» لبدء التسجيل. انقر مرة أخرى لإيقافه.",
+		["In Experience"] = "داخل التجربة",
+		["In Studio"] = "في Roblox Studio",
+		["People's Names"] = "أسماء اللاعبين",
+		["My Badges"] = "شاراتي",
+		["Reduce Motion"] = "تقليل الحركة",
+		["Text Size"] = "حجم النص",
+		["Maximum Frame Rate"] = "أقصى معدل للإطارات",
+		["Chat & Language"] = "الدردشة واللغة",
+		["Display & Graphics"] = "العرض والرسومات",
+		["View & Controls"] = "الرؤية وعناصر التحكم",
+		["Inappropriate Content"] = "محتوى غير ملائم",
+		["Swearing"] = "ألفاظ نابية",
+		["Inappropriate Username"] = "اسم مستخدم غير ملائم",
+		["Bullying"] = "تنمر",
+		["Scamming"] = "احتيال",
+		["Dating"] = "مواعدة",
+		["Cheating/Exploiting"] = "غش/استغلال الثغرات",
+		["Personal Question"] = "سؤال شخصي",
+		["Offsite Links"] = "روابط خارجية",
+	},
+	["tr"] = {
+		["Record"] = "Kayıt",
+		["Record Video"] = "Video kaydet",
+		["Stop Recording"] = "Kaydı durdur",
+		["Screenshot"] = "Ekran görüntüsü",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Ekran görüntüsü al",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Ekran görüntüsü almak için düğmeye tıkla; menü kapanır ve görüntü bilgisayarına kaydedilir.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Kaydı başlatmak için “Video kaydet” düğmesine tıkla. Durdurmak için tekrar tıkla.",
+		["In Experience"] = "Deneyimde",
+		["In Studio"] = "Roblox Studio’da",
+		["People's Names"] = "Oyuncu adları",
+		["My Badges"] = "Rozetlerim",
+		["Reduce Motion"] = "Hareketi azalt",
+		["Text Size"] = "Metin boyutu",
+		["Maximum Frame Rate"] = "Maksimum kare hızı",
+		["Chat & Language"] = "Sohbet ve dil",
+		["Display & Graphics"] = "Ekran ve grafikler",
+		["View & Controls"] = "Görünüm ve kontroller",
+		["Inappropriate Content"] = "Uygunsuz içerik",
+		["Swearing"] = "Küfür",
+		["Inappropriate Username"] = "Uygunsuz kullanıcı adı",
+		["Bullying"] = "Zorbalık",
+		["Scamming"] = "Dolandırıcılık",
+		["Dating"] = "Flört",
+		["Cheating/Exploiting"] = "Hile/istismar",
+		["Personal Question"] = "Kişisel soru",
+		["Offsite Links"] = "Harici bağlantılar",
+	},
+	["pl"] = {
+		["Record"] = "Nagrywanie",
+		["Record Video"] = "Nagraj wideo",
+		["Stop Recording"] = "Zatrzymaj nagrywanie",
+		["Screenshot"] = "Zrzut ekranu",
+		["Video"] = "Wideo",
+		["Take Screenshot"] = "Zrób zrzut ekranu",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Kliknij „Zrób zrzut ekranu”, aby zamknąć menu i zapisać zrzut na komputerze.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Kliknij „Nagraj wideo”, aby rozpocząć nagrywanie. Kliknij ponownie, aby je zatrzymać.",
+		["In Experience"] = "W grze",
+		["In Studio"] = "W Roblox Studio",
+		["People's Names"] = "Nazwy graczy",
+		["My Badges"] = "Moje odznaki",
+		["Reduce Motion"] = "Ogranicz ruch",
+		["Text Size"] = "Rozmiar tekstu",
+		["Maximum Frame Rate"] = "Maksymalna liczba klatek",
+		["Chat & Language"] = "Czat i język",
+		["Display & Graphics"] = "Obraz i grafika",
+		["View & Controls"] = "Widok i sterowanie",
+		["Inappropriate Content"] = "Nieodpowiednie treści",
+		["Swearing"] = "Wulgaryzmy",
+		["Inappropriate Username"] = "Nieodpowiednia nazwa użytkownika",
+		["Bullying"] = "Nękanie",
+		["Scamming"] = "Oszustwa",
+		["Dating"] = "Randki",
+		["Cheating/Exploiting"] = "Oszukiwanie/exploity",
+		["Personal Question"] = "Pytanie osobiste",
+		["Offsite Links"] = "Linki zewnętrzne",
+	},
+	["id"] = {
+		["Record"] = "Rekaman",
+		["Record Video"] = "Rekam video",
+		["Stop Recording"] = "Hentikan rekaman",
+		["Screenshot"] = "Tangkapan layar",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Ambil tangkapan layar",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Klik tombol “Ambil tangkapan layar” untuk menutup menu dan menyimpan tangkapan layar ke komputer.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Klik “Rekam video” untuk mulai merekam. Klik sekali lagi untuk menghentikan rekaman.",
+		["In Experience"] = "Di pengalaman",
+		["In Studio"] = "Di Roblox Studio",
+		["People's Names"] = "Nama pemain",
+		["My Badges"] = "Lencana saya",
+		["Reduce Motion"] = "Kurangi gerakan",
+		["Text Size"] = "Ukuran teks",
+		["Maximum Frame Rate"] = "Kecepatan bingkai maksimum",
+		["Chat & Language"] = "Obrolan dan bahasa",
+		["Display & Graphics"] = "Tampilan dan grafis",
+		["View & Controls"] = "Tampilan dan kontrol",
+		["Inappropriate Content"] = "Konten tidak pantas",
+		["Swearing"] = "Kata-kata kasar",
+		["Inappropriate Username"] = "Nama pengguna tidak pantas",
+		["Bullying"] = "Perundungan",
+		["Scamming"] = "Penipuan",
+		["Dating"] = "Kencan",
+		["Cheating/Exploiting"] = "Kecurangan/eksploitasi",
+		["Personal Question"] = "Pertanyaan pribadi",
+		["Offsite Links"] = "Tautan eksternal",
+	},
+	["vi"] = {
+		["Record"] = "Ghi hình",
+		["Record Video"] = "Quay video",
+		["Stop Recording"] = "Dừng ghi hình",
+		["Screenshot"] = "Ảnh chụp màn hình",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Chụp ảnh màn hình",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Nhấp vào “Chụp ảnh màn hình” để đóng menu và lưu ảnh chụp vào máy tính.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Nhấp “Quay video” để bắt đầu ghi. Nhấp lần nữa để dừng ghi hình.",
+		["In Experience"] = "Trong trải nghiệm",
+		["In Studio"] = "Trong Roblox Studio",
+		["People's Names"] = "Tên người chơi",
+		["My Badges"] = "Huy hiệu của tôi",
+		["Reduce Motion"] = "Giảm chuyển động",
+		["Text Size"] = "Cỡ chữ",
+		["Maximum Frame Rate"] = "Tốc độ khung hình tối đa",
+		["Chat & Language"] = "Chat và ngôn ngữ",
+		["Display & Graphics"] = "Hiển thị và đồ họa",
+		["View & Controls"] = "Góc nhìn và điều khiển",
+		["Inappropriate Content"] = "Nội dung không phù hợp",
+		["Swearing"] = "Chửi tục",
+		["Inappropriate Username"] = "Tên người dùng không phù hợp",
+		["Bullying"] = "Bắt nạt",
+		["Scamming"] = "Lừa đảo",
+		["Dating"] = "Hẹn hò",
+		["Cheating/Exploiting"] = "Gian lận/khai thác lỗi",
+		["Personal Question"] = "Câu hỏi cá nhân",
+		["Offsite Links"] = "Liên kết bên ngoài",
+	},
+	["th"] = {
+		["Record"] = "การบันทึก",
+		["Record Video"] = "บันทึกวิดีโอ",
+		["Stop Recording"] = "หยุดบันทึก",
+		["Screenshot"] = "ภาพหน้าจอ",
+		["Video"] = "วิดีโอ",
+		["Take Screenshot"] = "จับภาพหน้าจอ",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "คลิก “จับภาพหน้าจอ” เพื่อปิดเมนูและบันทึกภาพหน้าจอลงในคอมพิวเตอร์",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "คลิก “บันทึกวิดีโอ” เพื่อเริ่มบันทึก คลิกอีกครั้งเพื่อหยุดบันทึก",
+		["In Experience"] = "ในประสบการณ์",
+		["In Studio"] = "ใน Roblox Studio",
+		["People's Names"] = "ชื่อผู้เล่น",
+		["My Badges"] = "ตราของฉัน",
+		["Reduce Motion"] = "ลดการเคลื่อนไหว",
+		["Text Size"] = "ขนาดข้อความ",
+		["Maximum Frame Rate"] = "อัตราเฟรมสูงสุด",
+		["Chat & Language"] = "แชทและภาษา",
+		["Display & Graphics"] = "การแสดงผลและกราฟิก",
+		["View & Controls"] = "มุมมองและการควบคุม",
+		["Inappropriate Content"] = "เนื้อหาไม่เหมาะสม",
+		["Swearing"] = "คำหยาบ",
+		["Inappropriate Username"] = "ชื่อผู้ใช้ไม่เหมาะสม",
+		["Bullying"] = "การกลั่นแกล้ง",
+		["Scamming"] = "การหลอกลวง",
+		["Dating"] = "การออกเดต",
+		["Cheating/Exploiting"] = "การโกง/ใช้ช่องโหว่",
+		["Personal Question"] = "คำถามส่วนตัว",
+		["Offsite Links"] = "ลิงก์ภายนอก",
+	},
+	["nl"] = {
+		["Record"] = "Opname",
+		["Record Video"] = "Video opnemen",
+		["Stop Recording"] = "Opname stoppen",
+		["Screenshot"] = "Schermafbeelding",
+		["Video"] = "Video",
+		["Take Screenshot"] = "Schermafbeelding maken",
+		["By clicking the 'Take Screenshot' button, the menu will close and take a screenshot and save it to your computer."] = "Klik op ‘Schermafbeelding maken’ om het menu te sluiten en de schermafbeelding op je computer op te slaan.",
+		["Click the 'Record Video' button to start recording. Click it again to stop recording."] = "Klik op ‘Video opnemen’ om de opname te starten. Klik opnieuw om te stoppen.",
+		["In Experience"] = "In de experience",
+		["In Studio"] = "In Roblox Studio",
+		["People's Names"] = "Spelernamen",
+		["My Badges"] = "Mijn badges",
+		["Reduce Motion"] = "Beweging verminderen",
+		["Text Size"] = "Tekstgrootte",
+		["Maximum Frame Rate"] = "Maximale framesnelheid",
+		["Chat & Language"] = "Chat en taal",
+		["Display & Graphics"] = "Weergave en graphics",
+		["View & Controls"] = "Beeld en bediening",
+		["Inappropriate Content"] = "Ongepaste inhoud",
+		["Swearing"] = "Scheldwoorden",
+		["Inappropriate Username"] = "Ongepaste gebruikersnaam",
+		["Bullying"] = "Pesten",
+		["Scamming"] = "Oplichting",
+		["Dating"] = "Dating",
+		["Cheating/Exploiting"] = "Cheats/exploits",
+		["Personal Question"] = "Persoonlijke vraag",
+		["Offsite Links"] = "Externe links",
+	},
+}
+for Language, Entries in pairs(MenuAdditionalTranslations) do
+	local Target = MenuFallbackTranslations[Language]
+	if not Target then Target = {}; MenuFallbackTranslations[Language] = Target end
+	for Source, Translation in pairs(Entries) do
+		if Target[Source] == nil then Target[Source] = Translation end
+	end
+end
+
+-- Native toast messages and report prompts use the same locale lookup as menu labels.
+MenuNotificationTranslations = {
+	["ru"] = {
+		["Invite link copied"] = "Ссылка-приглашение скопирована",
+		["The experience link was copied to your clipboard."] = "Ссылка на игру скопирована в буфер обмена.",
+		["Share invite link"] = "Поделиться ссылкой-приглашением",
+		["Roblox opened the link-sharing prompt."] = "Roblox открыл окно отправки ссылки.",
+		["Invite link"] = "Ссылка-приглашение",
+		["Clipboard access is unavailable on this client."] = "Буфер обмена недоступен в этом клиенте.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Выберите тип жалобы и причину, а при жалобе на игрока также выберите игрока.",
+		["Ok"] = "ОК",
+	},
+	["uk"] = {
+		["Invite link copied"] = "Посилання-запрошення скопійовано",
+		["The experience link was copied to your clipboard."] = "Посилання на гру скопійовано в буфер обміну.",
+		["Share invite link"] = "Поділитися посиланням-запрошенням",
+		["Roblox opened the link-sharing prompt."] = "Roblox відкрив вікно надсилання посилання.",
+		["Invite link"] = "Посилання-запрошення",
+		["Clipboard access is unavailable on this client."] = "Буфер обміну недоступний у цьому клієнті.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Виберіть тип скарги й причину, а якщо скаржитеся на гравця — виберіть гравця.",
+		["Ok"] = "Гаразд",
+	},
+	["es"] = {
+		["Invite link copied"] = "Enlace de invitación copiado",
+		["The experience link was copied to your clipboard."] = "El enlace de la experiencia se copió al portapapeles.",
+		["Share invite link"] = "Compartir enlace de invitación",
+		["Roblox opened the link-sharing prompt."] = "Roblox abrió la ventana para compartir el enlace.",
+		["Invite link"] = "Enlace de invitación",
+		["Clipboard access is unavailable on this client."] = "El portapapeles no está disponible en este cliente.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Elige un tipo de denuncia y un motivo; si denuncias a un jugador, selecciónalo también.",
+		["Ok"] = "Aceptar",
+	},
+	["pt"] = {
+		["Invite link copied"] = "Link de convite copiado",
+		["The experience link was copied to your clipboard."] = "O link da experiência foi copiado para a área de transferência.",
+		["Share invite link"] = "Compartilhar link de convite",
+		["Roblox opened the link-sharing prompt."] = "A Roblox abriu a janela de compartilhamento do link.",
+		["Invite link"] = "Link de convite",
+		["Clipboard access is unavailable on this client."] = "A área de transferência não está disponível neste cliente.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Escolha um tipo e um motivo de denúncia e selecione um jogador ao denunciar alguém.",
+		["Ok"] = "OK",
+	},
+	["zh-cn"] = {
+		["Invite link copied"] = "邀请链接已复制",
+		["The experience link was copied to your clipboard."] = "体验链接已复制到剪贴板。",
+		["Share invite link"] = "分享邀请链接",
+		["Roblox opened the link-sharing prompt."] = "Roblox 已打开链接分享窗口。",
+		["Invite link"] = "邀请链接",
+		["Clipboard access is unavailable on this client."] = "此客户端无法使用剪贴板。",
+		["Choose a report type and reason, and select a player when reporting a player."] = "请选择举报类型和原因；举报玩家时还需选择该玩家。",
+		["Ok"] = "确定",
+	},
+	["zh-tw"] = {
+		["Invite link copied"] = "已複製邀請連結",
+		["The experience link was copied to your clipboard."] = "體驗連結已複製到剪貼簿。",
+		["Share invite link"] = "分享邀請連結",
+		["Roblox opened the link-sharing prompt."] = "Roblox 已開啟連結分享視窗。",
+		["Invite link"] = "邀請連結",
+		["Clipboard access is unavailable on this client."] = "此用戶端無法使用剪貼簿。",
+		["Choose a report type and reason, and select a player when reporting a player."] = "請選擇檢舉類型和原因；檢舉玩家時也必須選擇該玩家。",
+		["Ok"] = "確定",
+	},
+	["hi"] = {
+		["Invite link copied"] = "निमंत्रण लिंक कॉपी हो गया",
+		["The experience link was copied to your clipboard."] = "अनुभव का लिंक क्लिपबोर्ड पर कॉपी हो गया।",
+		["Share invite link"] = "निमंत्रण लिंक शेयर करें",
+		["Roblox opened the link-sharing prompt."] = "Roblox ने लिंक शेयर करने का प्रॉम्प्ट खोला।",
+		["Invite link"] = "निमंत्रण लिंक",
+		["Clipboard access is unavailable on this client."] = "इस क्लाइंट पर क्लिपबोर्ड उपलब्ध नहीं है।",
+		["Choose a report type and reason, and select a player when reporting a player."] = "रिपोर्ट का प्रकार और कारण चुनें। किसी खिलाड़ी की रिपोर्ट करते समय खिलाड़ी भी चुनें।",
+		["Ok"] = "ठीक है",
+	},
+	["fr"] = {
+		["Invite link copied"] = "Lien d’invitation copié",
+		["The experience link was copied to your clipboard."] = "Le lien de l’expérience a été copié dans le presse-papiers.",
+		["Share invite link"] = "Partager le lien d’invitation",
+		["Roblox opened the link-sharing prompt."] = "Roblox a ouvert la fenêtre de partage du lien.",
+		["Invite link"] = "Lien d’invitation",
+		["Clipboard access is unavailable on this client."] = "Le presse-papiers n’est pas disponible sur ce client.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Choisissez un type et un motif de signalement, puis sélectionnez un joueur si vous signalez un joueur.",
+		["Ok"] = "OK",
+	},
+	["de"] = {
+		["Invite link copied"] = "Einladungslink kopiert",
+		["The experience link was copied to your clipboard."] = "Der Erlebnislink wurde in die Zwischenablage kopiert.",
+		["Share invite link"] = "Einladungslink teilen",
+		["Roblox opened the link-sharing prompt."] = "Roblox hat den Dialog zum Teilen des Links geöffnet.",
+		["Invite link"] = "Einladungslink",
+		["Clipboard access is unavailable on this client."] = "Die Zwischenablage ist in diesem Client nicht verfügbar.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Wähle einen Meldungstyp und einen Grund aus. Wenn du einen Spieler meldest, wähle ihn ebenfalls aus.",
+		["Ok"] = "OK",
+	},
+	["it"] = {
+		["Invite link copied"] = "Link di invito copiato",
+		["The experience link was copied to your clipboard."] = "Il link dell’esperienza è stato copiato negli appunti.",
+		["Share invite link"] = "Condividi link di invito",
+		["Roblox opened the link-sharing prompt."] = "Roblox ha aperto la finestra per condividere il link.",
+		["Invite link"] = "Link di invito",
+		["Clipboard access is unavailable on this client."] = "Gli appunti non sono disponibili in questo client.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Scegli un tipo e un motivo di segnalazione; se segnali un giocatore, selezionalo.",
+		["Ok"] = "OK",
+	},
+	["ja"] = {
+		["Invite link copied"] = "招待リンクをコピーしました",
+		["The experience link was copied to your clipboard."] = "エクスペリエンスのリンクをクリップボードにコピーしました。",
+		["Share invite link"] = "招待リンクを共有",
+		["Roblox opened the link-sharing prompt."] = "Roblox がリンク共有画面を開きました。",
+		["Invite link"] = "招待リンク",
+		["Clipboard access is unavailable on this client."] = "このクライアントではクリップボードを利用できません。",
+		["Choose a report type and reason, and select a player when reporting a player."] = "報告の種類と理由を選択してください。プレイヤーを報告する場合は、そのプレイヤーも選択してください。",
+		["Ok"] = "OK",
+	},
+	["ko"] = {
+		["Invite link copied"] = "초대 링크 복사됨",
+		["The experience link was copied to your clipboard."] = "체험 링크가 클립보드에 복사되었습니다.",
+		["Share invite link"] = "초대 링크 공유",
+		["Roblox opened the link-sharing prompt."] = "Roblox에서 링크 공유 창을 열었습니다.",
+		["Invite link"] = "초대 링크",
+		["Clipboard access is unavailable on this client."] = "이 클라이언트에서는 클립보드를 사용할 수 없습니다.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "신고 유형과 이유를 선택하세요. 플레이어를 신고하는 경우 해당 플레이어도 선택하세요.",
+		["Ok"] = "확인",
+	},
+	["ar"] = {
+		["Invite link copied"] = "تم نسخ رابط الدعوة",
+		["The experience link was copied to your clipboard."] = "تم نسخ رابط التجربة إلى الحافظة.",
+		["Share invite link"] = "مشاركة رابط الدعوة",
+		["Roblox opened the link-sharing prompt."] = "فتح Roblox نافذة مشاركة الرابط.",
+		["Invite link"] = "رابط الدعوة",
+		["Clipboard access is unavailable on this client."] = "الحافظة غير متاحة في هذا العميل.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "اختر نوع البلاغ وسببه، وحدد اللاعب أيضًا عند الإبلاغ عن لاعب.",
+		["Ok"] = "موافق",
+	},
+	["tr"] = {
+		["Invite link copied"] = "Davet bağlantısı kopyalandı",
+		["The experience link was copied to your clipboard."] = "Deneyim bağlantısı panoya kopyalandı.",
+		["Share invite link"] = "Davet bağlantısını paylaş",
+		["Roblox opened the link-sharing prompt."] = "Roblox bağlantı paylaşma penceresini açtı.",
+		["Invite link"] = "Davet bağlantısı",
+		["Clipboard access is unavailable on this client."] = "Pano bu istemcide kullanılamıyor.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Bir bildirim türü ve nedeni seç; bir oyuncuyu bildiriyorsan oyuncuyu da seç.",
+		["Ok"] = "Tamam",
+	},
+	["pl"] = {
+		["Invite link copied"] = "Skopiowano link zaproszenia",
+		["The experience link was copied to your clipboard."] = "Link do gry został skopiowany do schowka.",
+		["Share invite link"] = "Udostępnij link zaproszenia",
+		["Roblox opened the link-sharing prompt."] = "Roblox otworzył okno udostępniania linku.",
+		["Invite link"] = "Link zaproszenia",
+		["Clipboard access is unavailable on this client."] = "Schowek jest niedostępny w tym kliencie.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Wybierz typ i powód zgłoszenia, a przy zgłaszaniu gracza wybierz również tego gracza.",
+		["Ok"] = "OK",
+	},
+	["id"] = {
+		["Invite link copied"] = "Tautan undangan disalin",
+		["The experience link was copied to your clipboard."] = "Tautan pengalaman disalin ke papan klip.",
+		["Share invite link"] = "Bagikan tautan undangan",
+		["Roblox opened the link-sharing prompt."] = "Roblox membuka dialog berbagi tautan.",
+		["Invite link"] = "Tautan undangan",
+		["Clipboard access is unavailable on this client."] = "Papan klip tidak tersedia di klien ini.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Pilih jenis dan alasan laporan. Jika melaporkan pemain, pilih juga pemain tersebut.",
+		["Ok"] = "Oke",
+	},
+	["vi"] = {
+		["Invite link copied"] = "Đã sao chép liên kết mời",
+		["The experience link was copied to your clipboard."] = "Liên kết trải nghiệm đã được sao chép vào khay nhớ tạm.",
+		["Share invite link"] = "Chia sẻ liên kết mời",
+		["Roblox opened the link-sharing prompt."] = "Roblox đã mở lời nhắc chia sẻ liên kết.",
+		["Invite link"] = "Liên kết mời",
+		["Clipboard access is unavailable on this client."] = "Khay nhớ tạm không khả dụng trên ứng dụng này.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Hãy chọn loại và lý do báo cáo; nếu báo cáo người chơi, hãy chọn người chơi đó.",
+		["Ok"] = "OK",
+	},
+	["th"] = {
+		["Invite link copied"] = "คัดลอกลิงก์คำเชิญแล้ว",
+		["The experience link was copied to your clipboard."] = "คัดลอกลิงก์ประสบการณ์ไปยังคลิปบอร์ดแล้ว",
+		["Share invite link"] = "แชร์ลิงก์คำเชิญ",
+		["Roblox opened the link-sharing prompt."] = "Roblox เปิดหน้าต่างแชร์ลิงก์แล้ว",
+		["Invite link"] = "ลิงก์คำเชิญ",
+		["Clipboard access is unavailable on this client."] = "คลิปบอร์ดไม่พร้อมใช้งานในไคลเอนต์นี้",
+		["Choose a report type and reason, and select a player when reporting a player."] = "เลือกประเภทและเหตุผลในการรายงาน และเลือกผู้เล่นด้วยหากรายงานผู้เล่น",
+		["Ok"] = "ตกลง",
+	},
+	["nl"] = {
+		["Invite link copied"] = "Uitnodigingslink gekopieerd",
+		["The experience link was copied to your clipboard."] = "De ervaringslink is naar het klembord gekopieerd.",
+		["Share invite link"] = "Uitnodigingslink delen",
+		["Roblox opened the link-sharing prompt."] = "Roblox heeft het venster voor het delen van de link geopend.",
+		["Invite link"] = "Uitnodigingslink",
+		["Clipboard access is unavailable on this client."] = "Het klembord is niet beschikbaar in deze client.",
+		["Choose a report type and reason, and select a player when reporting a player."] = "Kies een meldtype en reden en selecteer ook een speler als je een speler meldt.",
+		["Ok"] = "OK",
+	},
+}
+for Language, Entries in pairs(MenuNotificationTranslations) do
+	local Target = MenuFallbackTranslations[Language]
+	if not Target then Target = {}; MenuFallbackTranslations[Language] = Target end
+	for Source, Translation in pairs(Entries) do
+		if Target[Source] == nil then Target[Source] = Translation end
+	end
+end
+
+-- Extra friend-list and invite-preview strings.
+MenuInvitePreviewTranslations = {
+	["ru"] = {
+		["Join me in this experience"] = "Присоединяйся ко мне в этой игре",
+		["Invite Friends"] = "Пригласить друзей",
+		["Add Friend"] = "Добавить в друзья",
+		["Request Sent"] = "Запрос отправлен",
+	},
+	["uk"] = {
+		["Join me in this experience"] = "Приєднуйся до мене в цій грі",
+		["Invite Friends"] = "Запросити друзів",
+		["Add Friend"] = "Додати в друзі",
+		["Request Sent"] = "Запит надіслано",
+	},
+	["es"] = {
+		["Join me in this experience"] = "Únete a mí en esta experiencia",
+		["Invite Friends"] = "Invitar amigos",
+		["Add Friend"] = "Agregar amigo",
+		["Request Sent"] = "Solicitud enviada",
+	},
+	["pt"] = {
+		["Join me in this experience"] = "Junte-se a mim nesta experiência",
+		["Invite Friends"] = "Convidar amigos",
+		["Add Friend"] = "Adicionar amigo",
+		["Request Sent"] = "Solicitação enviada",
+	},
+	["zh-cn"] = {
+		["Join me in this experience"] = "加入我所在的体验",
+		["Invite Friends"] = "邀请好友",
+		["Add Friend"] = "添加好友",
+		["Request Sent"] = "请求已发送",
+	},
+	["zh-tw"] = {
+		["Join me in this experience"] = "加入我所在的體驗",
+		["Invite Friends"] = "邀請好友",
+		["Add Friend"] = "新增好友",
+		["Request Sent"] = "已送出請求",
+	},
+	["hi"] = {
+		["Join me in this experience"] = "इस अनुभव में मेरे साथ जुड़ें",
+		["Invite Friends"] = "दोस्तों को आमंत्रित करें",
+		["Add Friend"] = "दोस्त जोड़ें",
+		["Request Sent"] = "अनुरोध भेज दिया गया",
+	},
+	["fr"] = {
+		["Join me in this experience"] = "Rejoins-moi dans cette expérience",
+		["Invite Friends"] = "Inviter des amis",
+		["Add Friend"] = "Ajouter un ami",
+		["Request Sent"] = "Demande envoyée",
+	},
+	["de"] = {
+		["Join me in this experience"] = "Tritt mir in diesem Erlebnis bei",
+		["Invite Friends"] = "Freunde einladen",
+		["Add Friend"] = "Freund hinzufügen",
+		["Request Sent"] = "Anfrage gesendet",
+	},
+	["it"] = {
+		["Join me in this experience"] = "Unisciti a me in questa esperienza",
+		["Invite Friends"] = "Invita amici",
+		["Add Friend"] = "Aggiungi amico",
+		["Request Sent"] = "Richiesta inviata",
+	},
+	["ja"] = {
+		["Join me in this experience"] = "このエクスペリエンスに参加する",
+		["Invite Friends"] = "友達を招待",
+		["Add Friend"] = "フレンドを追加",
+		["Request Sent"] = "リクエストを送信しました",
+	},
+	["ko"] = {
+		["Join me in this experience"] = "이 체험에 함께 참여하세요",
+		["Invite Friends"] = "친구 초대",
+		["Add Friend"] = "친구 추가",
+		["Request Sent"] = "요청 전송됨",
+	},
+	["ar"] = {
+		["Join me in this experience"] = "انضم إليّ في هذه التجربة",
+		["Invite Friends"] = "دعوة الأصدقاء",
+		["Add Friend"] = "إضافة صديق",
+		["Request Sent"] = "تم إرسال الطلب",
+	},
+	["tr"] = {
+		["Join me in this experience"] = "Bu deneyimde bana katıl",
+		["Invite Friends"] = "Arkadaşları davet et",
+		["Add Friend"] = "Arkadaş ekle",
+		["Request Sent"] = "İstek gönderildi",
+	},
+	["pl"] = {
+		["Join me in this experience"] = "Dołącz do mnie w tej grze",
+		["Invite Friends"] = "Zaproś znajomych",
+		["Add Friend"] = "Dodaj znajomego",
+		["Request Sent"] = "Wysłano prośbę",
+	},
+	["id"] = {
+		["Join me in this experience"] = "Bergabunglah denganku di pengalaman ini",
+		["Invite Friends"] = "Undang Teman",
+		["Add Friend"] = "Tambah Teman",
+		["Request Sent"] = "Permintaan Terkirim",
+	},
+	["vi"] = {
+		["Join me in this experience"] = "Tham gia trải nghiệm này cùng tôi",
+		["Invite Friends"] = "Mời bạn bè",
+		["Add Friend"] = "Thêm bạn",
+		["Request Sent"] = "Đã gửi yêu cầu",
+	},
+	["th"] = {
+		["Join me in this experience"] = "เข้าร่วมประสบการณ์นี้กับฉัน",
+		["Invite Friends"] = "เชิญเพื่อน",
+		["Add Friend"] = "เพิ่มเพื่อน",
+		["Request Sent"] = "ส่งคำขอแล้ว",
+	},
+	["nl"] = {
+		["Join me in this experience"] = "Doe mee met mij in deze ervaring",
+		["Invite Friends"] = "Vrienden uitnodigen",
+		["Add Friend"] = "Vriend toevoegen",
+		["Request Sent"] = "Verzoek verzonden",
+	},
+}
+for Language, Entries in pairs(MenuInvitePreviewTranslations) do
+	local Target = MenuFallbackTranslations[Language]
+	if not Target then Target = {}; MenuFallbackTranslations[Language] = Target end
+	for Source, Translation in pairs(Entries) do
+		if Target[Source] == nil then Target[Source] = Translation end
+	end
+end
+
+local MenuBetaNoticeEnglish = "You have opted in to one or more of our beta features:\n• Voice chat\n\nPlease report abuse if you encounter people breaking our Community Guidelines. If you have opted-in to voice chat, Roblox records voice audio anywhere on the platform for moderation and safety purposes. By continuing to use the voice chat feature, you consent to Roblox's collection, use, and storage of your voice recording for moderation and safety purposes. You can opt-out of spatial voice at any time."
+MenuSpecialTextTranslations = {
+	[MenuBetaNoticeEnglish] = {
+		ru = "Вы включили одну или несколько бета-функций:\n• Голосовой чат\n\nСообщайте о нарушениях, если заметите пользователей, нарушающих Правила сообщества. При использовании голосового чата Roblox записывает голос на всей платформе в целях модерации и безопасности. Продолжая пользоваться голосовым чатом, вы соглашаетесь на сбор, использование и хранение Roblox ваших голосовых записей для модерации и безопасности. Вы можете в любое время отключить пространственный голосовой чат.",
+		uk = "Ви ввімкнули одну або кілька бетафункцій:\n• Голосовий чат\n\nПовідомляйте про порушення, якщо помітите користувачів, які порушують Правила спільноти. Під час використання голосового чату Roblox записує голос на всій платформі для модерації та безпеки. Продовжуючи користуватися голосовим чатом, ви погоджуєтеся на збір, використання та зберігання Roblox ваших голосових записів для модерації й безпеки. Просторовий голосовий чат можна вимкнути будь-коли.",
+		es = "Has activado una o varias funciones beta:\n• Chat de voz\n\nDenuncia los abusos si encuentras personas que incumplan las Normas de la comunidad. Al usar el chat de voz, Roblox graba audio de voz en toda la plataforma con fines de moderación y seguridad. Al continuar usando el chat de voz, aceptas que Roblox recopile, use y almacene tus grabaciones de voz con esos fines. Puedes desactivar la voz espacial en cualquier momento.",
+		["zh-cn"] = "你已选择加入一项或多项 Beta 功能：\n• 语音聊天\n\n如果发现有人违反社区准则，请举报不当行为。使用语音聊天时，Roblox 会在整个平台注册语音音频，以用于审核和安全保障。继续使用语音聊天即表示你同意 Roblox 为审核和安全目的收集、使用和存储你的语音录音。你可以随时退出空间语音聊天。",
+		["zh-tw"] = "你已選擇加入一項或多項 Beta 功能：\n• 語音聊天\n\n如果發現有人違反社群規範，請檢舉不當行為。使用語音聊天時，Roblox 會在整個平台錄製語音音訊，以用於審核和安全保障。繼續使用語音聊天即表示你同意 Roblox 為審核和安全目的收集、使用及儲存你的語音錄音。你可以隨時退出空間語音聊天。",
+		hi = "आपने एक या अधिक बीटा सुविधाओं को चुना है:\n• वॉइस चैट\n\nयदि आपको समुदाय दिशानिर्देशों का उल्लंघन करने वाले लोग मिलें, तो कृपया रिपोर्ट करें। वॉइस चैट का उपयोग करने पर Roblox मॉडरेशन और सुरक्षा के लिए पूरे प्लेटफ़ॉर्म पर वॉइस ऑडियो रिकॉर्ड करता है। वॉइस चैट का उपयोग जारी रखकर, आप मॉडरेशन और सुरक्षा के लिए Roblox द्वारा आपकी वॉइस रिकॉर्डिंग एकत्र करने, उपयोग करने और संग्रहीत करने की सहमति देते हैं। आप किसी भी समय स्पेशियल वॉइस बंद कर सकते हैं।",
+		fr = "Vous avez activé une ou plusieurs fonctionnalités bêta :\n• Chat vocal\n\nVeuillez signaler les abus si vous voyez des personnes enfreindre les Règles de la communauté. Lorsque vous utilisez le chat vocal, Roblox enregistre l’audio vocal sur la plateforme à des fins de modération et de sécurité. En continuant à utiliser le chat vocal, vous acceptez que Roblox collecte, utilise et conserve vos enregistrements vocaux à ces fins. Vous pouvez désactiver la voix spatiale à tout moment.",
+		de = "Du hast mindestens eine unserer Beta-Funktionen aktiviert:\n• Sprachchat\n\nBitte melde Missbrauch, wenn du Personen bemerkst, die gegen unsere Community-Regeln verstoßen. Bei der Nutzung des Sprachchats zeichnet Roblox Sprachaufnahmen auf der gesamten Plattform zu Moderations- und Sicherheitszwecken auf. Wenn du den Sprachchat weiterhin nutzt, stimmst du zu, dass Roblox deine Sprachaufnahmen zu diesen Zwecken sammelt, nutzt und speichert. Du kannst den räumlichen Sprachchat jederzeit deaktivieren.",
+		pt = "Você ativou um ou mais recursos beta:\n• Chat de voz\n\nDenuncie abusos se encontrar pessoas que violem as Diretrizes da Comunidade. Ao usar o chat de voz, a Roblox grava áudio de voz em toda a plataforma para fins de moderação e segurança. Ao continuar usando o chat de voz, você concorda que a Roblox colete, use e armazene suas gravações de voz para esses fins. Você pode desativar a voz espacial a qualquer momento.",
+		ja = "1 つ以上のベータ機能に参加しています:\n• ボイスチャット\n\nコミュニティ規定に違反するユーザーを見つけた場合は、違反を報告してください。ボイスチャットを使用すると、Roblox はモデレーションと安全対策のためにプラットフォーム全体で音声を録音します。ボイスチャットの使用を続けることで、Roblox がこれらの目的で音声録音を収集、使用、保存することに同意したものとみなされます。空間音声はいつでも無効にできます。",
+		ko = "하나 이상의 베타 기능을 사용하도록 설정했습니다:\n• 음성 채팅\n\n커뮤니티 규정을 위반하는 사용자를 발견하면 악용 사례를 신고해 주세요. 음성 채팅을 사용하면 Roblox는 관리 및 안전을 위해 플랫폼 전반에서 음성을 녹음합니다. 음성 채팅을 계속 사용하면 Roblox가 이러한 목적으로 음성 녹음을 수집, 사용 및 저장하는 데 동의하는 것입니다. 공간 음성은 언제든지 끌 수 있습니다.",
+	},
+}
+
+-- Build an exact English-source -> locale lookup from the locale tables already
+-- shipped with Roblox. CoreScript translations are installed locally by Roblox.
+CacheMenuCoreScriptTranslations = function()
+	local Tables = nil
+	pcall(function() Tables = LocalizationService:GetCorescriptLocalizations() end)
+	if type(Tables) ~= "table" then return end
+	for _, LocalizationTable in pairs(Tables) do
+		local Entries = nil
+		pcall(function() Entries = LocalizationTable:GetEntries() end)
+		if type(Entries) ~= "table" then
+			pcall(function() Entries = LocalizationService:GetTableEntries(LocalizationTable) end)
+		end
+		if type(Entries) == "table" then
+			for _, Entry in pairs(Entries) do
+				if type(Entry) == "table" then
+					local Source = Entry.Source or Entry.source
+					local Values = Entry.Values or Entry.values
+					if type(Source) == "string" and Source ~= "" and type(Values) == "table" then
+						local SourceMap = MenuCoreTranslationsBySource[Source]
+						if not SourceMap then SourceMap = {}; MenuCoreTranslationsBySource[Source] = SourceMap end
+						for Locale, Translation in pairs(Values) do
+							if type(Locale) == "string" and type(Translation) == "string" and Translation ~= "" then
+								local Normalized = NormalizeMenuLocale(Locale)
+								if not SourceMap[Normalized] then SourceMap[Normalized] = Translation end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end
+pcall(CacheMenuCoreScriptTranslations)
+
+GetMenuLocalizedText = function(Source, Locale)
+	Source = tostring(Source or "")
+	Locale = NormalizeMenuLocale(Locale or MenuLocalizationLocale)
+	if Source == "" then return Source end
+
+	local SpecialMap = MenuSpecialTextTranslations and MenuSpecialTextTranslations[Source]
+	if SpecialMap then
+		local SpecialLocale = NormalizeMenuLocale(Locale)
+		local SpecialBase = SpecialLocale:match("^([^-]+)")
+		local SpecialTranslation = SpecialMap[SpecialLocale] or SpecialMap[SpecialBase]
+		if not SpecialTranslation and SpecialBase == "zh" then
+			SpecialTranslation = (SpecialLocale:find("tw", 1, true) or SpecialLocale:find("hk", 1, true)) and SpecialMap["zh-tw"] or SpecialMap["zh-cn"]
+		end
+		if SpecialTranslation then return SpecialTranslation end
+	end
+
+	local VoiceAction = Source:match("^An error occurred while trying to (mute)%. Please try the voice chat bubble to mute%.$")
+		or Source:match("^An error occurred while trying to (unmute)%. Please try the voice chat bubble to unmute%.$")
+	if VoiceAction then
+		local VoiceMessages = {
+			ru = {mute="Не удалось отключить звук. Используйте пузырь голосового чата, чтобы отключить звук.", unmute="Не удалось включить звук. Используйте пузырь голосового чата, чтобы включить звук."},
+			uk = {mute="Не вдалося вимкнути звук. Скористайтеся бульбашкою голосового чату, щоб вимкнути звук.", unmute="Не вдалося ввімкнути звук. Скористайтеся бульбашкою голосового чату, щоб увімкнути звук."},
+			es = {mute="Se produjo un error al silenciar. Usa la burbuja del chat de voz para silenciar.", unmute="Se produjo un error al activar el sonido. Usa la burbuja del chat de voz para activarlo."},
+			["zh-cn"] = {mute="静音时发生错误。请使用语音聊天气泡来静音。", unmute="取消静音时发生错误。请使用语音聊天气泡来取消静音。"},
+			["zh-tw"] = {mute="靜音時發生錯誤。請使用語音聊天氣泡來靜音。", unmute="取消靜音時發生錯誤。請使用語音聊天氣泡來取消靜音。"},
+			hi = {mute="म्यूट करते समय त्रुटि हुई। म्यूट करने के लिए वॉइस चैट बबल का उपयोग करें।", unmute="अनम्यूट करते समय त्रुटि हुई। अनम्यूट करने के लिए वॉइस चैट बबल का उपयोग करें।"},
+			fr = {mute="Une erreur est survenue lors de la désactivation du son. Utilisez la bulle du chat vocal pour couper le son.", unmute="Une erreur est survenue lors de la réactivation du son. Utilisez la bulle du chat vocal pour réactiver le son."},
+			de = {mute="Beim Stummschalten ist ein Fehler aufgetreten. Verwende dazu die Sprachchat-Blase.", unmute="Beim Aufheben der Stummschaltung ist ein Fehler aufgetreten. Verwende dazu die Sprachchat-Blase."},
+			pt = {mute="Ocorreu um erro ao silenciar. Use o balão do chat de voz para silenciar.", unmute="Ocorreu um erro ao ativar o som. Use o balão do chat de voz para ativar o som."},
+			ja = {mute="ミュート中にエラーが発生しました。ボイスチャットの吹き出しからミュートしてください。", unmute="ミュート解除中にエラーが発生しました。ボイスチャットの吹き出しから解除してください。"},
+			ko = {mute="음소거 중 오류가 발생했습니다. 음성 채팅 말풍선에서 음소거해 주세요.", unmute="음소거 해제 중 오류가 발생했습니다. 음성 채팅 말풍선에서 해제해 주세요."},
+			tr = {mute="Sessize alma sırasında hata oluştu. Sessize almak için sesli sohbet balonunu kullanın.", unmute="Sesi açarken hata oluştu. Sesi açmak için sesli sohbet balonunu kullanın."},
+			pl = {mute="Wystąpił błąd podczas wyciszania. Użyj dymka czatu głosowego, aby wyciszyć.", unmute="Wystąpił błąd podczas włączania dźwięku. Użyj dymka czatu głosowego, aby go włączyć."},
+			id = {mute="Terjadi kesalahan saat membisukan. Gunakan gelembung obrolan suara untuk membisukan.", unmute="Terjadi kesalahan saat mengaktifkan suara. Gunakan gelembung obrolan suara untuk mengaktifkannya."},
+			vi = {mute="Đã xảy ra lỗi khi tắt tiếng. Hãy dùng bong bóng trò chuyện thoại để tắt tiếng.", unmute="Đã xảy ra lỗi khi bật tiếng. Hãy dùng bong bóng trò chuyện thoại để bật tiếng."},
+			th = {mute="เกิดข้อผิดพลาดขณะปิดเสียง โปรดใช้ฟองแชทเสียงเพื่อปิดเสียง", unmute="เกิดข้อผิดพลาดขณะเปิดเสียง โปรดใช้ฟองแชทเสียงเพื่อเปิดเสียง"},
+			nl = {mute="Er is een fout opgetreden bij het dempen. Gebruik de spraakchatballon om te dempen.", unmute="Er is een fout opgetreden bij het opheffen van dempen. Gebruik de spraakchatballon."},
+		}
+		local VoiceLocale = Locale:match("^([^-]+)") or Locale
+		if VoiceLocale == "zh" then VoiceLocale = (Locale:find("tw", 1, true) or Locale:find("hk", 1, true)) and "zh-tw" or "zh-cn" end
+		local LocalizedError = VoiceMessages[VoiceLocale]
+		if LocalizedError and LocalizedError[VoiceAction] then return LocalizedError[VoiceAction] end
+	end
+
+	local PlainSource = Source:gsub("<[^>]+>", "")
+	local LookupSource = PlainSource
+	local SourceMap = MenuCoreTranslationsBySource[LookupSource]
+	if SourceMap then
+		local Candidates = {Locale}
+		local BaseLanguage = Locale:match("^([^-]+)")
+		if BaseLanguage and BaseLanguage ~= Locale then table.insert(Candidates, BaseLanguage) end
+		if BaseLanguage == "zh" then
+			if Locale:find("tw", 1, true) or Locale:find("hk", 1, true) or Locale:find("mo", 1, true) then
+				table.insert(Candidates, "zh-tw")
+				table.insert(Candidates, "zh-hant")
+			else
+				table.insert(Candidates, "zh-cn")
+				table.insert(Candidates, "zh-hans")
+			end
+		elseif BaseLanguage == "pt" then
+			table.insert(Candidates, "pt-br")
+		elseif BaseLanguage == "fil" then
+			table.insert(Candidates, "tl")
+		elseif BaseLanguage == "he" then
+			table.insert(Candidates, "iw")
+		end
+		for _, Candidate in ipairs(Candidates) do
+			local Translation = SourceMap[Candidate]
+			if Translation and Translation ~= "" and Translation ~= LookupSource then
+				if PlainSource ~= Source then
+					local StartAt, EndAt = string.find(Source, PlainSource, 1, true)
+					if StartAt then return string.sub(Source, 1, StartAt - 1) .. Translation .. string.sub(Source, EndAt + 1) end
+				end
+				return Translation
+			end
+		end
+	end
+
+	local Language = Locale:match("^([^-]+)") or Locale
+	if Language == "zh" then
+		if Locale:find("tw", 1, true) or Locale:find("hk", 1, true) or Locale:find("mo", 1, true) or Locale:find("hant", 1, true) then
+			Language = "zh-tw"
+		else
+			Language = "zh-cn"
+		end
+	elseif Language == "pt" then
+		Language = "pt"
+	elseif Language == "in" then
+		Language = "id"
+	elseif Language == "iw" then
+		Language = "he"
+	end
+	local Fallback = MenuFallbackTranslations[Language]
+	local Translation = Fallback and Fallback[LookupSource]
+	if Translation and Translation ~= "" then
+		if PlainSource ~= Source then
+			local StartAt, EndAt = string.find(Source, PlainSource, 1, true)
+			if StartAt then return string.sub(Source, 1, StartAt - 1) .. Translation .. string.sub(Source, EndAt + 1) end
+		end
+		return Translation
+	end
+	return Source
+end
+
+GetMenuMeasuredTextWidth = function(Object, Text, TextSize)
+	Text = tostring(Text or "")
+	TextSize = tonumber(TextSize) or 14
+	if Text == "" then return 0 end
+	local Width = nil
+	if TextService then
+		pcall(function()
+			local Bounds = TextService:GetTextSize(Text, TextSize, Object.Font, Vector2.new(10000, 1000))
+			Width = Bounds.X
+		end)
+	end
+	if not Width or Width <= 0 then
+		local Count = #Text
+		pcall(function() Count = utf8.len(Text) or Count end)
+		Width = Count * TextSize * 0.55
+	end
+	return Width
+end
+
+FitMenuButtonText = function(Object, AvailableWidth, BaseSize)
+	if not Object or not Object.Parent then return end
+	BaseSize = tonumber(BaseSize) or tonumber(Object.TextSize) or 14
+	AvailableWidth = tonumber(AvailableWidth) or 0
+	if AvailableWidth <= 0 then return end
+	local Text = tostring(Object.Text or "")
+	local FittedSize = BaseSize
+	for Size = math.floor(BaseSize), 10, -1 do
+		if GetMenuMeasuredTextWidth(Object, Text, Size) <= AvailableWidth then
+			FittedSize = Size
+			break
+		end
+		FittedSize = Size
+	end
+	Object.TextSize = FittedSize
+end
+
+ApplyMenuLocalizedButtonLayout = function(Object)
+	if not Object or not Object.Parent then return end
+	local Name = tostring(Object.Name or "")
+
+	-- The share action is content-sized, but keep its original width as a minimum
+	-- and cap growth so it cannot cover the invite-row heading.
+	if Name == "ShareInviteButton" and Object:IsA("TextButton") then
+		local Row = Object.Parent
+		local BaseSize = 19
+		local Desired = math.ceil(GetMenuMeasuredTextWidth(Object, Object.Text, BaseSize) + 24)
+		local RowWidth = Row and tonumber(Row.AbsoluteSize.X) or 0
+		local MaxWidth = RowWidth > 0 and math.min(168, math.max(86, RowWidth - 150)) or 150
+		local Width = math.max(86, math.min(MaxWidth, Desired))
+		Object.Size = UDim2.fromOffset(Width, 32)
+		Object.Position = UDim2.new(1, -(Width + 8), 0.5, -16)
+		if Row then
+			local Title = Row:FindFirstChild("ShareInviteLinkLabel")
+			if Title then Title.Size = UDim2.new(1, -(Width + 22), 1, 0) end
+		end
+		FitMenuButtonText(Object, Width - 12, BaseSize)
+		return
+	end
+
+	-- Player-row buttons may grow a little for long words, staying right-aligned.
+	-- Unlike the previous version, no task is queued for every UI label and no
+	-- other row/control geometry is touched.
+	if Name == "InviteButtonTextLabel" and Object:IsA("TextLabel") then
+		local Button = Object.Parent
+		if not Button or not Button:IsA("ImageButton") then return end
+		local BaseSize = 18
+		local Desired = math.ceil(GetMenuMeasuredTextWidth(Object, Object.Text, BaseSize) + 18)
+		local Maximum = USE_NEW_INVITE_MENU and 88 or 124
+		local Width = math.max(70, math.min(Maximum, Desired))
+		local Height = tonumber(Button.Size.Y.Offset) or 0
+		if Height < 1 then Height = 46 end
+		Button.Size = UDim2.fromOffset(Width, Height)
+		Button.Position = UDim2.new(1, -(Width + 12), 0.5, -(Height / 2))
+		FitMenuButtonText(Object, Width - 8, BaseSize)
+	end
+end
+
+ApplyMenuLocalizedText = function(Object, Source)
+	if not Object then return end
+	Source = Source ~= nil and Source or MenuLocalizationSources[Object] or ""
+	local Translation = GetMenuLocalizedText(Source, MenuLocalizationLocale)
+	MenuLocalizationRendered[Object] = Translation
+	if Object.Text ~= Translation then Object.Text = Translation end
+	if ApplyMenuLocalizedButtonLayout then
+		pcall(function() ApplyMenuLocalizedButtonLayout(Object) end)
+	end
+end
+
+RegisterMenuLocalizableText = function(Object)
+	if not Object or not (Object:IsA("TextLabel") or Object:IsA("TextButton")) then return end
+	if MenuLocalizationSources[Object] ~= nil then
+		local Current = tostring(Object.Text or "")
+		if MenuLocalizationSources[Object] == "" and Current ~= "" then
+			MenuLocalizationSources[Object] = Current
+		end
+		ApplyMenuLocalizedText(Object, MenuLocalizationSources[Object])
+		return
+	end
+	local Source = tostring(Object.Text or "")
+	MenuLocalizationSources[Object] = Source
+	ApplyMenuLocalizedText(Object, Source)
+	Object:GetPropertyChangedSignal("Text"):Connect(function()
+		if not Object then return end
+		local Current = tostring(Object.Text or "")
+		if MenuLocalizationRendered[Object] == Current then return end
+		-- Runtime-updated English labels become the new source, so states such as
+		-- Invite/Invited and Mute/Unmute localize without rebuilding the page.
+		MenuLocalizationSources[Object] = Current
+		ApplyMenuLocalizedText(Object, Current)
+	end)
+end
+
+RegisterMenuLocalizationTree = function(Root)
+	if not Root then return end
+	if Root:IsA("TextLabel") or Root:IsA("TextButton") then RegisterMenuLocalizableText(Root) end
+	for _, Descendant in ipairs(Root:GetDescendants()) do
+		RegisterMenuLocalizableText(Descendant)
+	end
+end
+
+ApplyMenuLocalizationLocale = function(Locale)
+	Locale = NormalizeMenuLocale(Locale)
+	if Locale == "" or Locale == MenuLocalizationLocale then return end
+	local OldDescriptionPlaceholder = DESCRIPTION_PLACEHOLDER
+	MenuLocalizationLocale = Locale
+	DESCRIPTION_PLACEHOLDER = GetMenuLocalizedText("In your own words, help us understand what went wrong.", MenuLocalizationLocale)
+	if Description and Description.Parent and (Description.Text == OldDescriptionPlaceholder or Description.Text == "In your own words, help us understand what went wrong.") then
+		Description.Text = DESCRIPTION_PLACEHOLDER
+	end
+	for Object, Source in pairs(MenuLocalizationSources) do
+		if Object then ApplyMenuLocalizedText(Object, Source) end
+	end
+end
+
+RefreshMenuLocalization = function()
+	local DetectedLocale = NormalizeMenuLocale(GetMenuExperienceLocale())
+	if not MenuLocalizationOverrideLocale then
+		MenuLastObservedExperienceLocale = DetectedLocale
+		ApplyMenuLocalizationLocale(DetectedLocale)
+	else
+		-- Generic locale-property notifications can fire for account/CoreGui
+		-- settings too. They must not cancel the user's menu-language choice;
+		-- only the bound experience Translator monitor may clear this override.
+		ApplyMenuLocalizationLocale(MenuLocalizationOverrideLocale)
+	end
+end
+
+MenuLocalizationLocale = GetMenuExperienceLocale()
+DESCRIPTION_PLACEHOLDER = GetMenuLocalizedText("In your own words, help us understand what went wrong.", MenuLocalizationLocale)
+-- Prefer locale-change notifications from the player; keep CoreGui/system
+-- notifications as fallback triggers for clients that hide Player.LocaleId.
+pcall(function()
+	if LocalPlayer then
+		LocalPlayer:GetPropertyChangedSignal("LocaleId"):Connect(RefreshMenuLocalization)
+	end
+end)
+pcall(function()
+	LocalizationService:GetPropertyChangedSignal("RobloxLocaleId"):Connect(RefreshMenuLocalization)
+end)
+pcall(function()
+	LocalizationService:GetPropertyChangedSignal("SystemLocaleId"):Connect(RefreshMenuLocalization)
+end)
+
 Create = function(
 	Class: string,
 	Properties: {[string]: any}
@@ -377,6 +2334,7 @@ Create = function(
 		Object[Property] = Value
 	end
 
+	RegisterMenuLocalizableText(Object)
 	return Object
 end
 
@@ -725,171 +2683,295 @@ end
 -- AUDIO OUTPUT / BACKGROUND TRANSPARENCY HELPERS
 -- ============================================================
 
+-- Input/output device helpers. The SoundService device methods return tuples on
+-- some clients and nested device tables/maps on others, so normalize both forms.
+GetAudioDeviceInfo = function(Direction)
+	local MethodName = Direction == "Input" and "GetInputDevice" or "GetOutputDevice"
+	local Values = {n = 0}
+	local Ok = pcall(function()
+		local Method = SoundService[MethodName]
+		if type(Method) ~= "function" then error("Audio device query unavailable") end
+		Values = table.pack(Method(SoundService))
+	end)
+	if not Ok then return nil, nil end
+
+	local Name, Guid = nil, nil
+	local StringValues = {}
+	local function LooksLikeDeviceGuid(Value)
+		Value = tostring(Value or "")
+		return Value:find("%x%x%x%x%x%x%x%x%-", 1) ~= nil
+			or (Value:sub(1, 1) == "{" and Value:sub(-1) == "}")
+			or (#Value >= 24 and not Value:find("%s"))
+	end
+	local function ReadDevice(Device, Depth)
+		if type(Device) ~= "table" or (Depth or 0) > 5 then return end
+		Name = Name or Device.Name or Device.name or Device.DisplayName or Device.displayName
+			or Device.DeviceName or Device.deviceName or Device.Label or Device.label
+		Guid = Guid or Device.Guid or Device.guid or Device.Id or Device.id
+			or Device.DeviceGuid or Device.deviceGuid or Device.DeviceID or Device.deviceID
+			or Device.DeviceId or Device.deviceId or Device.Pin or Device.pin
+		for _, Child in pairs(Device) do
+			if type(Child) == "table" then ReadDevice(Child, (Depth or 0) + 1) end
+		end
+	end
+
+	for Index = 1, Values.n or #Values do
+		local Value = Values[Index]
+		if type(Value) == "table" then
+			ReadDevice(Value, 0)
+		elseif type(Value) == "string" then
+			table.insert(StringValues, Value)
+		end
+	end
+	-- Tuple order differs between client branches. Prefer recognizable GUIDs for
+	-- the ID field instead of accidentally displaying a GUID as the microphone name.
+	for _, Value in ipairs(StringValues) do
+		if LooksLikeDeviceGuid(Value) then
+			Guid = Guid or Value
+		elseif not Name then
+			Name = Value
+		elseif not Guid then
+			Guid = Value
+		end
+	end
+	return Name and tostring(Name) or nil, Guid and tostring(Guid) or nil
+end
+
 GetOutputDeviceInfo = function()
-	local Name = nil
-	local Guid = nil
+	return GetAudioDeviceInfo("Output")
+end
 
-	Protect(function()
-		local Returned = {SoundService:GetOutputDevice()}
+GetInputDeviceInfo = function()
+	return GetAudioDeviceInfo("Input")
+end
 
-		local ReadDevice = function(Device)
-			if type(Device) ~= "table" then
+GetAudioDeviceOptions = function(Direction)
+	local Names = {"System Default"}
+	local DeviceMap = { ["System Default"] = {Name = "", Guid = ""} }
+	local Seen = {}
+	local UsedLabels = { ["System Default"] = true }
+
+	local function AddDevice(Name, Guid)
+		if Name == nil then return end
+		Name = tostring(Name)
+		Guid = tostring(Guid or "")
+		if Name == "" then return end
+		local DedupKey = Guid ~= "" and ("guid:" .. Guid) or ("name:" .. Name)
+		if Seen[DedupKey] then return end
+		Seen[DedupKey] = true
+
+		local Label = Name
+		if UsedLabels[Label] then
+			local Suffix = Guid ~= "" and Guid:sub(math.max(1, #Guid - 5)) or tostring(#Names + 1)
+			Label = Name .. " (" .. Suffix .. ")"
+			local N = 2
+			while UsedLabels[Label] do
+				Label = Name .. " (" .. Suffix .. "-" .. tostring(N) .. ")"
+				N += 1
+			end
+		end
+		UsedLabels[Label] = true
+		table.insert(Names, Label)
+		DeviceMap[Label] = {Name = Name, Guid = Guid}
+	end
+
+	local function IsGuidLike(Value)
+		Value = tostring(Value or "")
+		return Value:find("%x%x%x%x%x%x%x%x%-", 1) ~= nil
+			or (Value:sub(1, 1) == "{" and Value:sub(-1) == "}")
+			or (#Value >= 24 and not Value:find("%s"))
+	end
+
+	local function ParseValue(Value, Depth, KeyHint)
+		Depth = Depth or 0
+		if Depth > 6 then return end
+		if type(Value) == "table" then
+			local Name = Value.Name or Value.name or Value.DisplayName or Value.displayName
+				or Value.DeviceName or Value.deviceName or Value.Label or Value.label
+			local Guid = Value.Guid or Value.guid or Value.DeviceGuid or Value.deviceGuid
+				or Value.DeviceID or Value.deviceID or Value.DeviceId or Value.deviceId
+				or Value.Id or Value.id or Value.Pin or Value.pin
+			if type(Name) == "string" and Name ~= "" then
+				AddDevice(Name, Guid)
 				return
 			end
 
-			Name = Name
-				or Device.Name
-				or Device.name
-				or Device.DisplayName
-				or Device.displayName
-				or Device.DeviceName
-				or Device.deviceName
-				or Name
-
-			Guid = Guid
-				or Device.Guid
-				or Device.guid
-				or Device.Id
-				or Device.id
-				or Device.DeviceGuid
-				or Device.deviceGuid
-				or Guid
-		end
-
-		for _, Value in next, Returned do
-			if type(Value) == "table" then
-				ReadDevice(Value)
-			elseif type(Value) == "string" then
-				if not Name then
-					Name = Value
-				elseif not Guid then
-					Guid = Value
+			-- Accept only recognizable arrays or GUID<->name maps. The previous
+			-- parser treated metadata such as CurrentDeviceName/Status as devices.
+			for Key, Child in pairs(Value) do
+				if type(Child) == "table" then
+					ParseValue(Child, Depth + 1, Key)
+				elseif type(Child) == "string" then
+					if type(Key) == "number" then
+						AddDevice(Child, "")
+					elseif type(Key) == "string" and IsGuidLike(Key) and not IsGuidLike(Child) then
+						AddDevice(Child, Key)
+					elseif type(Key) == "string" and IsGuidLike(Child) and not IsGuidLike(Key) then
+						AddDevice(Key, Child)
+					end
 				end
 			end
-		end
-	end)
-
-	return Name, Guid
-end
-
-GetOutputDeviceOptions = function()
-	local Names = {}
-	local OutputDeviceMap = {}
-	local Seen = {}
-
-	local AddDevice = function(Name, Guid)
-		if not Name then
-			return
-		end
-
-		Name = tostring(Name)
-		Guid = tostring(Guid or "")
-
-		if Name == "" then
-			return
-		end
-
-		local Key = Guid ~= "" and ("guid:" .. Guid) or ("name:" .. Name)
-		if Seen[Key] then
-			return
-		end
-
-		Seen[Key] = true
-		Insert(Names, Name)
-		OutputDeviceMap[Name] = {
-			Name = Name,
-			Guid = Guid,
-		}
-	end
-
-	local ParseDevice = function(Device)
-		if type(Device) ~= "table" then
-			return
-		end
-
-		local Name =
-			Device.Name
-			or Device.name
-			or Device.DisplayName
-			or Device.displayName
-				or Device.DeviceName
-				or Device.deviceName
-
-		local Guid =
-			Device.Guid
-				or Device.guid
-				or Device.Id
-				or Device.id
-				or Device.DeviceGuid
-				or Device.deviceGuid
-
-		if Name then
-			AddDevice(Name, Guid)
-		end
-
-		for _, Child in next, Device do
-			if type(Child) == "table" then
-				ParseDevice(Child)
+		elseif type(Value) == "string" then
+			if KeyHint and type(KeyHint) == "string" and IsGuidLike(KeyHint) and not IsGuidLike(Value) then
+				AddDevice(Value, KeyHint)
+			else
+				AddDevice(Value, "")
 			end
 		end
 	end
 
-	Protect(function()
-		local Returned = {SoundService:GetOutputDevices()}
-		local PendingName = nil
+	local function IsPlainStringArray(Value)
+		if type(Value) ~= "table" then return false end
+		local Count = 0
+		for Key, Child in pairs(Value) do
+			if type(Key) ~= "number" or type(Child) ~= "string" then return false end
+			Count += 1
+		end
+		return Count > 0
+	end
 
-		for _, Value in next, Returned do
+	local function ParseReturnValues(Values)
+		-- Some builds return parallel arrays: {names...}, {GUIDs...}.
+		-- Pair these arrays by index instead of mistakenly listing GUIDs as devices.
+		if IsPlainStringArray(Values[1]) and IsPlainStringArray(Values[2]) then
+			local First, Second = Values[1], Values[2]
+			local FirstLooksLikeIds, SecondLooksLikeIds = 0, 0
+			for _, Value in ipairs(First) do if IsGuidLike(Value) then FirstLooksLikeIds += 1 end end
+			for _, Value in ipairs(Second) do if IsGuidLike(Value) then SecondLooksLikeIds += 1 end end
+			if FirstLooksLikeIds > SecondLooksLikeIds then First, Second = Second, First end
+			for Index, DeviceName in ipairs(First) do
+				AddDevice(DeviceName, type(Second[Index]) == "string" and Second[Index] or "")
+			end
+			for Index = #First + 1, #Second do
+				if not IsGuidLike(Second[Index]) then AddDevice(Second[Index], "") end
+			end
+			for Index = 3, Values.n or #Values do ParseValue(Values[Index], 0) end
+			return
+		end
+
+		-- Other builds return records/maps, or a flat (name, GUID, name, GUID...) tuple.
+		local PendingName = nil
+		for Index = 1, Values.n or #Values do
+			local Value = Values[Index]
 			if type(Value) == "table" then
-				ParseDevice(Value)
+				ParseValue(Value, 0)
 			elseif type(Value) == "string" then
-				if not PendingName then
+				if IsGuidLike(Value) then
+					if PendingName then AddDevice(PendingName, Value); PendingName = nil end
+				elseif PendingName then
+					-- Consecutive plain strings are more likely separate device labels than
+					-- a name plus an ID. Preserve each label and don't pair them incorrectly.
+					AddDevice(PendingName, "")
 					PendingName = Value
 				else
-					AddDevice(PendingName, Value)
-					PendingName = nil
+					PendingName = Value
 				end
 			end
 		end
-
-		if PendingName then
-			AddDevice(PendingName, "")
-		end
-	end)
-
-	local CurrentName, CurrentGuid = GetOutputDeviceInfo()
-	if CurrentName and CurrentName ~= "" then
-		AddDevice(CurrentName, CurrentGuid)
+		if PendingName and not IsGuidLike(PendingName) then AddDevice(PendingName, "") end
 	end
 
-	return Names, OutputDeviceMap, CurrentName, CurrentGuid
+	local AudioApiEnabled = type(GetVoiceAudioApiEnabled) == "function" and GetVoiceAudioApiEnabled() == true
+	local function EnumerateSoundServiceDevices()
+		local MethodName = Direction == "Input" and "GetInputDevices" or "GetOutputDevices"
+		pcall(function()
+			local Method = SoundService[MethodName]
+			if type(Method) ~= "function" then error("Audio device enumeration unavailable") end
+			ParseReturnValues(table.pack(Method(SoundService)))
+		end)
+	end
+	local function EnumerateLegacyVoiceMics()
+		if Direction ~= "Input" or not VoiceChatInternal then return end
+		pcall(function()
+			local Method = VoiceChatInternal.GetMicDevices
+			if type(Method) ~= "function" then return end
+			ParseReturnValues(table.pack(Method(VoiceChatInternal)))
+		end)
+	end
+
+	-- In legacy/Automatic mode, VoiceChatInternal owns the actual voice publisher
+	-- device list. Querying SoundService first can show an unrelated system audio
+	-- input and make the settings page claim the wrong microphone is selected.
+	if Direction == "Input" and not AudioApiEnabled then
+		EnumerateLegacyVoiceMics()
+		if #Names == 1 then EnumerateSoundServiceDevices() end
+	else
+		EnumerateSoundServiceDevices()
+		if Direction == "Input" and #Names == 1 then EnumerateLegacyVoiceMics() end
+	end
+
+	local CurrentName, CurrentGuid = GetAudioDeviceInfo(Direction)
+	if CurrentName and CurrentName ~= "" then
+		local CurrentMatchesVoiceList = false
+		for _, Label in ipairs(Names) do
+			local Info = DeviceMap[Label]
+			if Info and Info.Name == CurrentName then CurrentMatchesVoiceList = true; break end
+		end
+		-- Do not append an unrelated SoundService device as the current voice mic
+		-- when legacy voice provided a different authoritative list.
+		if Direction ~= "Input" or AudioApiEnabled or #Names == 1 or CurrentMatchesVoiceList then
+			AddDevice(CurrentName, CurrentGuid)
+		else
+			CurrentName, CurrentGuid = nil, nil
+		end
+	end
+	return Names, DeviceMap, CurrentName, CurrentGuid
+end
+GetOutputDeviceOptions = function()
+	return GetAudioDeviceOptions("Output")
+end
+
+GetInputDeviceOptions = function()
+	return GetAudioDeviceOptions("Input")
 end
 
 SetRealOutputDevice = function(Name, Guid)
-	local Success = false
-
-	Protect(function()
-		SoundService:SetOutputDevice(
-			tostring(Name or ""),
-			tostring(Guid or "")
-		)
-		Success = true
+	Name, Guid = tostring(Name or ""), tostring(Guid or "")
+	local Ok = pcall(function()
+		SoundService:SetOutputDevice(Name, Guid)
 	end)
-
-	if not Success then
-		return false
-	end
-
-	local NewName, NewGuid = GetOutputDeviceInfo()
-	if NewGuid and Guid and tostring(NewGuid) == tostring(Guid) then
-		return true
-	end
-	if NewName and Name and tostring(NewName) == tostring(Name) then
-		return true
-	end
-
+	if not Ok then return false end
+	if Name == "" and Guid == "" then return true end
+	local ActualName, ActualGuid = GetOutputDeviceInfo()
+	if ActualName == Name and (Guid == "" or ActualGuid == Guid) then return true end
 	return false
 end
 
+SetRealInputDevice = function(Name, Guid)
+	Name, Guid = tostring(Name or ""), tostring(Guid or "")
+	local ApiEnabled = type(GetVoiceAudioApiEnabled) == "function" and GetVoiceAudioApiEnabled() == true
+
+	local function SetModernInput()
+		local Setter = nil
+		pcall(function() Setter = SoundService.SetInputDevice end)
+		if type(Setter) ~= "function" then return false end
+		local Ok = pcall(function() Setter(SoundService, Name, Guid) end)
+		if not Ok then return false end
+		if Name == "" and Guid == "" then return true end
+		local ActualName, ActualGuid = GetInputDeviceInfo()
+		if ActualName == Name and (Guid == "" or ActualGuid == Guid) then return true end
+		-- Some clients accept the write but do not expose a public readback. In
+		-- that case, don't accidentally redirect a modern selection to the legacy mic.
+		return ActualName == nil or ActualName == ""
+	end
+
+	local function SetLegacyInput()
+		if not VoiceChatInternal then return false end
+		local Setter = nil
+		pcall(function() Setter = VoiceChatInternal.SetMicDevice end)
+		if type(Setter) ~= "function" then return false end
+		-- SetMicDevice is the legacy voice publisher's actual microphone selector;
+		-- comparing its selection with SoundService's unrelated output can mis-detect it.
+		return pcall(function() Setter(VoiceChatInternal, Name, Guid) end)
+	end
+
+	if ApiEnabled then
+		return SetModernInput()
+	end
+	if SetLegacyInput() then return true end
+	if ApiEnabled == nil then return SetModernInput() end
+	return false
+end
 GetPreferredTransparency = function()
 	local Value = nil
 
@@ -955,8 +3037,12 @@ ScreenGui =
 			Parent =
 				CoreGui,
 
-			IgnoreGuiInset =
-				true,
+			-- Use consistent physical-screen coordinates on every platform so the
+			-- centered desktop menu is not shifted down by the Roblox top-bar inset.
+			-- Fullscreen dimensions are still applied to MenuContainer only on phones.
+			IgnoreGuiInset = true,
+			ScreenInsets = Enum.ScreenInsets.None,
+			SafeAreaCompatibility = Enum.SafeAreaCompatibility.None,
 
 			ZIndexBehavior =
 				Enum.ZIndexBehavior.Sibling,
@@ -973,6 +3059,392 @@ Insert(
 	Data.Objects,
 	ScreenGui
 )
+
+Connect(ScreenGui.DescendantAdded, function(Descendant)
+	-- Defer until Create has finished assigning properties, avoiding capturing a
+	-- temporarily empty Text before its intended English source string is set.
+	task.defer(function()
+		if Descendant and Descendant.Parent then RegisterMenuLocalizableText(Descendant) end
+	end)
+end)
+
+-- ============================================================
+-- VOICE CHAT BETA BADGE / NOTICE POPUP
+-- Uses the live TopBarApp LeftFrame when available, rather than an
+-- invisible full-screen overlay that can intercept/block top-bar clicks.
+-- ============================================================
+local function FindVoiceBetaTopBarLeftFrame()
+	local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
+	if not TopBarRoot then return nil end
+	local App = TopBarRoot:FindFirstChild("TopBarApp") or TopBarRoot
+	local TopBarFrame = App:FindFirstChild("TopBarFrame", true)
+	local LeftFrame = TopBarFrame and TopBarFrame:FindFirstChild("LeftFrame")
+	if LeftFrame and LeftFrame:IsA("GuiObject") then return LeftFrame end
+	return nil
+end
+
+VoiceBetaTopBarLeftFrame = FindVoiceBetaTopBarLeftFrame()
+VoiceBetaNativeOriginalRoot = nil
+if VoiceBetaTopBarLeftFrame then
+	local OldCustomBadge = VoiceBetaTopBarLeftFrame:FindFirstChild("Settings2016VoiceBetaBadgeRoot")
+	if OldCustomBadge then pcall(function() OldCustomBadge:Destroy() end) end
+end
+
+-- Clean up the previous overlay-based popup. The reference popup belongs under the
+-- badge root itself; keeping it there preserves the original TopBar vertical position.
+VoiceBetaPopupOverlayGui = nil
+pcall(function()
+	local OldOverlay = CoreGui:FindFirstChild("Settings2016VoiceBetaPopupOverlay")
+	if OldOverlay then OldOverlay:Destroy() end
+end)
+
+if VoiceBetaTopBarLeftFrame then
+	local Existing = VoiceBetaTopBarLeftFrame:FindFirstChild("badge")
+	if Existing and Existing:IsA("Frame")
+		and Existing:FindFirstChild("popup")
+		and Existing:FindFirstChild("badge") then
+		VoiceBetaNativeOriginalRoot = Existing
+		pcall(function() VoiceBetaNativeOriginalRoot.Visible = false end)
+	end
+end
+
+VoiceBetaBadgeRoot = Create("Frame", {
+	Name = "Settings2016VoiceBetaBadgeRoot",
+	Parent = VoiceBetaTopBarLeftFrame or ScreenGui,
+	Position = VoiceBetaTopBarLeftFrame and UDim2.new(0, 0, 0, 2) or UDim2.fromOffset(116, 2),
+	Size = UDim2.new(0, 0, 0, 32),
+	AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ClipsDescendants = false,
+	Active = true,
+	Interactable = true,
+	LayoutOrder = 4,
+	Visible = false,
+	ZIndex = SETTINGS_BASE_ZINDEX + 150,
+})
+
+Create("UIListLayout", {
+	Name = "Settings2016VoiceBetaBadgeLayout",
+	Parent = VoiceBetaBadgeRoot,
+	FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Left,
+	VerticalAlignment = Enum.VerticalAlignment.Top,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 14),
+	Wraps = false,
+})
+
+VoiceBetaBadgeButton = Create("ImageButton", {
+	Name = "Settings2016VoiceBetaBadgeButton",
+	Parent = VoiceBetaBadgeRoot,
+	Position = UDim2.new(0, 0, 0, 0),
+	Size = UDim2.new(0, 0, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Image = "",
+	AutoButtonColor = true,
+	Active = true,
+	Interactable = true,
+	Selectable = true,
+	LayoutOrder = 1,
+	Modal = false,
+	ZIndex = SETTINGS_BASE_ZINDEX + 151,
+})
+Create("UISizeConstraint", {
+	Name = "Settings2016VoiceBetaBadgeConstraint",
+	Parent = VoiceBetaBadgeButton,
+	MinSize = Vector2.new(32, 32),
+})
+
+VoiceBetaBadgeText = Create("TextLabel", {
+	Name = "Settings2016VoiceBetaBadgeLabel",
+	Parent = VoiceBetaBadgeButton,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	Size = UDim2.new(0, 0, 0, 0),
+	AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = Color3.fromRGB(233, 207, 104),
+	BackgroundTransparency = 0,
+	BorderSizePixel = 0,
+	Font = Enum.Font.GothamBold,
+	Text = "BETA",
+	TextColor3 = Color3.fromRGB(0, 0, 0),
+	TextSize = 12,
+	TextWrapped = false,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	TextYAlignment = Enum.TextYAlignment.Center,
+	Active = false,
+	Interactable = false,
+	Selectable = false,
+	ZIndex = SETTINGS_BASE_ZINDEX + 152,
+})
+Create("UIPadding", {
+	Name = "Settings2016VoiceBetaBadgePadding",
+	Parent = VoiceBetaBadgeText,
+	PaddingBottom = UDim.new(0, 3),
+	PaddingLeft = UDim.new(0, 6),
+	PaddingRight = UDim.new(0, 6),
+	PaddingTop = UDim.new(0, 3),
+})
+Create("UICorner", {
+	Name = "Settings2016VoiceBetaBadgeCorner",
+	Parent = VoiceBetaBadgeText,
+	CornerRadius = UDim.new(0, 4),
+})
+Create("UIStroke", {
+	Name = "Settings2016VoiceBetaBadgeStroke",
+	Parent = VoiceBetaBadgeText,
+	ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	Color = Color3.fromRGB(255, 255, 255),
+	Enabled = true,
+	LineJoinMode = Enum.LineJoinMode.Round,
+	Thickness = 2,
+	Transparency = 0,
+})
+
+-- Match the reference hierarchy: the popup is the second item in the badge's
+-- horizontal layout. The hidden popup doesn't change the badge hit-target size.
+VoiceBetaPopup = Create("Frame", {
+	Name = "Settings2016VoiceBetaPopup",
+	Parent = VoiceBetaBadgeRoot,
+	AnchorPoint = Vector2.new(0, 0),
+	Position = UDim2.new(0.14408, 0, 0, 0),
+	Size = UDim2.new(0, 300, 0, 2),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency = 0.3,
+	BorderSizePixel = 1,
+	ClipsDescendants = false,
+	Active = true,
+	Interactable = true,
+	Visible = false,
+	LayoutOrder = 2,
+	ZIndex = SETTINGS_BASE_ZINDEX + 153,
+})
+Create("UIPadding", {
+	Name = "Settings2016VoiceBetaPopupPadding",
+	Parent = VoiceBetaPopup,
+	PaddingBottom = UDim.new(0, 8),
+	PaddingLeft = UDim.new(0, 8),
+	PaddingRight = UDim.new(0, 8),
+	PaddingTop = UDim.new(0, 8),
+})
+Create("UIListLayout", {
+	Name = "Settings2016VoiceBetaPopupLayout",
+	Parent = VoiceBetaPopup,
+	FillDirection = Enum.FillDirection.Vertical,
+	HorizontalAlignment = Enum.HorizontalAlignment.Left,
+	VerticalAlignment = Enum.VerticalAlignment.Top,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 12),
+	Wraps = false,
+})
+Create("UICorner", {
+	Name = "Settings2016VoiceBetaPopupCorner",
+	Parent = VoiceBetaPopup,
+	CornerRadius = UDim.new(0, 8),
+})
+
+VoiceBetaPopupText = Create("TextLabel", {
+	Name = "Settings2016VoiceBetaPopupText",
+	Parent = VoiceBetaPopup,
+	Size = UDim2.new(0, 283, 0, 139),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Font = Enum.Font.GothamMedium,
+	Text = "You have opted in to one or more of our beta features:\n• Voice chat\n\nPlease report abuse if you encounter people breaking our Community Guidelines. If you have opted-in to voice chat, Roblox records voice audio anywhere on the platform for moderation and safety purposes. By continuing to use the voice chat feature, you consent to Roblox's collection, use, and storage of your voice recording for moderation and safety purposes. You can opt-out of spatial voice at any time.",
+	TextColor3 = Color3.fromRGB(255, 255, 255),
+	TextSize = 12,
+	TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextYAlignment = Enum.TextYAlignment.Top,
+	Active = false,
+	Interactable = false,
+	Selectable = false,
+	LayoutOrder = 1,
+	ZIndex = SETTINGS_BASE_ZINDEX + 154,
+})
+
+VoiceBetaLearnMoreButton = Create("ImageButton", {
+	Name = "Settings2016VoiceBetaLearnMoreButton",
+	Parent = VoiceBetaPopup,
+	Size = UDim2.fromOffset(64, 28),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Image = "",
+	AutoButtonColor = false,
+	Active = true,
+	Interactable = true,
+	Selectable = false,
+	LayoutOrder = 100,
+	ZIndex = SETTINGS_BASE_ZINDEX + 154,
+})
+Create("UISizeConstraint", {
+	Name = "Settings2016VoiceBetaLearnMoreConstraint",
+	Parent = VoiceBetaLearnMoreButton,
+	MinSize = Vector2.new(64, 28),
+})
+Create("TextLabel", {
+	Name = "Settings2016VoiceBetaLearnMoreText",
+	Parent = VoiceBetaLearnMoreButton,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.515625, 0, 0.5, 0),
+	Size = UDim2.fromOffset(111, 14),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Font = Enum.Font.GothamMedium,
+	RichText = true,
+	Text = "<u>Learn More</u>",
+	TextColor3 = Color3.fromRGB(82, 173, 244),
+	TextSize = 12,
+	TextWrapped = false,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	TextYAlignment = Enum.TextYAlignment.Center,
+	Active = false,
+	Interactable = false,
+	Selectable = false,
+	ZIndex = SETTINGS_BASE_ZINDEX + 155,
+})
+
+-- Prefer Roblox's actual beta badge/button/popup if the live TopBarApp exposes it.
+-- The native ImageButton is the reliable click target; the popup was designed as its
+-- sibling under the existing horizontal UIListLayout. Keep a custom fallback only
+-- for clients where this native hierarchy is absent.
+VoiceBetaUsingNativeHierarchy = false
+if VoiceBetaNativeOriginalRoot and VoiceBetaNativeOriginalRoot.Parent then
+    local NativeRoot = VoiceBetaNativeOriginalRoot
+    local NativeButton = NativeRoot:FindFirstChild("badge")
+    local NativePopup = NativeRoot:FindFirstChild("popup")
+    local NativeText = NativeButton and NativeButton:FindFirstChild("text")
+    local NativePopupText = NativePopup and NativePopup:FindFirstChild("1")
+    local NativeLearnMore = NativePopup and NativePopup:FindFirstChild("link")
+    if NativeButton and NativeButton:IsA("ImageButton")
+        and NativePopup and NativePopup:IsA("Frame")
+        and NativeText and NativeText:IsA("TextLabel") then
+        pcall(function() VoiceBetaBadgeRoot:Destroy() end)
+        pcall(function() VoiceBetaPopupOverlayGui:Destroy() end)
+        VoiceBetaPopupOverlayGui = nil
+        VoiceBetaBadgeRoot = NativeRoot
+        VoiceBetaBadgeButton = NativeButton
+        VoiceBetaBadgeText = NativeText
+        VoiceBetaPopup = NativePopup
+        VoiceBetaPopupText = NativePopupText
+        VoiceBetaLearnMoreButton = NativeLearnMore
+        VoiceBetaUsingNativeHierarchy = true
+        pcall(function()
+            NativeRoot.Position = UDim2.new(0, 0, 0, 2)
+            NativeRoot.Visible = false
+            NativePopup.Visible = false
+            NativeButton.Active = true
+            NativeButton.Interactable = true
+            NativeButton.Selectable = true
+            NativeText.Active = false
+            NativeText.Interactable = false
+            NativeText.Selectable = false
+            if NativeLearnMore then
+                NativeLearnMore.Active = true
+                NativeLearnMore.Interactable = true
+            end
+            local LinkText = NativeLearnMore and NativeLearnMore:FindFirstChild("textLabel")
+            if LinkText and LinkText:IsA("TextLabel") then
+                LinkText.Active = false
+                LinkText.Interactable = false
+                LinkText.Selectable = false
+            end
+        end)
+    end
+end
+
+VoiceBetaPopupOpen = false
+local PositionVoiceBetaPopup
+local function IsVoiceBetaBadgeEligible()
+	return VoiceGameSupported == true
+		and VoiceAccountAllowed == true
+		and VoiceOptionAvailable == true
+end
+
+RefreshVoiceBetaBadgeVisibility = function()
+	if not VoiceBetaBadgeRoot or not VoiceBetaBadgeRoot.Parent then return end
+	local MenuShowing = (Hub and Hub.Visible == true) or SystemMenuButtonClosing == true
+	local ShouldShow = IsVoiceBetaBadgeEligible() and not MenuShowing
+	if VoiceBetaNativeOriginalRoot and VoiceBetaNativeOriginalRoot.Parent
+		and VoiceBetaNativeOriginalRoot ~= VoiceBetaBadgeRoot then
+		pcall(function() VoiceBetaNativeOriginalRoot.Visible = false end)
+	end
+	VoiceBetaBadgeRoot.Visible = ShouldShow
+	if not ShouldShow then
+		VoiceBetaPopupOpen = false
+		VoiceBetaPopup.Visible = false
+	elseif VoiceBetaPopupOpen then
+		PositionVoiceBetaPopup()
+	end
+end
+
+local VoiceBetaLastToggleAt = 0
+PositionVoiceBetaPopup = function()
+	-- The native hierarchy places popup as a sibling of badge with a horizontal
+	-- UIListLayout and 14px gap. Do not re-anchor it to a full-screen overlay: that
+	-- made it jump upward relative to the original TopBar inset.
+	if VoiceBetaUsingNativeHierarchy then return end
+	if VoiceBetaPopup and VoiceBetaPopup.Parent == VoiceBetaBadgeRoot then
+		VoiceBetaPopup.Position = UDim2.new(0.14408, 0, 0, 0)
+	end
+end
+
+local function ToggleVoiceBetaPopup()
+	-- Avoid a double toggle if an engine build raises both Activated and a
+	-- child-input fallback for the same physical click.
+	local Now = os.clock()
+	if Now - VoiceBetaLastToggleAt < 0.12 then return end
+	VoiceBetaLastToggleAt = Now
+	if not VoiceBetaBadgeRoot.Visible or not IsVoiceBetaBadgeEligible() then
+		VoiceBetaPopupOpen = false
+		VoiceBetaPopup.Visible = false
+		RefreshVoiceBetaBadgeVisibility()
+		return
+	end
+	VoiceBetaPopupOpen = not VoiceBetaPopupOpen
+	if VoiceBetaPopupOpen then PositionVoiceBetaPopup() end
+	VoiceBetaPopup.Visible = VoiceBetaPopupOpen
+end
+
+-- Reuse the native TopBarApp handlers when the native hierarchy is present.
+-- Adding another toggler to the same native button cancels its own toggle on clients
+-- that already open/close the original popup internally. Only the fallback needs code.
+if not VoiceBetaUsingNativeHierarchy then
+	Connect(VoiceBetaBadgeButton.Activated, ToggleVoiceBetaPopup)
+	Connect(VoiceBetaLearnMoreButton.MouseButton1Click, function()
+		local Url = "https://en.help.roblox.com/hc/en-us/articles/4405807645972-Voice-FAQ"
+		local Opened = pcall(function() GuiService:OpenBrowserWindow(Url) end)
+		if not Opened then pcall(function() StarterGui:SetCore("OpenBrowserWindow", Url) end) end
+	end)
+end
+
+-- TopBarApp can finish loading after this script starts. Move the isolated badge
+-- into its LeftFrame when it appears so clicks are handled by the native top bar.
+Spawn(function()
+	for _ = 1, 40 do
+		Wait(0.25)
+		if not (VoiceBetaBadgeRoot and VoiceBetaBadgeRoot.Parent) then return end
+		local LeftFrame = FindVoiceBetaTopBarLeftFrame()
+		if LeftFrame then
+			if VoiceBetaNativeOriginalRoot and VoiceBetaNativeOriginalRoot.Parent
+				and VoiceBetaNativeOriginalRoot ~= VoiceBetaBadgeRoot then
+				pcall(function() VoiceBetaNativeOriginalRoot.Visible = false end)
+			end
+			if VoiceBetaBadgeRoot.Parent ~= LeftFrame then
+				VoiceBetaBadgeRoot.Parent = LeftFrame
+				VoiceBetaBadgeRoot.Position = UDim2.new(0, 0, 0, 2)
+				VoiceBetaBadgeRoot.LayoutOrder = 4
+			end
+			VoiceBetaTopBarLeftFrame = LeftFrame
+			if VoiceBetaPopupOpen then PositionVoiceBetaPopup() end
+			return
+		end
+	end
+end)
 
 VolumeChangeSound =
 	Create(
@@ -1492,7 +3964,8 @@ Hub.Modal =
 
 Hub.MenuContainer = Create("Frame", {
 	Name="MenuContainer", Parent=Hub.Shield, BackgroundTransparency=1,
-	Position=UDim2.new(0.5,0,0.5,0), Size=UDim2.new(0.95,0,0.95,0),
+	-- Start as the normal 4:3 menu size; ResizeHub expands it only on phones.
+	Position=UDim2.new(0.5,0,0.5,0), Size=UDim2.fromOffset(TOTAL_HUB_WIDTH, 600),
 	AnchorPoint=Vector2.new(0.5,0.5), ZIndex=SETTINGS_BASE_ZINDEX,
 })
 Hub.MenuAspectRatio = Create("UIAspectRatioConstraint", {Name="MenuAspectRatio", AspectRatio=800/600, AspectType=Enum.AspectType.ScaleWithParentSize, DominantAxis=Enum.DominantAxis.Width, Parent=Hub.MenuContainer})
@@ -1739,24 +4212,34 @@ ResizeHub = function()
 		pcall(function()
 			ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None
 		end)
-	else
-		-- The prior setup used IgnoreGuiInset=true (DeviceSafeInsets). Preserve
-		-- that behavior on tablet and PC; do not apply phone fullscreen settings.
+		-- Read the full phone viewport AFTER removing safe insets. AbsoluteSize may
+		-- still reflect the old inset rectangle for this resize pass.
 		pcall(function()
-			if ScreenGui.ScreenInsets == Enum.ScreenInsets.None then
-				ScreenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+			local Camera = workspace.CurrentCamera
+			if Camera and Camera.ViewportSize.X > 0 and Camera.ViewportSize.Y > 0 then
+				Viewport = Camera.ViewportSize
 			end
 		end)
+	else
+		-- Keep physical-screen coordinates on desktop/macOS/tablets too. The menu
+		-- itself remains capped in its platform branch; this only fixes the origin.
+		pcall(function() ScreenGui.IgnoreGuiInset = true end)
+		pcall(function() ScreenGui.ScreenInsets = Enum.ScreenInsets.None end)
+		pcall(function() ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.None end)
 		pcall(function()
-			ScreenGui.SafeAreaCompatibility = Enum.SafeAreaCompatibility.FullscreenExtension
+			local Camera = workspace.CurrentCamera
+			if Camera and Camera.ViewportSize.X > 0 and Camera.ViewportSize.Y > 0 then
+				Viewport = Camera.ViewportSize
+			end
 		end)
 	end
 
-	-- UIAspectRatioConstraint has no Enabled property. Detach it on phones
-	-- so the menu can use the full portrait viewport; reattach it on tablets
-	-- and desktop to preserve their original 4:3 layout.
+	-- UIAspectRatioConstraint has no Enabled property. Use explicit viewport-
+	-- aware geometry on phones and desktop; retain the legacy ratio on tablets.
 	if Hub.MenuAspectRatio then
-		if IsPhone then
+		-- Phones and desktop use explicit viewport-aware geometry. Letting the
+		-- legacy 4:3 constraint reattach on PC was shrinking the ESC menu again.
+		if IsPhone or (not IsMobile and not IsTablet) then
 			if Hub.MenuAspectRatio.Parent then
 				Hub.MenuAspectRatio.Parent = nil
 			end
@@ -1792,20 +4275,14 @@ ResizeHub = function()
 			-- Phone invite page is intentionally larger than the
 			-- normal ESC menu. Tablets keep a capped, PC-like width.
 
-			Width =
-				math.max(
-					280,
-					LayoutViewport.X - 8
-				)
+			local PhonePageSideInset = 16
+			Width = math.max(1, math.min(TOTAL_HUB_WIDTH, math.floor(LayoutViewport.X - PhonePageSideInset * 2 + 0.5)))
 
-			local PageTop =
-				36
+			-- Keep the invite page below the camera/notch region while the HubBar
+			-- itself remains edge-to-edge.
+			local PageTop = 48
 
-			PageHeight =
-				math.max(
-					220,
-					LayoutViewport.Y - PageTop - 8
-				)
+			PageHeight = math.max(160, math.floor(LayoutViewport.Y - PageTop - 12 + 0.5))
 
 			Hub.PageClipper.AnchorPoint =
 				Vector2.new(
@@ -1839,44 +4316,24 @@ ResizeHub = function()
 
 		else
 
-			local BufferSize =
-				0.05 * Viewport.Y
+			-- Size the desktop ESC shell BEFORE measuring the invite page. ResizeHub
+			-- enters this branch as soon as invite mode is active, so relying on the
+			-- normal-page branch leaves the old/short menu size in place until another
+			-- interaction happens. Keep the same dimensions as the classic desktop path.
+			local DesktopWidth = math.max(280, math.min(TOTAL_HUB_WIDTH, math.floor(Viewport.X - 32 + 0.5)))
+			local DesktopHeight = math.min(800, math.max(300, math.floor(Viewport.Y - 32 + 0.5)))
+			Hub.MenuContainer.Size = UDim2.fromOffset(DesktopWidth, DesktopHeight)
+			Hub.MenuContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
+			Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
+			Width = DesktopWidth
+			PageHeight = DesktopHeight
 
-			Width =
-				math.max(280, math.floor(Viewport.X * 0.94))
-
-			local ExtraSpace =
-				(BufferSize * 2)
-				+ (HUBBAR_HEIGHT * 2)
-
-			PageHeight =
-				Clamp(
-					Viewport.Y - ExtraSpace,
-					150,
-					600
-				)
-
-			Hub.PageClipper.AnchorPoint =
-				Vector2.new(
-					0,
-					0
-				)
-
-			Hub.PageClipper.Size =
-				UDim2.new(
-					0,
-					Width,
-					0,
-					PageHeight
-				)
-
-			Hub.PageClipper.Position =
-				UDim2.new(
-					0.5,
-					-Width / 2,
-					0.5,
-					-PageHeight / 2
-				)
+			if Hub.PageClipper.Parent ~= Hub.MenuContainer then
+				Hub.PageClipper.Parent = Hub.MenuContainer
+			end
+			Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
+			Hub.PageClipper.Size = UDim2.new(1, 0, 1, 0)
+			Hub.PageClipper.Position = UDim2.new(0, 0, 0, 0)
 
 		end
 
@@ -1911,31 +4368,27 @@ ResizeHub = function()
 			)
 
 		if InviteList then
-			InviteList.Size =
-				UDim2.new(
-					1,
-					-12,
-					1,
-					-75
-				)
-
-			InviteList.Position =
-				UDim2.new(
-					0,
-					6,
-					0,
-					65
-				)
-
+			if USE_NEW_INVITE_MENU then
+				-- Keep the larger list area; the share row now scrolls inside it.
+				InviteList.Size = UDim2.new(1, -12, 1, -65)
+				InviteList.Position = UDim2.new(0, 6, 0, 65)
+			else
+				InviteList.Size = UDim2.new(1, -12, 1, -75)
+				InviteList.Position = UDim2.new(0, 6, 0, 65)
+			end
+		end
+		if NewInviteShareRow then
+			NewInviteShareRow.Visible = USE_NEW_INVITE_MENU
+			-- Match the player rows exactly: full InviteList width, zero side inset.
+			NewInviteShareRow.Size = UDim2.new(1, 0, 0, INVITE_SHARE_ROW_HEIGHT)
+			NewInviteShareRow.Position = UDim2.new(0, 0, 0, 0)
 		end
 
-		InvitePage.Frame.Size =
-			UDim2.new(
-				1,
-				0,
-				0,
-				PageHeight
-			)
+		if not IsMobile then
+			InvitePage.Frame.Size = UDim2.new(1, 0, 1, 0)
+		else
+			InvitePage.Frame.Size = UDim2.new(1, 0, 0, PageHeight)
+		end
 
 		Hub.PageView.CanvasSize =
 			UDim2.new(
@@ -1952,7 +4405,7 @@ ResizeHub = function()
 		-- ====================================================
 
 		local Width = IsPhone
-			and math.min(800, math.max(280, LayoutViewport.X - 16))
+			and math.max(1, math.min(800, math.floor(LayoutViewport.X - 32 + 0.5)))
 			or (IsTablet and math.min(TOTAL_HUB_WIDTH, math.max(280, LayoutViewport.X - 48)))
 			or math.max(280, math.floor(Viewport.X * 0.94))
 
@@ -1999,7 +4452,8 @@ ResizeHub = function()
 				First.Active = ResetAllowed
 				First.Selectable = ResetAllowed
 				if Page == ResetPage then
-					First.ImageColor3 = ResetAllowed and Color3.new(1, 1, 1) or Color3.fromRGB(135, 135, 135)
+					-- Keep the sliced button background unchanged while disabled.
+					First.ImageColor3 = Color3.new(1, 1, 1)
 					if ResetButtonLabel then
 						ResetButtonLabel.TextColor3 = ResetAllowed and Color3.new(1, 1, 1) or Color3.fromRGB(150, 150, 150)
 					end
@@ -2031,10 +4485,12 @@ ResizeHub = function()
 		local BottomHeight = 62
 		local TabletGroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
 		local Top = 3
+		local PageGap = 8
 		local BottomGap = 6
-		local PageHeight = math.max(300, math.floor(LayoutViewport.Y - HubHeight - BottomHeight - Top - BottomGap - 10 + 0.5))
+		-- Include the top offset and HubBar gap in the vertical budget.
+		local PageHeight = math.max(300, math.floor(LayoutViewport.Y - TabletGroupTop - HubHeight - PageGap - BottomHeight - BottomGap - 16 + 0.5))
 
-		Hub.MenuContainer.Size = UDim2.new(0, Width, 0, math.min(LayoutViewport.Y - 10, HubHeight + PageHeight + BottomHeight + Top + BottomGap))
+		Hub.MenuContainer.Size = UDim2.new(0, Width, 0, math.min(LayoutViewport.Y - 10, TabletGroupTop + HubHeight + PageGap + PageHeight + BottomHeight + BottomGap + Top))
 		Hub.MenuContainer.Position = UDim2.new(0.5, TabletXOffset, 0.5, 0)
 		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
 
@@ -2053,7 +4509,7 @@ ResizeHub = function()
 
 		Hub.PageClipper.Parent = Hub.MenuContainer
 		Hub.PageClipper.Size = UDim2.new(1, 0, 0, PageHeight)
-		Hub.PageClipper.Position = UDim2.new(0, 0, 0, TabletGroupTop + HubHeight)
+		Hub.PageClipper.Position = UDim2.new(0, 0, 0, TabletGroupTop + HubHeight + PageGap)
 
 		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
 		Hub.BottomButtonFrame.Visible = Hub.Visible and not Hub.InInviteMenu and not Hub.InConfirmation
@@ -2098,12 +4554,13 @@ ResizeHub = function()
 		Hub.MenuContainer.Size = UDim2.new(1, 0, 1, 0)
 		Hub.MenuContainer.Position = UDim2.new(0, 0, 0, 0)
 		Hub.MenuContainer.AnchorPoint = Vector2.new(0, 0)
-		-- HubBar is sized against this full-screen phone container; content below
-		-- keeps its separate 8px side inset. Do not use Width to resize the hub.
-		local Width = math.max(1, math.floor(LayoutViewport.X - 16 + 0.5))
+		-- HubBar alone is edge-to-edge. Page content is kept 16px from each
+		-- phone edge so controls/backgrounds do not sit under rounded corners.
+		local PhonePageSideInset = 16
+		local Width = math.max(1, math.floor(LayoutViewport.X - PhonePageSideInset * 2 + 0.5))
 
 		local GroupTop = SYSTEM_MENU_SIZE.Y + MOBILE_MENU_GAP
-		local MobileBarHeight = MOBILE_HUBBAR_HEIGHT
+		local MobileBarHeight = math.max(44, MOBILE_HUBBAR_HEIGHT)
 
 		local PageHeight =
 			math.max(
@@ -2125,8 +4582,8 @@ ResizeHub = function()
 		Hub.HubBarContainer.Position = UDim2.new(0, 0, 0, 0)
 		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer end
 
-		Hub.PageClipper.Size = UDim2.new(1, -16, 0, PageHeight)
-		Hub.PageClipper.Position = UDim2.new(0, 8, 0.5, PageCenterYOffset)
+		Hub.PageClipper.Size = UDim2.new(1, -(PhonePageSideInset * 2), 0, PageHeight)
+		Hub.PageClipper.Position = UDim2.new(0, PhonePageSideInset, 0.5, PageCenterYOffset)
 
 		-- The fixed PC button frame is NEVER used on mobile.
 		Hub.BottomButtonFrame.Visible = false
@@ -2232,63 +4689,59 @@ ResizeHub = function()
 
 	else
 		-- ====================================================
-		-- PC / 2023 DESKTOP LAYOUT
-		-- HubBar spans the viewport; content rows use nearly the full width.
+		-- CLASSIC DESKTOP LAYOUT (Windows + macOS)
+		-- Keep the menu centered and capped; fullscreen is phone-only.
 		-- ====================================================
-		Hub.MenuContainer.Size = UDim2.new(1, 0, 0.95, 0)
+		local ViewportWidth = math.max(280, math.floor(Viewport.X - 32 + 0.5))
+		local ViewportHeight = math.max(300, math.floor(Viewport.Y - 32 + 0.5))
+		local ContainerWidth = math.max(280, math.min(TOTAL_HUB_WIDTH, ViewportWidth))
+		-- Keep the desktop ESC panel tall; do not calculate its height from the
+		-- 4:3 width ratio. Cap only against the usable screen height.
+		local ContainerHeight = math.min(800, ViewportHeight)
+		local BarHeight = 60
+		local BottomHeight = 70
+		local PageGap = 8
+		local PageHeight = math.max(150, ContainerHeight - BarHeight - BottomHeight - PageGap)
+
+		Hub.MenuContainer.Size = UDim2.fromOffset(ContainerWidth, ContainerHeight)
 		Hub.MenuContainer.Position = UDim2.new(0.5, 0, 0.5, 0)
 		Hub.MenuContainer.AnchorPoint = Vector2.new(0.5, 0.5)
-		local ContentWidth = math.max(280, math.floor(Viewport.X * 0.94 + 0.5))
-		local FullScreenHeight = Viewport.Y
-		local BufferSize = (1 - 0.95) * FullScreenHeight
-		local BarSize = 60
-		local ExtraSpace = BufferSize * 2 + BarSize * 2
-		local UsableScreenHeight = FullScreenHeight - ExtraSpace
-		local LargestPageSize = 600
-		local MinimumPageSize = 150
-		local UsePageSize
+		if Hub.MenuAspectRatio and Hub.MenuAspectRatio.Parent then
+			Hub.MenuAspectRatio.Parent = nil
+		end
 
 		Hub.HubBar.Parent = Hub.MenuContainer
 		Hub.HubBar.AnchorPoint = Vector2.new(0, 0)
-		Hub.HubBar.Size = UDim2.new(1, 0, 0, 60)
-		if LargestPageSize < UsableScreenHeight then
-			UsePageSize = LargestPageSize
-			Hub.HubBar.Position = UDim2.new(0, 0, 0.5, -LargestPageSize / 2 - BarSize)
-			Hub.BottomButtonFrame.Position = UDim2.new(0.5, -ContentWidth / 2, 0.5, LargestPageSize / 2)
-		elseif UsableScreenHeight < MinimumPageSize then
-			UsePageSize = MinimumPageSize
-			Hub.HubBar.Position = UDim2.new(0, 0, 0.5, -MinimumPageSize / 2 - BarSize)
-			Hub.BottomButtonFrame.Position = UDim2.new(0.5, -ContentWidth / 2, 0.5, MinimumPageSize / 2)
-		else
-			UsePageSize = UsableScreenHeight
-			Hub.HubBar.Position = UDim2.new(0, 0, 0, BufferSize)
-			Hub.BottomButtonFrame.Position = UDim2.new(0.5, -ContentWidth / 2, 1, -(BufferSize + BarSize))
-		end
+		Hub.HubBar.Size = UDim2.new(1, 0, 0, BarHeight)
+		Hub.HubBar.Position = UDim2.new(0, 0, 0, 0)
 		Hub.HubBar.Image = TAB_BAR_IMAGE
 		Hub.HubBar.ImageTransparency = HomeButtonEnabled and 1 or 0
 		Hub.HubBarContainer.Size = UDim2.new(1, HomeButtonEnabled and -70 or 0, 1, 0)
 		Hub.HubBarContainer.Position = UDim2.new(0, HomeButtonEnabled and 70 or 0, 0, 0)
 		if Hub.HubBarContainerLayout then Hub.HubBarContainerLayout.Parent = nil end
+
 		if HomeButton then
 			HomeButton.Visible = HomeButtonEnabled
-			HomeButton.Size = UDim2.new(0, 60, 0, 60)
+			HomeButton.Size = UDim2.fromOffset(60, 60)
 			HomeButton.Position = UDim2.new(0, 0, 0, 0)
 		end
 
 		Hub.PageClipper.Parent = Hub.MenuContainer
-		Hub.PageClipper.AnchorPoint = Vector2.new(0.5, 0)
-		Hub.PageClipper.Size = UDim2.new(0, ContentWidth, 0, UsePageSize)
-		Hub.PageClipper.Position = UDim2.new(0.5, 0, 0.5, -UsePageSize / 2)
-		Hub.PageView.AnchorPoint = Vector2.new(0.5, 0.5)
-		Hub.PageView.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Hub.PageClipper.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageClipper.Size = UDim2.new(1, 0, 0, PageHeight)
+		Hub.PageClipper.Position = UDim2.new(0, 0, 0, BarHeight + PageGap)
+		Hub.PageView.AnchorPoint = Vector2.new(0, 0)
+		Hub.PageView.Position = UDim2.new(0, 0, 0, 0)
 		Hub.PageView.Size = UDim2.new(1, 0, 1, -20)
 		Hub.PageView.CanvasPosition = Vector2.new(0, 0)
 		Hub.BottomButtonFrame.Parent = Hub.MenuContainer
-		Hub.BottomButtonFrame.Size = UDim2.new(0, ContentWidth, 0, 70)
+		Hub.BottomButtonFrame.Size = UDim2.new(1, 0, 0, BottomHeight)
+		Hub.BottomButtonFrame.Position = UDim2.new(0, 0, 1, -BottomHeight)
+
 		if Hub.CurrentPage and Hub.CurrentPage.Frame then
 			Hub.CurrentPage.Frame.Position = UDim2.new(0, 0, 0, 0)
 			local PageContentHeight = math.max(0, Hub.CurrentPage.Frame.Position.Y.Offset + Hub.CurrentPage.Frame.Size.Y.Offset)
-			local PageViewHeight = math.max(0, UsePageSize - 20)
+			local PageViewHeight = math.max(0, PageHeight - 20)
 			local NeedsPlayerScrollbar = Hub.CurrentPage == PlayersPage and PageContentHeight > PageViewHeight + 1
 			if Hub.CurrentPage == PlayersPage then
 				Hub.PageView.ScrollBarThickness = NeedsPlayerScrollbar and 12 or 0
@@ -3070,22 +5523,106 @@ VOICE_MISC_ROOT = VOICE_ICON_ROOT .. "Misc/"
 VOICE_MIC_ROOT = VOICE_ICON_ROOT .. "MicLight/"
 VOICE_SPEAKER_ROOT = VOICE_ICON_ROOT .. "SpeakerLight/"
 
+-- Roblox's current rollout semantics matter here: UseAudioApi=Automatic means
+-- the legacy internal voice path today. Only Enabled makes AudioDeviceInput the
+-- authoritative microphone object. Return nil only if the property is unreadable.
+GetVoiceAudioApiEnabled = function()
+	-- UseAudioApi is PluginSecurity on current clients. A normal read can fail even
+	-- when the rollout is Enabled, which used to silently disable remote analysis.
+	local Mode = nil
+	local Ok = pcall(function() Mode = VoiceChatService.UseAudioApi end)
+	if (not Ok or Mode == nil) and type(gethiddenproperty) == "function" then
+		local HiddenOk, HiddenMode = pcall(function()
+			return gethiddenproperty(VoiceChatService, "UseAudioApi")
+		end)
+		if HiddenOk and HiddenMode ~= nil then Mode = HiddenMode end
+	end
+	if Mode == nil then return nil end
+	local Name = string.lower(tostring(Mode):match("([%w_]+)$") or tostring(Mode))
+	if Name == "enabled" or Name == "2" then return true end
+	if Name == "disabled" or Name == "automatic" or Name == "0" or Name == "1" then return false end
+	return nil
+end
+
+local function ReadVoiceInputProperty(Input, Property)
+	if not Input then return nil, false end
+	local Ok, Value = pcall(function() return Input[Property] end)
+	if Ok and Value ~= nil then return Value, true end
+	-- IsReady/Active can be RobloxScriptSecurity on some clients. Use the hidden
+	-- property reader only as a fallback; never make a missing protected read look
+	-- like an explicit false value.
+	if type(gethiddenproperty) == "function" then
+		local HiddenOk, HiddenValue = pcall(function() return gethiddenproperty(Input, Property) end)
+		if HiddenOk and HiddenValue ~= nil then return HiddenValue, true end
+	end
+	return nil, false
+end
+
+-- A real, correctly-owned AudioDeviceInput is the authoritative modern Audio API
+-- object. IsReady is protected on some clients, so unreadability must not reject it.
+local function IsConfirmedRemoteVoiceInput(Player, Input)
+	if not Player or not Input then return false end
+	local Valid = false
+	local ReadOk = pcall(function()
+		Valid = Input:IsA("AudioDeviceInput")
+			and Input.Player == Player
+			and Input.Name ~= "Settings2016LocalAudioDeviceInput"
+	end)
+	if not ReadOk or not Valid then return false end
+	if Player == LocalPlayer then return true end
+	-- IsReady is useful for scoring candidates, but not for excluding a genuine
+	-- Player-owned input: it can be false while initializing and is protected on
+	-- some clients. The actual class + Owner + non-placeholder name is the evidence.
+	return true
+end
+
+-- Meter candidates are actual AudioDeviceInput instances owned by this Player.
+-- Do not gate this on UseAudioApi: that property can be unreadable to ordinary
+-- scripts, and the existence of a genuine per-player input is stronger evidence.
+local function IsRemoteVoiceMeterInput(Player, Input)
+	if not Player or not Input or not Input.Parent or Player == LocalPlayer then return false end
+	local Valid = false
+	pcall(function()
+		Valid = Input:IsA("AudioDeviceInput")
+			and Input.Player == Player
+			and Input.Name ~= "Settings2016LocalAudioDeviceInput"
+	end)
+	return Valid
+end
+
 GetAudioDeviceInputCache = {}
 VoiceActivityPeak = {}
 VoiceActivityStamp = {}
 VoiceActivityPeakMeasured = {}
 VoiceActivityActive = {}
+VoiceActivitySpeakingState = {}
+VoiceActivitySpeakingStateStamp = {}
 NativeVoiceIconObjects = {}
 NativeVoiceIconImages = {}
--- Preserve the last observed native icon for remote players when Roblox removes
--- their transient VoiceBubble UI while they are quiet/off-camera. This is a
--- last-observed value, not proof of a live state when no native UI is present.
+-- These caches are used only for the local user's mute/connection icon.
 NativeVoiceIconLastImages = {}
 NativeVoiceIconLastSeenAt = {}
 NativeVoiceIconConnections = {}
+NativeVoiceIconPropertyConnections = {}
 NativeVoiceIconConnectedObjects = {}
 NativeVoiceScanStamp = 0
 NativeVoiceScanScheduled = false
+
+DisconnectNativeVoiceIconConnections = function(UserId)
+	local ChangedConnection = NativeVoiceIconConnections[UserId]
+	if ChangedConnection then
+		pcall(function() ChangedConnection:Disconnect() end)
+		NativeVoiceIconConnections[UserId] = nil
+	end
+	local PropertyConnections = NativeVoiceIconPropertyConnections[UserId]
+	if type(PropertyConnections) == "table" then
+		for _, Connection in ipairs(PropertyConnections) do
+			pcall(function() Connection:Disconnect() end)
+		end
+	end
+	NativeVoiceIconPropertyConnections[UserId] = nil
+	NativeVoiceIconConnectedObjects[UserId] = nil
+end
 
 -- Index real Roblox-created voice inputs once. Earlier builds scanned every
 -- CoreGui/SoundService descendant on every icon refresh, which caused severe UI lag.
@@ -3093,6 +5630,7 @@ VoiceAudioInputIndexInitialized = false
 IndexExistingVoiceAudioInputs = function()
 	if VoiceAudioInputIndexInitialized then return end
 	VoiceAudioInputIndexInitialized = true
+	if GetVoiceAudioApiEnabled() == false then return end
 	local function Index(Candidate)
 		if not Candidate then return end
 		local IsInput = false
@@ -3104,6 +5642,7 @@ IndexExistingVoiceAudioInputs = function()
 			Owner = Candidate.Player
 		end)
 		if not IsInput or Name == "Settings2016LocalAudioDeviceInput" or not Owner then return end
+		if Owner ~= LocalPlayer and not IsConfirmedRemoteVoiceInput(Owner, Candidate) then return end
 		local Existing = GetAudioDeviceInputCache[Owner]
 		local ExistingReady = false
 		local CandidateReady = false
@@ -3118,11 +5657,16 @@ IndexExistingVoiceAudioInputs = function()
 			for _, Child in ipairs(Player:GetChildren()) do Index(Child) end
 		end
 	end)
-	pcall(function() for _, Descendant in ipairs(SoundService:GetDescendants()) do Index(Descendant) end end)
 end
 
 GetAudioDeviceInput = function(Player)
 	if not Player then return nil end
+	-- In Automatic/Disabled rollout mode, AudioDeviceInput is not the active
+	-- voice pipeline; don't use its stale/default state as mute or peak evidence.
+	if GetVoiceAudioApiEnabled() == false then
+		GetAudioDeviceInputCache[Player] = nil
+		return nil
+	end
 	local Cached = GetAudioDeviceInputCache[Player]
 	if Cached and Cached.Parent then
 		local Matches = false
@@ -3131,6 +5675,9 @@ GetAudioDeviceInput = function(Player)
 				and Cached.Player == Player
 				and Cached.Name ~= "Settings2016LocalAudioDeviceInput"
 		end)
+		if Matches and Player ~= LocalPlayer then
+			Matches = IsConfirmedRemoteVoiceInput(Player, Cached)
+		end
 		if Matches then return Cached end
 	end
 	GetAudioDeviceInputCache[Player] = nil
@@ -3155,9 +5702,14 @@ GetAudioDeviceInput = function(Player)
 			Owner = Candidate.Player
 		end)
 		if not IsInput or Name == "Settings2016LocalAudioDeviceInput" or Owner ~= Player then return end
+		if Player ~= LocalPlayer and not IsConfirmedRemoteVoiceInput(Player, Candidate) then return end
 		local Score = 0
-		pcall(function() if Candidate.IsReady == true then Score += 2 end end)
-		pcall(function() if Candidate.Active == true then Score += 1 end end)
+		local Ready, ReadyReadable = ReadVoiceInputProperty(Candidate, "IsReady")
+		local Active, ActiveReadable = ReadVoiceInputProperty(Candidate, "Active")
+		local Muted, MutedReadable = ReadVoiceInputProperty(Candidate, "Muted")
+		if ReadyReadable and Ready == true then Score += 8 end
+		if ActiveReadable and Active == true then Score += 4 end
+		if MutedReadable and Muted == true then Score -= 1 end
 		if not Best or Score > BestScore then Best = Candidate; BestScore = Score end
 	end
 	pcall(function() for _, Child in ipairs(Player:GetChildren()) do Consider(Child) end end)
@@ -3178,10 +5730,14 @@ VoiceAnalyzers = {}
 VoiceAnalyzerWires = {}
 LastVoicePeak = 0
 
-EnsureVoiceAnalyzer = function(Player)
+EnsureVoiceAnalyzer = function(Player, InputOverride)
 	if not Player then return nil end
 
-	local Input = GetAudioDeviceInput(Player)
+	local Input = InputOverride
+	if not Input and Player ~= LocalPlayer and type(GetVoiceMeterInput) == "function" then
+		Input = GetVoiceMeterInput(Player)
+	end
+	if not Input then Input = GetAudioDeviceInput(Player) end
 	if not Input then return nil end
 
 	local Analyzer = VoiceAnalyzers[Player]
@@ -3252,7 +5808,11 @@ EnsureVoiceAnalyzer = function(Player)
 end
 
 GetVoiceAnalyzer = function(Player)
-	local Analyzer = EnsureVoiceAnalyzer(Player)
+	local MeterInput = nil
+	if Player and Player ~= LocalPlayer and type(GetVoiceMeterInput) == "function" then
+		MeterInput = GetVoiceMeterInput(Player)
+	end
+	local Analyzer = EnsureVoiceAnalyzer(Player, MeterInput)
 	if Analyzer then return Analyzer end
 
 	Protect(function()
@@ -3275,52 +5835,414 @@ GetVoiceAnalyzer = function(Player)
 	return Analyzer
 end
 
+-- Meter-only lookup. The mute-state path remains gated by GetAudioDeviceInput;
+-- this separate lookup lets the live peak analyzer use a genuine active input if the
+-- client exposes one, without trusting it as authoritative mute state in legacy mode.
+VoiceMeterInputCache = VoiceMeterInputCache or {}
+VoiceMeterInputScanStamp = VoiceMeterInputScanStamp or setmetatable({}, {__mode = "k"})
+VoiceMeterInputCoreGuiScanStamp = VoiceMeterInputCoreGuiScanStamp or setmetatable({}, {__mode = "k"})
+GetVoiceMeterInput = function(Player)
+	if not Player then return nil end
+	local function IsUsable(Input)
+		if not Input or not Input.Parent then return false end
+		local Valid = false
+		pcall(function()
+			Valid = Input:IsA("AudioDeviceInput")
+				and Input.Player == Player
+				and Input.Name ~= "Settings2016LocalAudioDeviceInput"
+		end)
+		if not Valid then return false end
+		if Player == LocalPlayer then return true end
+		return IsRemoteVoiceMeterInput(Player, Input)
+	end
+
+	local Cached = VoiceMeterInputCache[Player]
+	if IsUsable(Cached) then return Cached end
+	VoiceMeterInputCache[Player] = nil
+
+	Cached = GetAudioDeviceInputCache[Player]
+	if IsUsable(Cached) then
+		VoiceMeterInputCache[Player] = Cached
+		return Cached
+	end
+
+	local Now = os.clock()
+	if Now - (VoiceMeterInputScanStamp[Player] or 0) < 0.6 then return nil end
+	VoiceMeterInputScanStamp[Player] = Now
+
+	local Best, BestScore = nil, -math.huge
+	pcall(function()
+		for _, Child in ipairs(Player:GetChildren()) do
+			if IsUsable(Child) then
+				local Active, ActiveReadable = ReadVoiceInputProperty(Child, "Active")
+				local Ready, ReadyReadable = ReadVoiceInputProperty(Child, "IsReady")
+				local Muted, MutedReadable = ReadVoiceInputProperty(Child, "Muted")
+				if not (ActiveReadable and Active == false) then
+					local Score = (ReadyReadable and Ready == true and 8 or 0)
+						+ (ActiveReadable and Active == true and 4 or 0)
+						+ (MutedReadable and Muted == true and -1 or 0)
+					if Score > BestScore then Best, BestScore = Child, Score end
+				end
+			end
+		end
+	end)
+	if Best then
+		VoiceMeterInputCache[Player] = Best
+		GetAudioDeviceInputCache[Player] = Best
+	end
+	return Best
+end
+
+
+EnsureVoiceMeterAnalyzer = function(Player)
+	if not Player then return nil end
+	if Player ~= LocalPlayer then
+		local Input = GetVoiceMeterInput(Player) or GetAudioDeviceInput(Player)
+		if Input then return EnsureVoiceAnalyzer(Player, Input) end
+		return nil
+	end
+
+	local Input = GetVoiceMeterInput(Player)
+	if not Input then return GetVoiceAnalyzer(Player) end
+
+	local Analyzer = VoiceAnalyzers[Player]
+	if not (Analyzer and Analyzer.Parent and Analyzer:IsA("AudioAnalyzer")) then
+		pcall(function()
+			Analyzer = SoundService:FindFirstChild("Settings2016VoiceAnalyzer_" .. tostring(Player.UserId))
+		end)
+	end
+	if not Analyzer then
+		pcall(function()
+			Analyzer = Instance.new("AudioAnalyzer")
+			Analyzer.Name = "Settings2016VoiceAnalyzer_" .. tostring(Player.UserId)
+			Analyzer.SpectrumEnabled = false
+			Analyzer.Parent = SoundService
+		end)
+	end
+	if not Analyzer then return nil end
+
+	local Wire = VoiceAnalyzerWires[Player]
+	if not (Wire and Wire.Parent and Wire:IsA("Wire")) then
+		Wire = nil
+		pcall(function()
+			for _, Child in ipairs(Analyzer:GetChildren()) do
+				if Child:IsA("Wire") then Wire = Child; break end
+			end
+		end)
+	end
+	if not Wire then
+		pcall(function()
+			Wire = Instance.new("Wire")
+			Wire.Name = "Settings2016VoiceMeterWire"
+			Wire.Parent = Analyzer
+		end)
+	end
+	if not Wire then return nil end
+	local Wired = pcall(function()
+		Wire.SourceInstance = Input
+		Wire.SourceName = "Output"
+		Wire.TargetInstance = Analyzer
+		Wire.TargetName = "Input"
+	end)
+	if not Wired then return nil end
+	VoiceAnalyzers[Player] = Analyzer
+	VoiceAnalyzerWires[Player] = Wire
+	return Analyzer
+end
+
+-- Discover audio sources off the UI refresh path. On experiences using the modern
+-- Audio API, each voice-eligible Player owns a real AudioDeviceInput. Wire it to a local
+-- AudioAnalyzer and cache the result; never inspect chat or UI objects for speech state.
+local VoiceMeterDiscoveryWorkerStarted = false
+if not VoiceMeterDiscoveryWorkerStarted then
+	VoiceMeterDiscoveryWorkerStarted = true
+	Spawn(function()
+		while ScreenGui and ScreenGui.Parent do
+			if VoiceGameSupported then
+				-- Snapshot rollout mode once per pass. AudioDeviceInput can confirm
+				-- eligibility only when the modern pipeline isn't known to be disabled.
+				local AudioApiCanConfirmEligibility = GetVoiceAudioApiEnabled() ~= false
+				for _, Player in ipairs(Players:GetPlayers()) do
+					local Input = GetVoiceMeterInput(Player)
+					if Input and Input.Parent then
+						-- Keep analyzer discovery available, but don't let a meter-only input
+						-- promote a player's VC icon when UseAudioApi is Disabled/Automatic.
+						VoiceMeterInputCache[Player] = Input
+						if Player == LocalPlayer and AudioApiCanConfirmEligibility then
+							GetAudioDeviceInputCache[Player] = Input
+						elseif Player ~= LocalPlayer and AudioApiCanConfirmEligibility
+							and IsConfirmedRemoteVoiceInput(Player, Input) then
+							GetAudioDeviceInputCache[Player] = Input
+							VoiceEnabledCache[tonumber(Player.UserId) or 0] = true
+						end
+						pcall(function() EnsureVoiceAnalyzer(Player, Input) end)
+					end
+				end
+			end
+			Wait(0.25)
+		end
+	end)
+end
+
 GetVoiceLevel = function(Player)
 	if not Player then return 0 end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	local Now = os.clock()
 	local Stamp = tonumber(VoiceActivityStamp[UserId]) or 0
-	local ActivityIsRecent = Stamp > 0 and (os.clock() - Stamp) <= 0.65
+	local ActivityIsRecent = Stamp > 0 and (Now - Stamp) <= 0.65
 	local ActivityPeak = tonumber(VoiceActivityPeak[UserId]) or 0
+	local SpeakingState = VoiceActivitySpeakingState[UserId]
+	local SpeakingStateStamp = tonumber(VoiceActivitySpeakingStateStamp[UserId]) or 0
+	local SpeakingStateIsActive = SpeakingState == true and SpeakingStateStamp > 0
 
-	-- When Roblox sends numeric mic peaks, use those directly. An AudioAnalyzer
-	-- can exist while remaining pinned at zero if that client cannot tap the
-	-- remote stream; that zero must not hide a live peak event.
-	if ActivityIsRecent and VoiceActivityPeakMeasured[UserId] == true then
+	if ActivityIsRecent and VoiceActivityPeakMeasured[UserId] == true
+		and ActivityPeak > VOICE_SILENCE_FLOOR then
 		return Clamp(ActivityPeak, 0, 1)
 	end
 
-	local Peak = 0
-	local Input = GetAudioDeviceInput(Player)
-	local Analyzer = Input and GetVoiceAnalyzer(Player) or nil
-	if Input and Analyzer then
-		local Ok, Value = pcall(function() return tonumber(Analyzer.PeakLevel) end)
-		if Ok and Value ~= nil then
-			Peak = Clamp(Value, 0, 1)
+	local Analyzer = VoiceAnalyzers[Player]
+	if Analyzer and Analyzer.Parent then
+		local Peak = nil
+		local Rms = nil
+		local Ok = pcall(function()
+			Peak = tonumber(Analyzer.PeakLevel)
+			Rms = tonumber(Analyzer.RmsLevel)
+		end)
+		if Ok then
+			if Peak == nil or Peak ~= Peak then Peak = 0 end
+			if Rms == nil or Rms ~= Rms then Rms = 0 end
+			Peak = Clamp(math.max(Peak, Rms), 0, 1)
+			if Peak > VOICE_SILENCE_FLOOR then return Peak end
 		end
 	end
 
-	-- If only a coarse speaking boolean is exposed, show a modest speaking
-	-- indication instead of forcing the meter to 100% on every event.
-	if ActivityIsRecent and VoiceActivityPeakMeasured[UserId] ~= true then
-		Peak = math.max(Peak, Clamp(ActivityPeak, 0, 0.45))
+	-- Legacy clients may expose the local user's real CoreScript mic meter sprite
+	-- even when AudioDeviceInput is unavailable. This is local-only (never bubbles
+	-- or remote-player UI) and is used only if the analyzer has no live level.
+	if Player == LocalPlayer then
+		local NativeImage = NativeVoiceIconImages[UserId]
+		local NativeObject = NativeVoiceIconObjects[UserId]
+		if NativeObject and NativeObject.Parent then
+			pcall(function()
+				local CurrentImage = tostring(NativeObject.Image or "")
+				if CurrentImage ~= "" then
+					NativeImage = CurrentImage
+					NativeVoiceIconImages[UserId] = CurrentImage
+				end
+			end)
+		end
+		local Percent = type(NativeImage) == "string" and tonumber(NativeImage:match("Unmuted(%d+)@3x%.png")) or nil
+		if Percent and Percent > 0 then return Clamp(Percent / 100, 0, 1) end
 	end
-	return Clamp(Peak, 0, 1)
+
+	-- The internal speech event carries the state independently of proximity UI.
+	-- It does not give a calibrated level, so use the first activity sprite only.
+	if Player ~= LocalPlayer and SpeakingStateIsActive then
+		return (VOICE_REMOTE_SILENCE_FLOOR or 0.003) + 0.04
+	end
+	if SpeakingState == false then return 0 end
+	if ActivityIsRecent and VoiceActivityPeakMeasured[UserId] == true then
+		return Clamp(ActivityPeak, 0, 1)
+	end
+	return 0
 end
 
+-- AudioAnalyzer.PeakLevel is a linear 0..1 amplitude, not decibels.
+-- Real microphones can report a tiny residual floor while nobody is speaking;
+-- suppress it so silence does not light up as the Unmuted20 sprite.
+VOICE_SILENCE_FLOOR = 0.020
+-- Explicit remote-speaking booleans are held until an explicit false event arrives.
+-- Remote receive streams can be attenuated by proximity/volume, so use a lower
+-- floor than the local capture stream while still suppressing effectively-zero samples.
+VOICE_REMOTE_SILENCE_FLOOR = 0.003
+
 VoiceUnmutedIcon = function(Level, UseSpeaker)
-	-- Remote player rows use speaker sprites; only the local self-mic uses mic sprites.
 	local Root = UseSpeaker and VOICE_SPEAKER_ROOT or VOICE_MIC_ROOT
-	if Level <= 0.00001 then return Root .. "Unmuted0@3x.png" end
-	if Level < 0.2 then return Root .. "Unmuted20@3x.png" end
-	if Level < 0.4 then return Root .. "Unmuted40@3x.png" end
-	if Level < 0.6 then return Root .. "Unmuted60@3x.png" end
-	if Level < 0.8 then return Root .. "Unmuted80@3x.png" end
+	local SilenceFloor = UseSpeaker and VOICE_REMOTE_SILENCE_FLOOR or VOICE_SILENCE_FLOOR
+	Level = tonumber(Level) or 0
+	if Level ~= Level or Level <= SilenceFloor then
+		return Root .. "Unmuted0@3x.png"
+	end
+	-- Spread audible levels over the visible buckets after gating the silence floor.
+	local AudibleLevel = Clamp((Level - SilenceFloor) / (1 - SilenceFloor), 0, 1)
+	if AudibleLevel < 0.2 then return Root .. "Unmuted20@3x.png" end
+	if AudibleLevel < 0.4 then return Root .. "Unmuted40@3x.png" end
+	if AudibleLevel < 0.6 then return Root .. "Unmuted60@3x.png" end
+	if AudibleLevel < 0.8 then return Root .. "Unmuted80@3x.png" end
 	return Root .. "Unmuted100@3x.png"
 end
 
--- Resolve Roblox's actual per-player bubble-chat microphone image when it
--- exists. The image may be transient, so the mirror refresh caches its last state.
--- This lookup runs only from RefreshNativeVoiceMirrorCache, not every icon frame.
+-- Native UI is used only for the LOCAL user's mute/connection status. Remote
+-- players' eligibility and speaking levels must come from AudioDeviceInput or mic
+-- activity events; it never consults UI images or screen-space objects.
+IsNativeVoiceIconVisible = function(Object)
+	if not Object then return false end
+	local Current = Object
+	while Current and Current ~= CoreGui do
+		local IsGui, Visible = false, true
+		pcall(function()
+			if Current:IsA("ScreenGui") then
+				Visible = Current.Enabled
+			else
+				IsGui = Current:IsA("GuiObject")
+				if IsGui then Visible = Current.Visible end
+			end
+		end)
+		if not Visible then return false end
+		Current = Current.Parent
+	end
+	return true
+end
+
+local function FindLocalNativeVoiceImageObject()
+	local RobloxGui = CoreGui and CoreGui:FindFirstChild("RobloxGui")
+	local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
+	local Button = Shield and Shield:FindFirstChild("MuteSelfButton", true)
+	if not Button then return nil end
+	local Candidates = {Button}
+	pcall(function()
+		for _, Descendant in ipairs(Button:GetDescendants()) do
+			table.insert(Candidates, Descendant)
+		end
+	end)
+	for _, Candidate in ipairs(Candidates) do
+		local IsImage, Image = false, ""
+		pcall(function()
+			IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
+			Image = tostring(Candidate.Image or "")
+		end)
+		if IsImage and IsNativeVoiceIconVisible(Candidate)
+			and Image:find("VoiceChat", 1, true)
+			and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)
+				or Image:find("Connecting", 1, true) or Image:find("Error", 1, true)) then
+			return Candidate
+		end
+	end
+	return nil
+end
+
+RefreshNativeVoiceMirrorCache = function(Force)
+	local Now = os.clock()
+	local MinimumInterval = Force and 0.35 or 1.0
+	if NativeVoiceScanStamp > 0 and (Now - NativeVoiceScanStamp) < MinimumInterval then return end
+	NativeVoiceScanStamp = Now
+	local LocalUserId = tonumber(LocalPlayer and LocalPlayer.UserId) or 0
+	local Object = FindLocalNativeVoiceImageObject()
+	for UserId in pairs(NativeVoiceIconObjects) do
+		if UserId ~= LocalUserId then NativeVoiceIconObjects[UserId] = nil end
+	end
+	if Object and LocalUserId > 1 then
+		NativeVoiceIconObjects[LocalUserId] = Object
+		local Image = ""
+		pcall(function() Image = tostring(Object.Image or "") end)
+		NativeVoiceIconImages[LocalUserId] = Image
+		NativeVoiceIconLastImages[LocalUserId] = Image
+		NativeVoiceIconLastSeenAt[LocalUserId] = Now
+	elseif LocalUserId > 1 then
+		NativeVoiceIconObjects[LocalUserId] = nil
+		NativeVoiceIconImages[LocalUserId] = nil
+	end
+end
+
+ScheduleNativeVoiceMirrorRefresh = function()
+	if NativeVoiceScanScheduled then return end
+	NativeVoiceScanScheduled = true
+	Spawn(function()
+		Wait(0.15)
+		NativeVoiceScanScheduled = false
+		RefreshNativeVoiceMirrorCache(true)
+	end)
+end
+
+FindNativeVoiceIcon = function(Player)
+	if not Player or Player ~= LocalPlayer then return nil end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	local Now = os.clock()
+	local Object = NativeVoiceIconObjects[UserId]
+	if not (Object and Object.Parent and IsNativeVoiceIconVisible(Object))
+		or not NativeSelfIconProbeStamp or (Now - NativeSelfIconProbeStamp) >= 0.35 then
+		NativeSelfIconProbeStamp = Now
+		Object = FindLocalNativeVoiceImageObject()
+		NativeVoiceIconObjects[UserId] = Object
+	end
+	if Object and Object.Parent then
+		local Image = ""
+		pcall(function() Image = tostring(Object.Image or "") end)
+		if Image ~= "" then
+			NativeVoiceIconImages[UserId] = Image
+			NativeVoiceIconLastImages[UserId] = Image
+			NativeVoiceIconLastSeenAt[UserId] = Now
+			return Image
+		end
+	end
+	return nil
+end
+
+NormalizeRemoteSpeakerImage = function(_Image)
+	return nil
+end
+
+
+RefreshRemoteVoiceButton = function(Player, _SourceObject)
+	if not Player or Player == LocalPlayer then return end
+	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	if UserId <= 1 then return end
+	local Row = PlayersPage and PlayersPage.Frame and PlayersPage.Frame:FindFirstChild("PlayerLabel" .. Player.Name)
+	local Button = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
+	local Icon = Button and Button:FindFirstChild("VoiceIcon")
+	if not Icon then return end
+
+	local LocallyMuted = false
+	if type(GetRemoteVoiceMuted) == "function" then
+		pcall(function() LocallyMuted = GetRemoteVoiceMuted(Player) == true end)
+	end
+
+	local DisplayImage
+	if LocallyMuted or VoiceMutedPlayers[UserId] == true then
+		DisplayImage = VOICE_SPEAKER_ROOT .. "Muted@3x.png"
+	else
+		local Level = 0
+		local LevelOk = pcall(function() Level = tonumber(GetVoiceLevel(Player)) or 0 end)
+		if not LevelOk or Level ~= Level then Level = 0 end
+		Level = Clamp(Level, 0, 1)
+		local SpeakingState = VoiceActivitySpeakingState[UserId]
+		local SpeakingStateStamp = tonumber(VoiceActivitySpeakingStateStamp[UserId]) or 0
+		local HasExplicitSpeakingState = SpeakingState == true and SpeakingStateStamp > 0
+		local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
+		local ActivityAge = ActivityStamp > 0 and (os.clock() - ActivityStamp) or math.huge
+		local HasFreshMeasuredPeak = ActivityAge >= 0 and ActivityAge <= 0.65
+			and VoiceActivityPeakMeasured[UserId] == true
+
+		if Level > VOICE_REMOTE_SILENCE_FLOOR then
+			DisplayImage = VoiceUnmutedIcon(Level, true)
+		elseif HasExplicitSpeakingState then
+			DisplayImage = VOICE_SPEAKER_ROOT .. "Unmuted20@3x.png"
+		elseif HasFreshMeasuredPeak then
+			DisplayImage = VoiceUnmutedIcon(tonumber(VoiceActivityPeak[UserId]) or 0, true)
+		elseif VoiceEnabledCache[UserId] == true or GetAudioDeviceInput(Player) ~= nil
+			or GetVoiceMeterInput(Player) ~= nil then
+			DisplayImage = VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png"
+		else
+			DisplayImage = VOICE_SPEAKER_ROOT .. "Connecting@3x.png"
+		end
+	end
+
+	if DisplayImage and DisplayImage ~= "" and Icon.Image ~= DisplayImage then
+		Icon.Image = DisplayImage
+	end
+	pcall(function()
+		Icon.ImageRectOffset = Vector2.new(0, 0)
+		Icon.ImageRectSize = Vector2.new(0, 0)
+	end)
+end
+
+
+GetNativeVoiceMeterLevel = function(Player, _NativeImage)
+	if not Player then return nil end
+	return GetVoiceLevel(Player)
+end
+
+
 FindNativeVoiceBubbleIconObject = function(Player)
 	if not Player then return nil end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
@@ -3393,192 +6315,42 @@ FindNativeVoiceBubbleIconObject = function(Player)
 	return nil
 end
 
--- Cache Roblox's native voice icons for participant detection and fallback.
--- Search only small relevant UI roots, not all of CoreGui on the render path.
-RefreshNativeVoiceMirrorCache = function(Force)
-	local Now = os.clock()
-	local MinimumInterval = Force and 1.0 or 4.0
-	if NativeVoiceScanStamp > 0 and (Now - NativeVoiceScanStamp) < MinimumInterval then return end
-	NativeVoiceScanStamp = Now
-
-	local Found = {}
-	local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
-
-	-- Self microphone: search only the native MuteSelfButton subtree.
-	if RobloxGui then
-		local SettingsShield = RobloxGui:FindFirstChild("SettingsClippingShield")
-		local NativeMuteButton = SettingsShield and SettingsShield:FindFirstChild("MuteSelfButton", true)
-		if NativeMuteButton then
-			local Candidates = {NativeMuteButton}
-			pcall(function()
-				for _, Descendant in ipairs(NativeMuteButton:GetDescendants()) do
-					table.insert(Candidates, Descendant)
-				end
-			end)
-			for _, Candidate in ipairs(Candidates) do
-				local IsImage, Image = false, ""
-				pcall(function()
-					IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
-					Image = tostring(Candidate.Image or "")
-				end)
-				if IsImage and Image:find("VoiceChat", 1, true)
-					and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)
-						or Image:find("Connecting", 1, true) or Image:find("Error", 1, true)) then
-					Found[LocalPlayer.UserId] = Candidate
-					break
-				end
-			end
-		end
-	end
-
-	-- Remote speaker icons are mapped only through each user's actual bubbleChat
-	-- node (BubbleChat_<UserId>/VoiceBubble), never through fuzzy ancestor names.
-	for _, Player in ipairs(Players:GetPlayers()) do
-		local UserId = tonumber(Player.UserId or Player.userId) or 0
-		if UserId > 1 and Player ~= LocalPlayer then
-			local DirectObject = FindNativeVoiceBubbleIconObject(Player)
-			if DirectObject then Found[UserId] = DirectObject end
-		end
-	end
-
-	for UserId, Connection in pairs(NativeVoiceIconConnections) do
-		local NewObject = Found[UserId]
-		if not NewObject or NewObject ~= NativeVoiceIconConnectedObjects[UserId] then
-			pcall(function() Connection:Disconnect() end)
-			NativeVoiceIconConnections[UserId] = nil
-			NativeVoiceIconConnectedObjects[UserId] = nil
-		end
-	end
-
-	NativeVoiceIconObjects = Found
-	NativeVoiceIconImages = {}
-	for UserId, Obj in pairs(Found) do
-		local Image = nil
-		pcall(function() Image = tostring(Obj.Image or "") end)
-		NativeVoiceIconImages[UserId] = Image
-		if Image and Image ~= "" then
-			NativeVoiceIconLastImages[UserId] = Image
-			NativeVoiceIconLastSeenAt[UserId] = Now
-		end
-		if NativeVoiceIconConnectedObjects[UserId] ~= Obj then
-			NativeVoiceIconConnectedObjects[UserId] = Obj
-			pcall(function()
-				NativeVoiceIconConnections[UserId] = Connect(Obj:GetPropertyChangedSignal("Image"), function()
-					if NativeVoiceIconObjects[UserId] == Obj then
-						local UpdatedImage = tostring(Obj.Image or "")
-						NativeVoiceIconImages[UserId] = UpdatedImage
-						if UpdatedImage ~= "" then
-							NativeVoiceIconLastImages[UserId] = UpdatedImage
-							NativeVoiceIconLastSeenAt[UserId] = os.clock()
-						end
-					end
-				end)
-			end)
-		end
-	end
-end
-
-ScheduleNativeVoiceMirrorRefresh = function()
-	if NativeVoiceScanScheduled then return end
-	NativeVoiceScanScheduled = true
-	Spawn(function()
-		while NativeVoiceScanStamp > 0 and (os.clock() - NativeVoiceScanStamp) < 1.05 do Wait(0.1) end
-		NativeVoiceScanScheduled = false
-		RefreshNativeVoiceMirrorCache(true)
-	end)
-end
-
-Protect(function()
-	Connect(CoreGui.DescendantAdded, function(Descendant)
-		local Name = string.lower(tostring(Descendant.Name or ""))
-		if Name:find("voice", 1, true) or Name:find("bubblechat", 1, true) or Name == "insert" or Name:find("speaker", 1, true) then
-			ScheduleNativeVoiceMirrorRefresh()
-		end
-	end)
-end)
-
-FindNativeVoiceIcon = function(Player)
-	if not Player then return nil end
+FindNativePlayerVoice = function(Player)
+	if not Player or Player == LocalPlayer then return false end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
-	local Obj = NativeVoiceIconObjects[UserId]
-	if Obj and Obj.Parent then
-		local Image = NativeVoiceIconImages[UserId]
-		if Image and Image ~= "" then return Image end
-	end
-	if Player == LocalPlayer then
-		local Now = os.clock()
-		if not NativeSelfIconProbeStamp or (Now - NativeSelfIconProbeStamp) >= 0.4 then
-			NativeSelfIconProbeStamp = Now
-			local RobloxGui = CoreGui and CoreGui:FindFirstChild("RobloxGui")
-			local Shield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
-			local Button = Shield and Shield:FindFirstChild("MuteSelfButton", true)
-			if Button then
-				local Candidates = {Button}
-				pcall(function() for _, Descendant in ipairs(Button:GetDescendants()) do table.insert(Candidates, Descendant) end end)
-				for _, Candidate in ipairs(Candidates) do
-					local IsImage, Image = false, ""
-					pcall(function() IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton"); Image = tostring(Candidate.Image or "") end)
-					if IsImage and Image:find("VoiceChat", 1, true) and (Image:find("Muted", 1, true) or Image:find("Unmuted", 1, true)) then
-						NativeVoiceIconLastImages[UserId] = Image
-						NativeVoiceIconLastSeenAt[UserId] = Now
-						return Image
-					end
-				end
-			end
-		end
-	end
-	if Player ~= LocalPlayer then
-		local Last = NativeVoiceIconLastImages[UserId]
-		local LastAt = tonumber(NativeVoiceIconLastSeenAt[UserId]) or 0
-		if type(Last) == "string" and Last ~= "" and LastAt > 0 and (os.clock() - LastAt) <= 3 then return Last end
-	end
-	return nil
-end
+	if UserId <= 1 then return false end
 
--- Roblox's native voice bubble can keep the same Image asset while changing
--- ImageRectOffset to show the current speech-meter frame. Read the offset live;
--- caching Image alone makes every speaker look like the idle Unmuted0 frame.
-GetNativeVoiceMeterLevel = function(Player, NativeImage)
-	if not Player or type(NativeImage) ~= "string" then return nil end
-	if not NativeImage:find("Unmuted", 1, true) then return nil end
+	-- AudioDeviceInput is a definitive per-player signal on the Audio API path.
+	if GetAudioDeviceInput(Player) then return true end
 
-	local UserId = tonumber(Player.UserId or Player.userId) or 0
+	-- A cached Image string alone is not eligibility evidence: Roblox can leave
+	-- template VoiceBubble images in the UI even for players without voice. Only
+	-- trust the player's exact native bubble icon when it is currently rendered.
 	local Object = NativeVoiceIconObjects[UserId]
-	if not (Object and Object.Parent) and Player ~= LocalPlayer then
+	if not (Object and Object.Parent) then
 		Object = FindNativeVoiceBubbleIconObject(Player)
 	end
-	if not Object then return nil end
+	if not Object then return false end
 
-	local Offset, RectSize, AbsoluteSize
+	local Image = ""
+	local VisibleNow = true
 	local ReadOk = pcall(function()
-		Offset = Object.ImageRectOffset
-		RectSize = Object.ImageRectSize
-		AbsoluteSize = Object.AbsoluteSize
+		Image = tostring(Object.Image or "")
+		local Current = Object
+		while Current and Current ~= CoreGui do
+			if Current:IsA("GuiObject") and Current.Visible ~= true then
+				VisibleNow = false
+				break
+			end
+			if Current:IsA("ScreenGui") and Current.Enabled ~= true then
+				VisibleNow = false
+				break
+			end
+			Current = Current.Parent
+		end
 	end)
-	if not ReadOk or not Offset or not RectSize then return nil end
-
-	local FrameX, FrameY = 0, 0
-	if Offset.X > 0 then
-		local Cell = RectSize.X
-		if Cell <= 0 then Cell = math.max(1, (AbsoluteSize and AbsoluteSize.X or 16) * 3) end
-		FrameX = math.floor((Offset.X / Cell) + 0.5)
-	end
-	if Offset.Y > 0 then
-		local Cell = RectSize.Y
-		if Cell <= 0 then Cell = math.max(1, (AbsoluteSize and AbsoluteSize.Y or 16) * 3) end
-		FrameY = math.floor((Offset.Y / Cell) + 0.5)
-	end
-
-	-- Voice meter frames are arranged along one axis in the spritesheet. Use
-	-- whichever axis has the larger displacement, then map frames 0..5 to 0..100%.
-	local FrameIndex = math.max(FrameX, FrameY)
-	if FrameIndex <= 0 then return 0 end
-	return Clamp(FrameIndex / 5, 0, 1)
-end
-
-FindNativePlayerVoice = function(Player)
-	local Image = FindNativeVoiceIcon(Player)
-	if not Image then return false end
+	if not ReadOk or not VisibleNow then return false end
+	if not Image:find("VoiceChat", 1, true) then return false end
 	return Image:find("Unmuted", 1, true) ~= nil or Image:find("Muted", 1, true) ~= nil
 end
 
@@ -3597,11 +6369,10 @@ HasConfirmedPlayerVoice = function(Player)
 	if not Player or Player == LocalPlayer or not VoiceGameSupported then return false end
 	local UserId = tonumber(Player.UserId or Player.userId) or 0
 	if UserId <= 1 then return false end
-	-- Participant-state evidence is persistent for this join session; speaking
-	-- activity itself is time-limited separately so the level meter can return to idle.
+	-- The eligibility cache is populated from genuine player-owned AudioDeviceInput
+	-- objects or an actual positive microphone-activity event. Participant list IDs
+	-- alone can never enable the icon.
 	if VoiceEnabledCache[UserId] == true then return true end
-	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
-	if ActivityStamp > 0 and (os.clock() - ActivityStamp) <= 1.25 then return true end
 	if GetAudioDeviceInput(Player) then
 		VoiceEnabledCache[UserId] = true
 		return true
@@ -3616,83 +6387,114 @@ end
 GetVoiceIcon = function(Player, ForcedMuted)
 	local UserId = tonumber(Player and (Player.UserId or Player.userId)) or 0
 	local IsLocal = Player == LocalPlayer
+	local Root = IsLocal and VOICE_MIC_ROOT or VOICE_SPEAKER_ROOT
 	local Native = FindNativeVoiceIcon(Player)
+	local function StateIcon(State)
+		return Root .. State .. "@3x.png"
+	end
+	local function IsMutedImage(Image)
+		return type(Image) == "string" and Image:find("Muted", 1, true) ~= nil
+			and Image:find("Unmuted", 1, true) == nil
+	end
+	local function IsUnmutedImage(Image)
+		return type(Image) == "string" and Image:find("Unmuted", 1, true) ~= nil
+	end
 
-	-- A local receive-side mute is displayed as a muted SPEAKER for this row.
+	-- A row's mute glyph describes our local receive-side mute, not the other
+	-- person's microphone state. Remote participants use SpeakerLight sprites.
 	if not IsLocal and (ForcedMuted == true or VoiceMutedPlayers[UserId] == true) then
-		return VOICE_SPEAKER_ROOT .. "Muted@3x.png"
+		return StateIcon("Muted")
+	end
+
+	-- Preserve a genuine native muted state before considering speech activity.
+	if not IsLocal and IsMutedImage(Native) then
+		return StateIcon("Muted")
 	end
 
 	if IsLocal then
+		-- Live input/publisher state is authoritative. A native icon image can lag
+		-- behind a mute click, so it must not get first refusal over that state.
 		local StateOk, Muted = pcall(function() return GetLocalVoiceMuted() end)
-		if StateOk and Muted then return VOICE_MIC_ROOT .. "Muted@3x.png" end
-		if not StateOk and type(Native) == "string" and Native:find("Muted", 1, true) then
-			return VoiceContrastIcon(Native)
+		if StateOk and Muted == true then return StateIcon("Muted") end
+
+		-- Only trust a native muted image if the real underlying state is unknown.
+		if IsMutedImage(Native) and not (StateOk and Muted == false) then
+			return StateIcon("Muted")
 		end
-		local Analyzer = GetVoiceAnalyzer(Player)
-		if Analyzer then
+
+		local HasLiveUnmutedState = StateOk and Muted == false
+		if IsUnmutedImage(Native) or HasLiveUnmutedState then
+			local ActivityLevel = GetVoiceLevel(Player)
+			if VoiceActivitySpeakingState[UserId] == true and ActivityLevel <= VOICE_SILENCE_FLOOR then
+				-- Legacy VAD can indicate activity without numeric samples.
+				return VOICE_MIC_ROOT .. "Unmuted20@3x.png"
+			end
+			return VoiceUnmutedIcon(ActivityLevel, false)
+		end
+
+		if StateOk and Muted == nil then return StateIcon("Connecting") end
+		-- Use the analyzer already wired by the background setup worker. Never search
+		-- Player/Character descendants from the render path.
+		local Analyzer = VoiceAnalyzers[Player]
+		if Analyzer and Analyzer.Parent then
 			local Ok, Level = pcall(function() return tonumber(Analyzer.PeakLevel) end)
 			if Ok and Level and Level > 0.00001 then return VoiceUnmutedIcon(Clamp(Level, 0, 1), false) end
 		end
-		return VOICE_MIC_ROOT .. "Unmuted0@3x.png"
+		local ActivityLevel = GetVoiceLevel(Player)
+		if ActivityLevel > VOICE_SILENCE_FLOOR then return VoiceUnmutedIcon(ActivityLevel, false) end
+		if VoiceActivitySpeakingState[UserId] == true then return VOICE_MIC_ROOT .. "Unmuted20@3x.png" end
+		return StateIcon("Unmuted0")
 	end
 
-	-- Do not trust VoiceActivityActive by itself: older clients can emit one
-	-- positive activity event and never send its matching inactive event.
+	-- Remote speech animation is derived only from audio samples/activity events.
 	local Now = os.clock()
 	local ActivityStamp = tonumber(VoiceActivityStamp[UserId]) or 0
 	local ActivityAge = ActivityStamp > 0 and (Now - ActivityStamp) or math.huge
 	local HasRecentActivity = ActivityAge >= 0 and ActivityAge <= 0.65
+	local SpeakingState = VoiceActivitySpeakingState[UserId]
+	local SpeakingStateStamp = tonumber(VoiceActivitySpeakingStateStamp[UserId]) or 0
+	local HasExplicitSpeakingState = SpeakingState == true and SpeakingStateStamp > 0
+
 	if not HasRecentActivity and VoiceActivityActive[UserId] == true then
 		VoiceActivityActive[UserId] = false
 		VoiceActivityPeak[UserId] = 0
 		VoiceActivityPeakMeasured[UserId] = false
 	end
 
-	local Input = GetAudioDeviceInput(Player)
-	if Input then
-		local InputOk, InputMuted = pcall(function() return Input.Muted == true end)
-		if InputOk and InputMuted then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
-	end
-
-	if HasRecentActivity then
-		local Level = GetVoiceLevel(Player)
-		if Level <= 0.00001 and VoiceActivityActive[UserId] == true
-			and VoiceActivityPeakMeasured[UserId] ~= true then
-			Level = 0.35
-		end
+	-- GetVoiceLevel reads cached analyzer samples or explicit activity events only.
+	local Level = 0
+	local LevelOk = pcall(function() Level = tonumber(GetVoiceLevel(Player)) or 0 end)
+	if not LevelOk or Level ~= Level then Level = 0 end
+	Level = Clamp(Level, 0, 1)
+	if Level > VOICE_REMOTE_SILENCE_FLOOR then
 		return VoiceUnmutedIcon(Level, true)
 	end
 
-	local Analyzer = Input and GetVoiceAnalyzer(Player) or nil
-	if Analyzer then
-		local Ok, Level = pcall(function() return tonumber(Analyzer.PeakLevel) end)
-		if Ok and Level and Level > 0.00001 then
-			return VoiceUnmutedIcon(Clamp(Level, 0, 1), true)
-		end
+	-- Legacy/internal speech-state events do not always expose a numeric level.
+	-- Their explicit true state remains latched until an explicit false event arrives.
+	if HasExplicitSpeakingState then
+		return StateIcon("Unmuted20")
 	end
 
-	-- Preserve the native bubble's actual meter frame (Unmuted20/40/60/80/100)
-	-- while switching it to the speaker sprite family for this local listener.
+	-- Remote mute/connection status comes from local mute state and voice eligibility.
+	local CachedInput = VoiceMeterInputCache[Player] or GetAudioDeviceInputCache[Player]
 	if type(Native) == "string" and Native ~= "" then
-		if Native:find("Muted", 1, true) then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
-		if Native:find("Connecting", 1, true) then return VOICE_SPEAKER_ROOT .. "Connecting@3x.png" end
-		if Native:find("Error", 1, true) then return VOICE_SPEAKER_ROOT .. "Muted@3x.png" end
-		if Native:find("Unmuted", 1, true) then
-			local NativeLevel = GetNativeVoiceMeterLevel(Player, Native)
-			if NativeLevel and NativeLevel > 0.00001 then
-				return VoiceUnmutedIcon(NativeLevel, true)
+		if IsMutedImage(Native) then return StateIcon("Muted") end
+		if Native:find("Error", 1, true) or Native:find("Connecting", 1, true) then
+			if VoiceEnabledCache[UserId] == true or CachedInput ~= nil then
+				return StateIcon("Unmuted0")
 			end
-			local Percent = Native:match("Unmuted(%d+)@3x%.png")
-			if Percent and (Percent == "0" or Percent == "20" or Percent == "40" or Percent == "60" or Percent == "80" or Percent == "100") then
-				return VOICE_SPEAKER_ROOT .. "Unmuted" .. Percent .. "@3x.png"
-			end
-			return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png"
+			return StateIcon("Connecting")
 		end
 	end
 
-	-- A quiet but positively confirmed voice participant gets the idle frame.
-	return VOICE_SPEAKER_ROOT .. "Unmuted0@3x.png"
+	if SpeakingState == false then
+		return StateIcon("Unmuted0")
+	end
+	if VoiceEnabledCache[UserId] == true or CachedInput ~= nil then
+		return StateIcon("Unmuted0")
+	end
+	return StateIcon("Connecting")
 end
 
 VoiceProcessActivityInfo = function(ActivityInfo)
@@ -3722,8 +6524,6 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 		or ActivityInfo.player_user_id
 		or ActivityInfo.UserID
 		or ActivityInfo.userID
-		or ActivityInfo.id
-		or ActivityInfo.Id
 	)
 	if not UserId then
 		local PlayerValue = ActivityInfo.player or ActivityInfo.Player
@@ -3739,42 +6539,70 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 
 	local ActivityPlayer = nil
 	pcall(function() ActivityPlayer = Players:GetPlayerByUserId(UserId) end)
-	if ActivityPlayer then
+	local function MarkVoiceActivityEvidence()
+		-- Do not mark someone voice-enabled simply because an inactive/zero event
+		-- arrived. Only positive speech evidence or a true speaking-only event counts.
+		if not ActivityPlayer then return end
 		local WasKnown = VoiceEnabledCache[UserId] == true
 		VoiceEnabledCache[UserId] = true
 		VoiceCheckError[UserId] = nil
 		if not WasKnown and RebuildPlayersPage then RebuildPlayersPage() end
 	end
 
-	local Speaking = ActivityInfo.active
-	if Speaking == nil then Speaking = ActivityInfo.Active end
-	if Speaking == nil then Speaking = ActivityInfo.isSpeaking end
+	-- Prefer speech-specific flags. A generic `active` field can describe a connection
+	-- rather than speech, so it must not override an explicit isSpeaking=true value.
+	local Speaking = ActivityInfo.isSpeaking
 	if Speaking == nil then Speaking = ActivityInfo.IsSpeaking end
 	if Speaking == nil then Speaking = ActivityInfo.is_speaking end
 	if Speaking == nil then Speaking = ActivityInfo.speaking end
 	if Speaking == nil then Speaking = ActivityInfo.Speaking end
-	if Speaking == nil then Speaking = ActivityInfo.isActive end
-	if Speaking == nil then Speaking = ActivityInfo.IsActive end
-	if Speaking == nil then Speaking = ActivityInfo.isMicActive end
-	if Speaking == nil then Speaking = ActivityInfo.IsMicActive end
-	if Speaking == nil then Speaking = ActivityInfo.isVoiceActive end
-	if Speaking == nil then Speaking = ActivityInfo.IsVoiceActive end
 	if Speaking == nil then Speaking = ActivityInfo.isTalking end
 	if Speaking == nil then Speaking = ActivityInfo.IsTalking end
 	if Speaking == nil then Speaking = ActivityInfo.talking end
 	if Speaking == nil then Speaking = ActivityInfo.isSpeakingNow end
 	if Speaking == nil then Speaking = ActivityInfo.SpeakingNow end
+	-- Do not treat a live microphone/connection as speech. Generic active flags
+	-- were the source of false VC icons for players who were not talking.
+	if Speaking == nil then Speaking = ActivityInfo.isUserSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.IsUserSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.is_voice_speaking end
+	if Speaking == nil then Speaking = ActivityInfo.isVoiceSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.voiceSpeaking end
+	if Speaking == nil then Speaking = ActivityInfo.voice_speaking end
+	if Speaking == nil then Speaking = ActivityInfo.speechActive end
+	if Speaking == nil then Speaking = ActivityInfo.isSpeechActive end
 
-	if Speaking == false then
-		VoiceActivityPeak[UserId] = 0
-		VoiceActivityStamp[UserId] = 0
-		VoiceActivityActive[UserId] = false
-		VoiceActivityPeakMeasured[UserId] = false
-		return
+	-- Some legacy CoreScript builds send only an `active` / `isActive` bit in the
+	-- mic-activity event. It is ambiguous for unknown users, so accept it as speech
+	-- state only after this exact player has already been confirmed to have voice.
+	-- This keeps out-of-range speech updates working without turning every participant
+	-- in a connection-state collection into a voice-chat user.
+	if Speaking == nil and VoiceEnabledCache[UserId] == true then
+		local GenericActive = ActivityInfo.isActive
+		if GenericActive == nil then GenericActive = ActivityInfo.IsActive end
+		if GenericActive == nil then GenericActive = ActivityInfo.active end
+		if GenericActive == nil then GenericActive = ActivityInfo.Active end
+		if type(GenericActive) == "boolean" then Speaking = GenericActive end
+	end
+	if type(Speaking) == "string" then
+		local StateText = string.lower(Speaking)
+		if StateText:find("speaking", 1, true) or StateText:find("talking", 1, true) then
+			Speaking = true
+		elseif StateText == "silent" or StateText == "idle" or StateText == "not_speaking"
+			or StateText == "not speaking" or StateText == "stopped" then
+			Speaking = false
+		else
+			Speaking = nil
+		end
 	end
 
+	-- Read an actual numeric peak before treating a possibly stale inactive
+	-- field as authoritative; the older implementation did this in that order.
 	local Peak = nil
+	local PeakField = ""
 	for _, Key in ipairs({
+		-- Prefer explicit dBFS readings over generic zero-valued placeholder fields.
+		"dBFS", "dbfs", "decibels", "Decibels", "dB", "Db", "db",
 		"peakLevel", "PeakLevel", "peak", "Peak", "level", "Level",
 		"loudness", "Loudness", "volume", "Volume", "micLevel", "MicLevel",
 		"peak_level", "micPeak", "MicPeak", "voiceLevel", "VoiceLevel",
@@ -3782,54 +6610,56 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 		"audioLevel", "AudioLevel", "amplitude", "Amplitude"
 	}) do
 		local Value = tonumber(ActivityInfo[Key])
-		if Value ~= nil then Peak = Value; break end
+		if Value ~= nil then Peak = Value; PeakField = string.lower(Key); break end
+	end
+
+	if Speaking == true or Speaking == false then
+		VoiceActivitySpeakingState[UserId] = Speaking
+		VoiceActivitySpeakingStateStamp[UserId] = os.clock()
 	end
 
 	if Peak ~= nil then
-		if Peak > 1 and Peak <= 100 then Peak = Peak / 100 end
+		-- Linear values are 0..1; percentage values can be 0..100. Explicit dBFS
+		-- fields must be <= 0: positive values are invalid, not a 20% peak.
+		local IsDecibelField = PeakField:find("db", 1, true) or PeakField:find("decibel", 1, true)
+		if IsDecibelField then
+			if Peak >= 0 then Peak = 0 else Peak = 10 ^ (Peak / 20) end
+		elseif Peak < 0 then
+			Peak = 0
+		elseif Peak > 1 and Peak <= 100 then
+			Peak = Peak / 100
+		end
 		Peak = Clamp(Peak, 0, 1)
 		if Peak > 0.00001 then
-			-- Keep the latest real peak and timestamp. The row refresh loop reads
-			-- this value at 5 Hz and maps it to the 20/40/60/80/100 speaker frames.
+			MarkVoiceActivityEvidence()
 			VoiceActivityPeak[UserId] = Peak
 			VoiceActivityStamp[UserId] = os.clock()
 			VoiceActivityActive[UserId] = true
 			VoiceActivityPeakMeasured[UserId] = true
 			return
-		elseif Speaking == true then
-			-- Some legacy clients report active=true while peak is zero. Give the
-			-- speaker a modest level rather than pinning it to Unmuted0.
-			VoiceActivityPeak[UserId] = 0.35
-			VoiceActivityStamp[UserId] = os.clock()
-			VoiceActivityActive[UserId] = true
-			VoiceActivityPeakMeasured[UserId] = false
-			return
-		elseif Speaking == false then
-			VoiceActivityPeak[UserId] = 0
-			VoiceActivityStamp[UserId] = 0
-			VoiceActivityActive[UserId] = false
-			VoiceActivityPeakMeasured[UserId] = false
-			return
 		else
-			-- Activity feeds can send zero-level samples between positive peaks.
-			-- Do not erase a just-received real peak immediately; hold it briefly
-			-- so the UI can display the current frame. Zero does NOT refresh time.
-			local PreviousStamp = tonumber(VoiceActivityStamp[UserId]) or 0
-			local PreviousPeak = tonumber(VoiceActivityPeak[UserId]) or 0
-			if PreviousStamp > 0 and PreviousPeak > 0
-				and (os.clock() - PreviousStamp) <= 0.65 then
-				return
+			if Speaking == true then
+				-- Some event variants pair speaking=true with a default numeric zero; retain the state without inventing a measured peak.
+				MarkVoiceActivityEvidence()
+				VoiceActivityPeak[UserId] = 0
+				VoiceActivityStamp[UserId] = os.clock()
+				VoiceActivityActive[UserId] = true
+				VoiceActivityPeakMeasured[UserId] = false
+			else
+				VoiceActivityPeak[UserId] = 0
+				VoiceActivityStamp[UserId] = 0
+				VoiceActivityActive[UserId] = false
+				VoiceActivityPeakMeasured[UserId] = true
 			end
-			VoiceActivityPeak[UserId] = 0
-			VoiceActivityStamp[UserId] = 0
-			VoiceActivityActive[UserId] = false
-			VoiceActivityPeakMeasured[UserId] = false
 			return
 		end
 	end
 
 	if Speaking == true then
-		VoiceActivityPeak[UserId] = 0.35
+		MarkVoiceActivityEvidence()
+		-- The event confirms speech-state change but contains no numeric level.
+		-- Keep activity metadata only; never invent a fake microphone peak.
+		VoiceActivityPeak[UserId] = 0
 		VoiceActivityStamp[UserId] = os.clock()
 		VoiceActivityActive[UserId] = true
 		VoiceActivityPeakMeasured[UserId] = false
@@ -3841,14 +6671,182 @@ VoiceProcessActivityInfo = function(ActivityInfo)
 	end
 end
 
+-- Legacy participant events can identify clients that have actually joined the
+-- voice session. Do not use GetParticipants() snapshots as eligibility proof: some
+-- client builds include non-voice/group entries there. Use the explicit
+-- ParticipantsStateChanged `participantsJoined` payload instead.
+VoiceExtractJoinedUserId = function(Value, Depth)
+	Depth = Depth or 0
+	if Depth > 4 or Value == nil then return nil end
+	local Kind = typeof(Value)
+	if Kind == "Instance" then
+		local Id = nil
+		pcall(function()
+			if Value:IsA("Player") then Id = tonumber(Value.UserId) end
+		end)
+		return Id and Id > 1 and Id or nil
+	end
+	if type(Value) == "number" then return Value > 1 and Value or nil end
+	if type(Value) == "string" then
+		local Id = tonumber(Value)
+		return Id and Id > 1 and Id or nil
+	end
+	if type(Value) ~= "table" then return nil end
+	for _, Field in ipairs({"UserId", "userId", "PlayerUserId", "playerUserId", "participantUserId", "ParticipantUserId", "speakerUserId", "SpeakerUserId", "user_id", "UserID"}) do
+		local Id = tonumber(Value[Field])
+		if Id and Id > 1 then return Id end
+	end
+	for _, Field in ipairs({"Player", "player", "Participant", "participant", "User", "user"}) do
+		local Nested = Value[Field]
+		if Nested ~= Value then
+			local Id = VoiceExtractJoinedUserId(Nested, Depth + 1)
+			if Id then return Id end
+		end
+	end
+	return nil
+end
+
+VoiceMarkJoinedParticipant = function(Value, Key)
+	local UserId = VoiceExtractJoinedUserId(Value) or VoiceExtractJoinedUserId(Key)
+	if not UserId and type(Key) == "string" then
+		local NamedPlayer = Players:FindFirstChild(Key)
+		if NamedPlayer and NamedPlayer:IsA("Player") then UserId = tonumber(NamedPlayer.UserId) end
+	end
+	if not UserId then return false end
+	local Player = nil
+	pcall(function() Player = Players:GetPlayerByUserId(UserId) end)
+	if not Player then return false end
+	local WasKnown = VoiceEnabledCache[UserId] == true
+	VoiceEnabledCache[UserId] = true
+	VoiceCheckError[UserId] = nil
+	return not WasKnown
+end
+
+VoiceConsumeJoinedParticipants = function(Collection)
+	if type(Collection) ~= "table" then return false end
+	local Changed = false
+	for Key, Value in pairs(Collection) do
+		if VoiceMarkJoinedParticipant(Value, Key) then Changed = true end
+	end
+	return Changed
+end
+
+VoiceExtractParticipantUserId = function(Value, Depth)
+	Depth = Depth or 0
+	if Depth > 4 or Value == nil then return nil end
+	local ValueType = typeof(Value)
+	if ValueType == "Instance" then
+		local IsPlayer = false
+		local Id = nil
+		pcall(function()
+			IsPlayer = Value:IsA("Player")
+			Id = tonumber(Value.UserId or Value.userId or Value.PlayerUserId or Value.playerUserId)
+		end)
+		if IsPlayer and Id and Id > 1 then return Id end
+		if Id and Id > 1 then return Id end
+		return nil
+	end
+	if type(Value) == "number" then
+		return Value > 1 and Value or nil
+	end
+	if type(Value) == "string" then
+		local Id = tonumber(Value)
+		return Id and Id > 1 and Id or nil
+	end
+	if type(Value) ~= "table" then return nil end
+
+	for _, Key in ipairs({
+		"UserId", "userId", "PlayerUserId", "playerUserId", "participantUserId",
+		"ParticipantUserId", "speakerUserId", "SpeakerUserId", "user_id",
+		"player_user_id", "UserID", "userID", "participantId", "ParticipantId"
+	}) do
+		local Id = tonumber(Value[Key])
+		if Id and Id > 1 then return Id end
+	end
+	for _, Key in ipairs({"Player", "player", "Participant", "participant", "User", "user", "participantInfo", "ParticipantInfo"}) do
+		local Nested = Value[Key]
+		if Nested ~= Value then
+			local Id = VoiceExtractParticipantUserId(Nested, Depth + 1)
+			if Id then return Id end
+		end
+	end
+	return nil
+end
+
+-- A participant ID alone is NOT proof that the account has voice chat enabled.
+-- Only an explicit positive voice field can promote the eligibility cache.
+VoiceMarkParticipantEvidence = function(Value, Key)
+	local Record = type(Value) == "table" and Value or nil
+	if not Record then return false end
+	local ExplicitVoiceFields = {
+		"voiceEnabled", "VoiceEnabled", "isVoiceEnabled", "IsVoiceEnabled",
+		"hasVoice", "HasVoice", "hasVoiceChat", "HasVoiceChat",
+		"voiceChatEnabled", "VoiceChatEnabled", "isVoiceChatEnabled", "IsVoiceChatEnabled",
+		"voiceEligible", "VoiceEligible", "isVoiceEligible", "IsVoiceEligible",
+	}
+	local ExplicitTrue = false
+	for _, Field in ipairs(ExplicitVoiceFields) do
+		if Record[Field] == true then ExplicitTrue = true; break end
+	end
+	if not ExplicitTrue then return false end
+	local UserId = VoiceExtractParticipantUserId(Record) or VoiceExtractParticipantUserId(Key)
+	if not UserId and type(Key) == "string" then
+		local NamedPlayer = Players:FindFirstChild(Key)
+		if NamedPlayer and NamedPlayer:IsA("Player") then UserId = tonumber(NamedPlayer.UserId) end
+	end
+	if not UserId then
+		local NumericKey = tonumber(Key)
+		if NumericKey and NumericKey > 1000 then UserId = NumericKey end
+	end
+	if not UserId or UserId <= 1 or UserId == LocalPlayer.UserId then return false end
+	local Player = nil
+	pcall(function() Player = Players:GetPlayerByUserId(UserId) end)
+	if not Player then return false end
+	local WasKnown = VoiceEnabledCache[UserId] == true
+	VoiceEnabledCache[UserId] = true
+	VoiceCheckError[UserId] = nil
+	return not WasKnown
+end
+
+-- Decode the legacy participant snapshot, keyed by UserId/Player or returned as participant records.
+-- Speech state is intentionally handled only by VoiceProcessActivityInfo.
+VoiceConsumeParticipantCollection = function(Collection, Depth)
+	if type(Collection) ~= "table" then return false end
+	Depth = Depth or 0
+	if Depth > 4 then return false end
+	local Changed = false
+	local DirectUserId = VoiceExtractParticipantUserId(Collection)
+	if DirectUserId then
+		if VoiceMarkParticipantEvidence(Collection) then Changed = true end
+		return Changed
+	end
+	for Key, Value in next, Collection do
+		local UserId = VoiceExtractParticipantUserId(Value) or VoiceExtractParticipantUserId(Key)
+		if not UserId and type(Key) == "string" then
+			local NamedPlayer = Players:FindFirstChild(Key)
+			if NamedPlayer and NamedPlayer:IsA("Player") then UserId = tonumber(NamedPlayer.UserId) end
+		end
+		if UserId and UserId > 1 and UserId ~= LocalPlayer.UserId then
+			if VoiceMarkParticipantEvidence(Value, Key) then Changed = true end
+			-- GetParticipants() is a participant snapshot, not a speech-level feed.
+			-- Do not interpret its booleans or generic fields as mic activity.
+		elseif type(Value) == "table" and Depth < 4 then
+			if VoiceConsumeParticipantCollection(Value, Depth + 1) then Changed = true end
+		end
+	end
+	return Changed
+end
+
 RefreshVoiceParticipants = function()
 	-- Keep participant discovery active when the local client is disconnected.
 	if not VoiceGameSupported then return false end
 	local PlayerList = Players:GetPlayers()
 	local Changed = false
 
-	-- GetChatGroupsAsync is server-only. Discover active participants from the
-	-- client through actual AudioDeviceInput/native UI/internal participant data.
+	-- Modern Audio API: use Player-owned AudioDeviceInput instances.
+	-- Legacy/Automatic mode: the internal participant list is the remaining
+	-- client-side signal for players actually present in the voice session.
+	-- This does not inspect voice bubbles, chat bubbles, or their sprite frames.
 
 	for _, Player in next, PlayerList do
 		if Player ~= LocalPlayer and GetAudioDeviceInput(Player) then
@@ -3861,46 +6859,19 @@ RefreshVoiceParticipants = function()
 		end
 	end
 
-	if VoiceChatInternal then
+	-- On legacy/Automatic mode, recover remote participant identity from the
+	-- same participant snapshot used by the earlier working version. This path only
+	-- marks eligibility for IDs that resolve to a Player currently in this server;
+	-- snapshot fields are never sent to the speech-meter parser.
+	if VoiceChatInternal and GetVoiceAudioApiEnabled() ~= true then
 		Protect(function()
 			local Participants = VoiceChatInternal:GetParticipants()
 			if type(Participants) == "table" then
-				for Key, Participant in next, Participants do
-					local Id = nil
-					local KeyId = tonumber(Key)
-					if KeyId and KeyId > 1000 then Id = KeyId end
-					if not Id and type(Participant) == "number" then
-						Id = Participant
-					elseif not Id and type(Participant) == "string" then
-						Id = tonumber(Participant)
-					elseif not Id and type(Participant) == "table" then
-						Id = tonumber(Participant.UserId or Participant.userId or Participant.PlayerUserId or Participant.playerUserId or Participant.Id or Participant.id)
-						if not Id and Participant.Player then
-							Id = tonumber(Participant.Player.UserId or Participant.Player.userId)
-						end
-					end
-					if Id and Id > 1 and Id ~= LocalPlayer.UserId and VoiceEnabledCache[Id] ~= true then
-						VoiceEnabledCache[Id] = true
-						VoiceCheckError[Id] = nil
-						Changed = true
-					end
-				end
+				if VoiceConsumeParticipantCollection(Participants) then Changed = true end
 			end
 		end)
 	end
 
-	-- Native Roblox player voice icons are a high-confidence signal, but the
-	-- expensive CoreGui scan is performed only when the page is rebuilt/opened.
-	for _, Player in next, PlayerList do
-		if Player ~= LocalPlayer then
-			local Id = tonumber(Player.UserId or Player.userId) or 0
-			if Id > 1 and VoiceEnabledCache[Id] ~= true and FindNativePlayerVoice(Player) then
-				VoiceEnabledCache[Id] = true
-				VoiceCheckError[Id] = nil
-				Changed = true
-			end
-		end
-	end
 
 	return Changed
 end
@@ -3915,23 +6886,33 @@ GetPlayerVoiceStatus = function(Player)
 	end
 
 	if Player == LocalPlayer then
+		-- This script has already checked both the place's voice support and the
+		-- local account's eligibility. Keep that positive result authoritative; the
+		-- per-user query may return a stale/false result on legacy clients.
+		if VoiceOptionAvailable == true or VoiceAccountAllowed == true then return true end
 		local Ok, Enabled = pcall(function()
 			return VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
 		end)
-		if Ok then return Enabled end
+		if Ok and Enabled == true then return true end
+		-- In supported experiences, legacy clients can report a false/failed public
+		-- eligibility query while their internal voice context is already enabled.
 		if VoiceChatInternal then
 			local InternalOk, InternalEnabled = pcall(function()
 				return VoiceChatInternal:IsContextVoiceEnabled() == true
 			end)
-			if InternalOk then return InternalEnabled end
+			if InternalOk and InternalEnabled == true then return true end
 		end
+		if Ok then return Enabled end
 		return nil
 	end
 
-	-- Client builds reject eligibility queries for other users. Treat missing
-	-- evidence as unknown, not as "no voice"; keep the player-row control visible
-	-- until an input/native bubble/activity event confirms voice participation.
+	-- The client can confirm remote eligibility through a genuine Player-owned input
+	-- when the modern Audio API is enabled; it is independent of UI visibility.
 	if VoiceEnabledCache[UserId] == true then return true end
+	if GetVoiceMeterInput(Player) then
+		VoiceEnabledCache[UserId] = true
+		return true
+	end
 	if GetAudioDeviceInput(Player) then return true end
 	if FindNativePlayerVoice(Player) then
 		VoiceEnabledCache[UserId] = true
@@ -3980,28 +6961,77 @@ CheckVoiceForPlayer = function(Player, Callback)
 	if Callback then Callback(VoiceEnabledCache[UserId] == true, true) end
 end
 
--- Voice-mute diagnostic panel and verbose logging removed.
-
 GetLocalVoiceMuted = function()
-	-- When Roblox supplies its real AudioDeviceInput, that is the authoritative
-	-- mute state for the Audio API path. Do not let a stale legacy pause flag
-	-- override a confirmed Input.Muted = false (that made Unmute appear broken).
-	local Input = GetAudioDeviceInput(LocalPlayer)
-	if Input then
-		local Ok, Muted = pcall(function()
-			return Input.Muted == true
-		end)
-		if Ok then return Muted end
+	local AudioApiEnabled = GetVoiceAudioApiEnabled()
+	local Input = nil
+	if AudioApiEnabled ~= false then
+		pcall(function() Input = GetAudioDeviceInput(LocalPlayer) end)
+	end
+	-- The meter lookup can still find a genuine local input if the rollout flag
+	-- itself is unreadable. Only a real AudioDeviceInput owned by LocalPlayer is used.
+	if not Input then
+		pcall(function() Input = GetVoiceMeterInput(LocalPlayer) end)
 	end
 
-	-- Only rely on the legacy voice publisher if no readable real input exists.
-	if VoiceChatInternal then
-		local Ok, Muted = pcall(function()
-			return VoiceChatInternal:IsPublishPaused() == true
+	local IsRealLocalInput = false
+	if Input then
+		pcall(function()
+			IsRealLocalInput = Input:IsA("AudioDeviceInput")
+				and Input.Player == LocalPlayer
+				and Input.Name ~= "Settings2016LocalAudioDeviceInput"
 		end)
-		if Ok then return Muted end
 	end
-	return LocalVoiceMuted == true
+	if IsRealLocalInput then
+		-- Roblox's real Core UI microphone toggle changes AudioDeviceInput.Active;
+		-- the separate Muted property is scriptable and does not by itself reflect
+		-- the user's microphone toggle. Active=false therefore takes priority.
+		local Active, ActiveOk = ReadVoiceInputProperty(Input, "Active")
+		local Muted, MutedOk = ReadVoiceInputProperty(Input, "Muted")
+		if ActiveOk and type(Active) == "boolean" and Active == false then
+			return true
+		end
+		if MutedOk and type(Muted) == "boolean" and Muted == true then
+			return true
+		end
+		if ActiveOk and type(Active) == "boolean" and Active == true then
+			if MutedOk and type(Muted) == "boolean" then return Muted end
+			return false
+		end
+		if MutedOk and type(Muted) == "boolean" then return Muted end
+	end
+
+	-- Legacy / Automatic pipeline: use the native publisher's actual pause state.
+	-- Do not let an old CoreGui image saying "Unmuted" override it.
+	if AudioApiEnabled ~= true and VoiceChatInternal then
+		local Ok, Muted = pcall(function()
+			return VoiceChatInternal:IsPublishPaused()
+		end)
+		if Ok and type(Muted) == "boolean" then return Muted end
+	end
+
+	-- Fallback: read the actual local self-mute icon in Roblox's ESC Settings page.
+	-- This is only a local mute-state fallback, never remote speaking detection.
+	local Native = nil
+	pcall(function() Native = FindNativeVoiceIcon(LocalPlayer) end)
+	if type(Native) == "string" and Native ~= "" then
+		local SaysUnmuted = Native:find("Unmuted", 1, true) ~= nil
+		local SaysMuted = Native:find("Muted", 1, true) ~= nil and not SaysUnmuted
+		if SaysMuted then return true end
+		if SaysUnmuted then return false end
+	end
+
+	-- If the menu has closed, tolerate only a very recent observed native state.
+	local UserId = tonumber(LocalPlayer and LocalPlayer.UserId) or 0
+	local CachedImage = NativeVoiceIconLastImages[UserId]
+	local SeenAt = tonumber(NativeVoiceIconLastSeenAt[UserId]) or 0
+	if SeenAt > 0 and (os.clock() - SeenAt) <= 0.75 then
+		local SaysUnmuted = type(CachedImage) == "string" and CachedImage:find("Unmuted", 1, true) ~= nil
+		local SaysMuted = type(CachedImage) == "string" and CachedImage:find("Muted", 1, true) ~= nil and not SaysUnmuted
+		if SaysMuted then return true end
+		if SaysUnmuted then return false end
+	end
+
+	return nil
 end
 
 FindNativeMuteSelfButton = function()
@@ -4174,46 +7204,65 @@ end
 
 SetLocalVoiceMuted = function(Muted)
 	Muted = Muted == true
-	local InputFindOk, Input = pcall(function() return GetAudioDeviceInput(LocalPlayer) end)
+	local AudioApiEnabled = GetVoiceAudioApiEnabled()
+	local Input = AudioApiEnabled ~= false and GetAudioDeviceInput(LocalPlayer) or nil
 
-	-- Preferred path for the enabled Audio API: change the real Roblox input.
-	if Input then
+	-- Audio API path: set and verify the real input. The legacy publisher may
+	-- still expose stale values, so it must not veto a verified Audio API write.
+	if AudioApiEnabled == true and Input then
 		local WriteOk, ReadBack = pcall(function()
 			Input.Muted = Muted
 			return Input.Muted == true
 		end)
 		if WriteOk and ReadBack == Muted then
 			LocalVoiceMuted = Muted
-			if VoiceChatInternal then pcall(function() VoiceChatInternal:PublishPause(Muted) end) end
 			return true
 		end
 	end
 
-	-- If the user already has the real Roblox menu open, try its actual button.
-	-- Never synthesize Escape/open-close cycles from this callback: they broke ESC.
+	-- Legacy path (UseAudioApi=Automatic/Disabled, or mode unreadable): change the
+	-- publisher's pause state and verify it. Never use this path when Audio API is Enabled.
+	if AudioApiEnabled ~= true and VoiceChatInternal then
+		pcall(function() VoiceChatInternal:PublishPause(Muted) end)
+		Wait(0.08)
+		local ReadOk, PauseAfter = pcall(function() return VoiceChatInternal:IsPublishPaused() end)
+		if ReadOk and type(PauseAfter) == "boolean" and PauseAfter == Muted then
+			LocalVoiceMuted = Muted
+			return true
+		end
+	end
+
+	-- If rollout mode is unreadable, try a ready input after the legacy route.
+	if AudioApiEnabled == nil and Input then
+		local Ready = false
+		pcall(function() Ready = Input.IsReady == true or Input.Active == true end)
+		if Ready then
+			local WriteOk, ReadBack = pcall(function()
+				Input.Muted = Muted
+				return Input.Muted == true
+			end)
+			if WriteOk and ReadBack == Muted then
+				LocalVoiceMuted = Muted
+				return true
+			end
+		end
+	end
+
+	-- Last-resort native control is used only when its menu is already open; don't
+	-- synthesize Escape cycles or silently claim success on a stale icon.
 	local MenuReadOk, MenuIsOpen = pcall(function() return GuiService.MenuIsOpen end)
 	if MenuReadOk and MenuIsOpen == true then
 		local NativeCallOk, NativeApplied = pcall(function() return InvokeNativeMuteSelfButton(Muted) end)
 		if NativeCallOk and NativeApplied then
-			LocalVoiceMuted = Muted
-			return true
+			local VerifyOk, VerifyMuted = pcall(function() return GetLocalVoiceMuted() end)
+			if VerifyOk and VerifyMuted == Muted then
+				LocalVoiceMuted = Muted
+				return true
+			end
 		end
 	end
 
-	-- This client reports UseAudioApi=Automatic, which currently uses Roblox's
-	-- legacy internal voice system. PublishPause is its actual publishing-pause
-	-- control; it changes the native internal state without needing a GUI click.
-	-- We log the state match honestly, but do not claim that remote listeners heard
-	-- audio: this client exposes no AudioDeviceInput/audio peak for that verification.
-	if VoiceChatInternal then
-		local CallOk, CallResult = pcall(function() return VoiceChatInternal:PublishPause(Muted) end)
-		Wait(0.1)
-		local ReadOk, PauseAfter = pcall(function() return VoiceChatInternal:IsPublishPaused() == true end)
-		if ReadOk and PauseAfter == Muted then
-			LocalVoiceMuted = Muted
-			return true
-		end
-	end
+	LocalVoiceMuted = GetLocalVoiceMuted()
 	return false
 end
 
@@ -4224,14 +7273,10 @@ RefreshLocalVoiceState = function()
 		Entitled = VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
 		return true
 	end)
-	if not Success and VoiceChatInternal then
-		Success = Protect(function()
-			Entitled = VoiceChatInternal:IsContextVoiceEnabled() == true
-			return true
-		end)
-	end
-	LocalVoiceEnabled = VoiceChatEnabled and Entitled
-	VoiceEnabledCache[LocalPlayer.UserId] = Entitled
+	-- Fail closed if the official user eligibility request fails. An internal
+	-- controller is not proof that this user is permitted to use voice here.
+	LocalVoiceEnabled = VoiceChatEnabled and Success and Entitled
+	VoiceEnabledCache[LocalPlayer.UserId] = Success and Entitled == true
 	VoiceCheckError[LocalPlayer.UserId] = not Success
 	if LocalVoiceEnabled then
 		EnsureVoiceAnalyzer(LocalPlayer)
@@ -4494,7 +7539,7 @@ RefreshLocalVoiceState()
 LocalVoiceInput = GetAudioDeviceInput(LocalPlayer)
 if LocalVoiceInput then
 	Protect(function()
-		LocalVoiceMuted = LocalVoiceInput.Muted == true
+		LocalVoiceMuted = GetLocalVoiceMuted()
 	end)
 	EnsureVoiceAnalyzer(LocalPlayer)
 end
@@ -4976,9 +8021,9 @@ Position =
 		VoiceEnabledCache[UserId] = true
 	end
 
-	-- Keep a per-player control visible as soon as Voice Chat is requested On.
-	-- Unknown/unsupported player status is reflected by the icon (Connecting/Error),
-	-- rather than suppressing the button entirely.
+	-- Create a per-player control only after player-specific voice evidence exists
+	-- (a real audio input or explicit participant/activity event).
+	-- Unknown eligibility is not enough to create a button.
 	local HasVoiceEvidence = HasConfirmedPlayerVoice(Player)
 	if CanTargetPlayer and VoiceGameSupported and HasVoiceEvidence then
 		VoiceButton = MakeStyledButton(
@@ -4994,9 +8039,8 @@ Position =
 			end
 		)
 		VoiceButton.Parent = Row
-		-- Remote eligibility queries are rejected by this client build. Keep the
-		-- button visible unless Roblox explicitly confirmed this player has no VC.
-		-- Unknown players use a neutral zero-peak mic icon, never Error/Connecting.
+		-- Visibility is tied to positive player-specific evidence, never merely to
+		-- VoiceChatService existing or this place supporting voice.
 		VoiceButton.Visible = HasConfirmedPlayerVoice(Player)
 		VoiceButton.Active = true
 		VoiceButton.Position = UDim2.new(1, -(FRIEND_WIDTH + ACTION_RIGHT_PAD + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH + GAP + BUTTON_WIDTH), 0.5, -BUTTON_HEIGHT / 2)
@@ -6843,6 +9887,10 @@ MakeDropDown = function(
 		CurrentIndex =
 			CurrentIndex,
 
+		-- Expose the owning row so final Settings-page pruning retains this dropdown.
+		RowFrame =
+			Row,
+
 		DropDownFrame =
 			Button,
 
@@ -7367,10 +10415,10 @@ INVITE_MOBILE_HEADER_DIVIDER = nil
 MakeInviteFriendsRow = function(Page)
 	local VoiceActive = VoiceGameSupported == true and VoiceAccountAllowed == true
 	local PhoneLayout = IsPhone == true
-	local RowHeight = PhoneLayout and 54 or 62
+	local RowHeight = PhoneLayout and 52 or 62
 	local SideBySide = VoiceActive and InviteFriends and not PhoneLayout
 	local FullRowSize = UDim2.new(1, 0, 0, RowHeight)
-	local HalfRowSize = UDim2.new(0.5, -4, 0, 62)
+	local HalfRowSize = UDim2.new(0.5, -3, 0, RowHeight)
 	local function BaseRow(Name, Pos, Size)
 		return Create("ImageButton", {
 			Name = Name,
@@ -7393,17 +10441,20 @@ MakeInviteFriendsRow = function(Page)
 		Row = BaseRow("InviteFriendsToJoin", UDim2.new(0, 0, 0, 0), SideBySide and HalfRowSize or FullRowSize)
 		Create("ImageLabel", {
 			Name = "Icon", Parent = Row, BackgroundTransparency = 1,
-			Image = "rbxassetid://80022950003290", Size = UDim2.fromOffset(24, 24),
-			Position = UDim2.new(0, 14, 0.5, -12), ScaleType = Enum.ScaleType.Fit,
-			ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			Image = "rbxassetid://80022950003290",
+			Size = UDim2.fromOffset(PhoneLayout and 20 or 24, PhoneLayout and 20 or 24),
+			Position = UDim2.new(0, PhoneLayout and 8 or 14, 0.5, PhoneLayout and -10 or -12),
+			ScaleType = Enum.ScaleType.Fit, ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
 		Create("TextLabel", {
 			Name = "NameLabel", Parent = Row, BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans, TextSize = PhoneLayout and 24 or 22,
+			Font = Enum.Font.SourceSans, TextSize = 24,
 			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Center,
 			Text = "Invite friends to join", TextWrapped = false, TextScaled = false,
-			Size = UDim2.new(1, PhoneLayout and -64 or -78, 1, 0),
-			Position = UDim2.new(0, 50, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 3,
+			Size = UDim2.new(1, PhoneLayout and -42 or -78, 1, PhoneLayout and -4 or 0),
+			Position = UDim2.new(0, PhoneLayout and 36 or 50, 0, PhoneLayout and 2 or 0),
+			ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
 	end
 
@@ -7415,16 +10466,19 @@ MakeInviteFriendsRow = function(Page)
 		local Icon = Create("ImageLabel", {
 			Name = "Icon", Parent = MuteRow, BackgroundTransparency = 1,
 			Image = VOICE_MISC_ROOT .. (VoiceMuteAllActive and "UnmuteAll@3x.png" or "MuteAll@3x.png"),
-			Size = UDim2.fromOffset(30, 30), Position = UDim2.new(0, 14, 0.5, -15),
+			Size = UDim2.fromOffset(PhoneLayout and 22 or 30, PhoneLayout and 22 or 30),
+			Position = UDim2.new(0, PhoneLayout and 8 or 14, 0.5, PhoneLayout and -11 or -15),
 			ScaleType = Enum.ScaleType.Fit, ZIndex = SETTINGS_BASE_ZINDEX + 4,
 		})
 		local Label = Create("TextLabel", {
 			Name = "MuteAllLabel", Parent = MuteRow, BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans, TextSize = PhoneLayout and 24 or 22,
+			Font = Enum.Font.SourceSansBold, TextSize = 24,
 			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Center,
 			Text = "Mute All", TextWrapped = false, TextScaled = false,
-			Size = UDim2.new(1, PhoneLayout and -66 or -56, 1, 0),
-			Position = UDim2.new(0, 52, 0, 0), ZIndex = SETTINGS_BASE_ZINDEX + 4,
+			Size = UDim2.new(1, PhoneLayout and -44 or -56, 1, 0),
+			Position = UDim2.new(0, PhoneLayout and 36 or 52, 0, 0),
+			ZIndex = SETTINGS_BASE_ZINDEX + 4,
 		})
 		local State = VoiceMuteAllActive == true
 		Label.Text = State and "Unmute All" or "Mute All"
@@ -7454,22 +10508,28 @@ LayoutPhonePlayerActionRows = function(Frame, StartY)
 	if not IsPhone or not Frame then return nil end
 	local InviteRow = Frame:FindFirstChild("InviteFriendsToJoin")
 	local MuteRow = Frame:FindFirstChild("MuteAllVoiceRow")
-	local RowHeight = 54
+	local RowHeight = 52
 	local RowGap = 6
 	local Cursor = StartY or 72
+	local HasBothActions = InviteRow ~= nil and MuteRow ~= nil
+	local HalfWidth = UDim2.new(0.5, -3, 0, RowHeight)
 
-	if InviteRow then
+	if HasBothActions then
+		-- Full-width stacked action rows leave enough room for the exact 24px
+		-- bottom-button typography used by both labels.
 		InviteRow.Size = UDim2.new(1, 0, 0, RowHeight)
 		InviteRow.Position = UDim2.new(0, 0, 0, Cursor)
-		Cursor = Cursor + RowHeight + (MuteRow and RowGap or 10)
-	end
-
-	if MuteRow then
 		MuteRow.Size = UDim2.new(1, 0, 0, RowHeight)
-		MuteRow.Position = UDim2.new(0, 0, 0, Cursor)
-		Cursor = Cursor + RowHeight + 10
+		MuteRow.Position = UDim2.new(0, 0, 0, Cursor + RowHeight + RowGap)
+		Cursor = Cursor + (RowHeight * 2) + RowGap + 10
+	else
+		local OnlyRow = InviteRow or MuteRow
+		if OnlyRow then
+			OnlyRow.Size = UDim2.new(1, 0, 0, RowHeight)
+			OnlyRow.Position = UDim2.new(0, 0, 0, Cursor)
+			Cursor = Cursor + RowHeight + 10
+		end
 	end
-
 	return Cursor
 end
 
@@ -7693,6 +10753,8 @@ SearchBox = nil
 InviteList = nil
 SearchIcon = nil
 SearchPlaceholder = nil
+NewInviteShareRow = nil
+ShareInviteButton = nil
 
 InvitePage =
 	MakePage(
@@ -7745,12 +10807,7 @@ InviteBackButton, InviteBackLabel =
 	MakeStyledButton(
 		"InviteBackButton",
 		"Back",
-		UDim2.new(
-			0,
-			132,
-			0,
-			56
-		),
+		USE_NEW_INVITE_MENU and UDim2.new(0, 150, 0, 56) or UDim2.new(0, 132, 0, 56),
 		function()
 
 			local Previous =
@@ -7784,6 +10841,7 @@ InviteBackButton, InviteBackLabel =
 
 			InviteList.Visible =
 				false
+			if NewInviteShareRow then NewInviteShareRow.Visible = false end
 
 			Hub.PageView.ScrollBarThickness =
 				IsMobile and 0 or 12
@@ -7849,7 +10907,7 @@ Create(
 			1,
 
 		Font =
-			Enum.Font.SourceSansBold,
+			USE_NEW_INVITE_MENU and Enum.Font.SourceSans or Enum.Font.SourceSansBold,
 
 		TextSize =
 			27,
@@ -7921,6 +10979,8 @@ SearchFrame =
 				+ 10,
 		}
 	)
+
+SearchFrame.Visible = true
 
 Create(
 	"UICorner",
@@ -8134,11 +11194,20 @@ Connect(
 -- ============================================================
 ConfigureInviteMobileHeader = function()
 	if not InviteHeader or not SearchFrame or not SearchBox or not SearchIcon then return end
+
+	SearchFrame.Visible = true
+
 	if not IsMobile then
 		InviteBackLabel.Text = "Back"
 		InviteBackLabel.TextSize = 24
+		InviteBackLabel.TextXAlignment = Enum.TextXAlignment.Center
+		InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
 		SearchFrame.Size = UDim2.new(0, 220, 0, 34)
 		SearchFrame.Position = UDim2.new(1, -228, 0, 15)
+		SearchFrame.BackgroundTransparency = 1
+		SearchFrame.BorderSizePixel = 0
+		local SearchStroke = SearchFrame:FindFirstChildOfClass("UIStroke")
+		if SearchStroke then SearchStroke.Transparency = 0 end
 		SearchBox.Visible = true
 		SearchPlaceholder.Visible = SearchBox.Text == ""
 		SearchIcon.Visible = SearchBox.Text == "" or SearchBox:IsFocused()
@@ -8149,7 +11218,7 @@ ConfigureInviteMobileHeader = function()
 	InviteBackLabel.TextSize = 30
 	InviteBackLabel.TextXAlignment = Enum.TextXAlignment.Center
 	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
-	InviteBackButton.Size = UDim2.fromOffset(44, 48)
+	InviteBackButton.Size = UDim2.fromOffset(USE_NEW_INVITE_MENU and 52 or 44, 48)
 	InviteBackButton.Position = UDim2.fromOffset(4, 4)
 	InviteBackButton.Image = ""
 
@@ -8160,9 +11229,7 @@ ConfigureInviteMobileHeader = function()
 	SearchFrame.BackgroundTransparency = 1
 	SearchFrame.BorderSizePixel = 0
 	local SearchStroke = SearchFrame:FindFirstChildOfClass("UIStroke")
-	if SearchStroke then
-		SearchStroke.Transparency = Expanded and 0 or 1
-	end
+	if SearchStroke then SearchStroke.Transparency = Expanded and 0 or 1 end
 	SearchBox.Visible = Expanded
 	SearchPlaceholder.Visible = false
 	SearchIcon.Visible = true
@@ -8181,9 +11248,9 @@ Connect(SearchFrame.InputBegan, function(Input)
 	end
 end)
 
--- Invite-player selection: one exact-size SelectionImageObject per row.
--- Each selection image belongs to its own row and is destroyed with that row,
--- so there is never a second shared selection overlay left behind.
+-- Invite-row selection visuals and focus navigation are intentionally disabled.
+-- Rows remain clickable only through their actual Invite buttons, and the share
+-- row is a normal scrolling-list item rather than a selectable overlay.
 InviteSelectionButtons = {}
 InviteSelectionFriends = {}
 InviteSelectionInviteButtons = {}
@@ -8193,50 +11260,32 @@ InviteSelectedIndex = 0
 InviteSelectedFriendId = nil
 
 SetInviteGuiSelection = function(Button)
-	if not Button or not Button.Parent then return end
-	Protect(function()
-		if GuiService.SelectedObject ~= Button then
-			GuiService.SelectedObject = Button
-		end
-	end)
+	local Selected = GuiService.SelectedObject
+	if Selected and InvitePage and InvitePage.Frame and Selected:IsDescendantOf(InvitePage.Frame) then
+		Protect(function() GuiService.SelectedObject = nil end)
+	end
 end
 
-UpdateInviteSelectionVisual = function(PreviousIndex, Index)
-	if PreviousIndex and PreviousIndex ~= 0 and PreviousIndex ~= Index then
-		local PreviousImage = InviteSelectionImages[PreviousIndex]
-		if PreviousImage then PreviousImage.Visible = false end
+UpdateInviteSelectionVisual = function()
+	for _, Image in ipairs(InviteSelectionImages) do
+		if Image then Image.Visible = false end
 	end
-	local Image = InviteSelectionImages[Index]
-	if Image then Image.Visible = true end
 end
 
 HideInviteSelection = function()
-	local Image = InviteSelectionImages[InviteSelectedIndex]
-	if Image then Image.Visible = false end
-	Protect(function() GuiService.SelectedObject = nil end)
-	Protect(function() GuiService.SelectedCoreObject = nil end)
+	UpdateInviteSelectionVisual()
+	SetInviteGuiSelection()
+	local SelectedCore = GuiService.SelectedCoreObject
+	if SelectedCore and InvitePage and InvitePage.Frame then
+		local IsInviteDescendant = false
+		pcall(function() IsInviteDescendant = SelectedCore:IsDescendantOf(InvitePage.Frame) end)
+		if IsInviteDescendant then Protect(function() GuiService.SelectedCoreObject = nil end) end
+	end
 	InviteSelectedIndex = 0
 	InviteSelectedFriendId = nil
 end
 
-KeepInviteSelectionVisible = function(Row)
-	if not Row or not InviteList then return end
-	local Top = Row.Position.Y.Offset
-	local Bottom = Top + Row.AbsoluteSize.Y
-	local Current = InviteList.CanvasPosition.Y
-	local Window = InviteList.AbsoluteWindowSize.Y
-	local Target = Current
-	if Top < Current then
-		Target = Top
-	elseif Bottom > Current + Window then
-		Target = Bottom - Window
-	end
-	local MaxY = math.max(0, InviteList.AbsoluteCanvasSize.Y - InviteList.AbsoluteWindowSize.Y)
-	Target = math.clamp(Target, 0, MaxY)
-	if math.abs(Target - Current) > 0.5 then
-		InviteList.CanvasPosition = Vector2.new(0, Target)
-	end
-end
+KeepInviteSelectionVisible = function() end
 
 SetInviteSelection = function(Index, PreserveScroll)
 	if #InviteSelectionButtons == 0 then
@@ -8245,43 +11294,12 @@ SetInviteSelection = function(Index, PreserveScroll)
 		return
 	end
 	Index = math.clamp(tonumber(Index) or 1, 1, #InviteSelectionButtons)
-	local Button = InviteSelectionButtons[Index]
-	local Row = Button and Button.Parent
-	if not Button or not Row then return end
-	local OldIndex = InviteSelectedIndex
-	InviteSelectedIndex = Index
 	local Friend = InviteSelectionFriends[Index]
+	InviteSelectedIndex = Index
 	InviteSelectedFriendId = Friend and tostring(Friend.Id) or nil
-	if not PreserveScroll then KeepInviteSelectionVisible(Row) end
-	UpdateInviteSelectionVisual(OldIndex, Index)
-	if OldIndex ~= Index or GuiService.SelectedObject ~= Button then
-		SetInviteGuiSelection(Button)
-	end
+	UpdateInviteSelectionVisual()
+	SetInviteGuiSelection()
 end
-
-Connect(UserInputService.InputBegan, function(Input, Processed)
-	if not Hub.InInviteMenu or not InviteList.Visible or Processed then return end
-	if SearchBox and SearchBox:IsFocused() then return end
-
-	if Input.KeyCode == Enum.KeyCode.W or Input.KeyCode == Enum.KeyCode.Up then
-		if InviteSelectedIndex > 1 then
-			SetInviteSelection(InviteSelectedIndex - 1)
-		end
-		return
-	end
-
-	if Input.KeyCode == Enum.KeyCode.S or Input.KeyCode == Enum.KeyCode.Down then
-		if InviteSelectedIndex < #InviteSelectionButtons then
-			SetInviteSelection(InviteSelectedIndex + 1)
-		end
-		return
-	end
-
-	if IsMobile and Input.KeyCode == Enum.KeyCode.Left then
-		INVITE_MOBILE_SEARCH_EXPANDED = false
-		ConfigureInviteMobileHeader()
-	end
-end)
 
 -- ============================================================
 -- INVITE LIST
@@ -8336,6 +11354,191 @@ InviteList =
 		}
 	)
 
+-- New Invite Friends layout only. The old invite page remains in the source
+-- and is selected unchanged when all three fast flags are explicitly False.
+NewInviteShareRow = Create("ImageLabel", {
+	Name = "NewInviteShareRow",
+	Parent = InviteList,
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Image = TAB_BAR_IMAGE,
+	ImageTransparency = 0,
+	ImageColor3 = Color3.new(1, 1, 1),
+	ScaleType = Enum.ScaleType.Slice,
+	SliceCenter = Rect.new(4, 4, 6, 6),
+	Size = UDim2.new(1, 0, 0, INVITE_SHARE_ROW_HEIGHT),
+	Position = UDim2.new(0, 0, 0, 0),
+	Visible = false,
+	ZIndex = SETTINGS_BASE_ZINDEX + 10,
+})
+
+Create("TextLabel", {
+	Name = "ShareInviteLinkLabel",
+	Parent = NewInviteShareRow,
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Font = Enum.Font.SourceSans,
+	TextSize = 28,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Share Invite Link",
+	TextXAlignment = Enum.TextXAlignment.Left,
+	TextYAlignment = Enum.TextYAlignment.Center,
+	Size = UDim2.new(1, -108, 1, 0),
+	Position = UDim2.new(0, 10, 0, 0),
+	ZIndex = SETTINGS_BASE_ZINDEX + 11,
+})
+
+ShareInviteButton = Create("TextButton", {
+	Name = "ShareInviteButton",
+	Parent = NewInviteShareRow,
+	BackgroundColor3 = Color3.fromRGB(248, 248, 248),
+	BackgroundTransparency = 0,
+	BorderSizePixel = 0,
+	AutoButtonColor = true,
+	Active = true,
+	Selectable = false,
+	Font = Enum.Font.SourceSans,
+	TextSize = 19,
+	TextColor3 = Color3.fromRGB(32, 34, 38),
+	Text = "Share",
+	TextXAlignment = Enum.TextXAlignment.Center,
+	TextYAlignment = Enum.TextYAlignment.Center,
+	Size = UDim2.fromOffset(86, 32),
+	Position = UDim2.new(1, -94, 0.5, -16),
+	ZIndex = SETTINGS_BASE_ZINDEX + 12,
+})
+Create("UICorner", {Parent = ShareInviteButton, CornerRadius = UDim.new(0, 3)})
+
+-- Use NotificationScript2's own BindableEvent when it exists. This enters the
+-- CoreScript notification queue directly, rather than creating another toast UI.
+local CoreNotificationLayerGeneration = 0
+local CoreNotificationOriginalDisplayOrders = {}
+local function NotifyInviteShare(Title, Message)
+	-- These labels are rendered by Roblox's native notification UI, outside our ScreenGui.
+	Title = GetMenuLocalizedText(tostring(Title), MenuLocalizationLocale)
+	Message = GetMenuLocalizedText(tostring(Message), MenuLocalizationLocale)
+	local CoreSent, UsedCoreEvent = pcall(function()
+		local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+		local Event = RobloxGui and RobloxGui:FindFirstChild("SendNotificationInfo")
+		if not Event or not Event:IsA("BindableEvent") then return false end
+		Event:Fire({
+			GroupName = "Developer",
+			Title = tostring(Title),
+			Text = tostring(Message),
+			DetailText = tostring(Message),
+			Image = "",
+			Duration = 5,
+		})
+		CoreNotificationLayerGeneration += 1
+		local ThisGeneration = CoreNotificationLayerGeneration
+		local MinimumOrder = (ScreenGui and ScreenGui.DisplayOrder or 9000) + 100
+		local function RaiseNotificationLayer()
+			for _, Object in ipairs(CoreGui:GetDescendants()) do
+				if Object.Name == "NotificationFrame" and Object:IsA("GuiObject") then
+					local Ancestor = Object.Parent
+					while Ancestor and Ancestor ~= CoreGui do
+						if Ancestor:IsA("ScreenGui") then
+							pcall(function()
+								if Ancestor.DisplayOrder < MinimumOrder then
+									if CoreNotificationOriginalDisplayOrders[Ancestor] == nil then
+										CoreNotificationOriginalDisplayOrders[Ancestor] = Ancestor.DisplayOrder
+									end
+									Ancestor.DisplayOrder = MinimumOrder
+								end
+							end)
+							break
+						end
+						Ancestor = Ancestor.Parent
+					end
+				end
+			end
+		end
+		pcall(RaiseNotificationLayer)
+		task.spawn(function()
+			for _ = 1, 5 do
+				task.wait(0.04)
+				pcall(RaiseNotificationLayer)
+			end
+			-- NotificationScript2 uses a five-second lifetime plus its tween-out.
+			-- Restore CoreGui's original layer order once this toast has cleared.
+			task.wait(5.8)
+			if ThisGeneration ~= CoreNotificationLayerGeneration then return end
+			for Gui, OriginalOrder in pairs(CoreNotificationOriginalDisplayOrders) do
+				if Gui and Gui.Parent and Gui:IsA("ScreenGui") then
+					pcall(function()
+						if Gui.DisplayOrder >= MinimumOrder then Gui.DisplayOrder = OriginalOrder end
+					end)
+				end
+				CoreNotificationOriginalDisplayOrders[Gui] = nil
+			end
+		end)
+		return true
+	end)
+	if CoreSent and UsedCoreEvent then return end
+
+	-- Compatibility fallback for clients that do not expose NotificationScript2's event.
+	local SetCoreSent = pcall(function()
+		StarterGui:SetCore("SendNotification", {
+			Title = tostring(Title),
+			Text = tostring(Message),
+			Duration = 5,
+		})
+	end)
+	if not SetCoreSent then
+		warn("[Settings2016 Invite] " .. tostring(Title) .. ": " .. tostring(Message))
+	end
+end
+
+local function ShareInviteLink()
+	local Link = "https://www.roblox.com/games/" .. tostring(game.PlaceId)
+	if type(game.JobId) == "string" and game.JobId ~= "" then
+		Link = Link .. "?gameInstanceId=" .. game.JobId
+	end
+
+	-- Prefer a direct clipboard copy so sharing does not replace the custom menu
+	-- with Roblox's separate link-sharing prompt.
+	local Clipboard = nil
+	pcall(function() Clipboard = setclipboard end)
+	if type(Clipboard) ~= "function" then pcall(function() Clipboard = toclipboard end) end
+	if type(Clipboard) ~= "function" then
+		pcall(function()
+			local Env = getgenv and getgenv() or nil
+			Clipboard = Env and (Env.setclipboard or Env.toclipboard) or nil
+		end)
+	end
+	if type(Clipboard) == "function" then
+		local Copied = pcall(function() Clipboard(Link) end)
+		if Copied then
+			NotifyInviteShare("Invite link copied", "The experience link was copied to your clipboard.")
+			return
+		end
+	end
+
+	-- If clipboard functions are unavailable, use Roblox's supported sharing API.
+	local Options = {
+		ExpirationSeconds = 20000,
+		PreviewTitle = tostring(game.Name or "Roblox experience"),
+		PreviewDescription = GetMenuLocalizedText("Join me in this experience", MenuLocalizationLocale),
+	}
+	local ApiOk, ApiResult = pcall(function()
+		return SocialService:PromptLinkSharingAsync(LocalPlayer, Options)
+	end)
+	local ResultIsSuccess = false
+	if ApiOk then
+		pcall(function() ResultIsSuccess = ApiResult == Enum.PromptLinkSharingResult.Success end)
+	end
+	if ResultIsSuccess then
+		NotifyInviteShare("Share invite link", "Roblox opened the link-sharing prompt.")
+	else
+		NotifyInviteShare("Invite link", "Clipboard access is unavailable on this client.")
+		warn("[Settings2016 Invite] Invite link: " .. Link)
+	end
+end
+
+Connect(ShareInviteButton.Activated, ShareInviteLink)
+
+NewInviteShareRow.Visible = false
+
 INVITE_MOBILE_HEADER_DIVIDER = Create("Frame", {
 	Name = "InviteHeaderDivider",
 	Parent = InvitePage.Frame,
@@ -8344,12 +11547,13 @@ INVITE_MOBILE_HEADER_DIVIDER = Create("Frame", {
 	BorderSizePixel = 0,
 	Size = UDim2.new(1, -20, 0, 1),
 	Position = UDim2.new(0, 10, 0, 62),
+	Visible = false,
 	ZIndex = SETTINGS_BASE_ZINDEX + 14,
 })
 
 Connect(InviteList:GetPropertyChangedSignal("CanvasPosition"), function()
 	if INVITE_MOBILE_HEADER_DIVIDER and InviteList.Parent then
-		INVITE_MOBILE_HEADER_DIVIDER.Visible = InviteList.CanvasPosition.Y <= 0
+		INVITE_MOBILE_HEADER_DIVIDER.Visible = not USE_NEW_INVITE_MENU and InviteList.Visible and InviteList.CanvasPosition.Y <= 0
 	end
 end)
 
@@ -8414,22 +11618,56 @@ ActiveInviteLabel =
 InviteRows =
 	{}
 
--- Legacy Roblox-style presence palette:
--- Online = cyan       #00A2FF
--- In Experience = green #00FF00
--- In Studio = orange  #FFB000
-ONLINE_COLOR =
-	Color3.fromRGB(
-		0,
-		162,
-		255
-	)
-
-IN_EXPERIENCE_COLOR = Color3.fromRGB(2, 183, 90)
-
+-- Restore the older, muted presence colors used by the original invite list.
+-- Online is green, In Studio is orange, Offline is gray. In Experience uses
+-- a white filled-circle texture with a genuinely transparent play cutout.
+ONLINE_COLOR = Color3.fromRGB(2, 183, 90)
+IN_EXPERIENCE_COLOR = Color3.new(1, 1, 1)
 IN_STUDIO_COLOR = Color3.fromRGB(246, 136, 2)
-
 OFFLINE_COLOR = Color3.fromRGB(128, 128, 128)
+
+-- Generate a tiny transparent PNG locally so the play triangle is alpha=0,
+-- not a black/colored glyph over a hollow ring. This script already targets
+-- executor environments (getgenv); use their custom-asset API when available.
+IN_EXPERIENCE_CUTOUT_IMAGE = ""
+do
+	local Encoded = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAACeklEQVR42s2XMW/UQBCFP9t3VEFEIqSkBESVCkQTURBBSREh6KG830D4BSkjQQo6EL8AiQYKhJQqNCiglEkDAoKgytl+NG/Jyrmzby9AMtLqfOvdebNvd55nM0l0WAYUQNnonwVyP9fAXuN9D6iAVoCsI4DCTgBOA9fdFoDLBsHBfQA2gdduP0f4OGySxrXCv/OSViTtaHLb8Zz5hq9DbVRnJin38x1Ju5HjStJQUimpbrTS76po/K59YJ9ZVwAx+GrkaGiQSa32nGCr44Jogvf8/NgTy8aKUq2yD9knxshGBVA0Vr7f4jTV9htMFM0AQsdyNKHuoDh1S0IQyzFmoD6TNCfpswdXLavfiP6XidtRG2Mu4ObOUwED4JxzNh+RsbX7B8Bt4HskUJ1q5rmVMQaeUwQGZqLV1x17f8MUXpT0MvFs1BELM4EBAYuOTJbeNqu88o/ALeCRWchbFe9A1mWsRUCB6qWI5kmsAvoGXbE8f4pkt21L6hgzd1QLUYSTWu3WA94CV4B1B5G1sBEwFoAs91ftUnRQUq006A/gAXAP+BYd7lGHEWPOBgb6HM0q+8mB58BV4IUZGrcd/cDA37L4AG8D793XmqI9DxgeETyLsuAC8BS41pFVw5AFe8BWYhY0ixYZ/D6wYfByDHjA2AL2gg5sRjSmrDqUXWeBZ8AT4Iz7ei1bhTH/6MCrxCwIgZfATeAdcDfSgKJj7gHmFFK8ZCk+Jelho2iZSooL4Bew1iEgwb4C54E3VsFYkCZN1zVjFimf49C/LulLwqpbP8fTFiSplVFrQZJakpWJ1dBEJdmJKEqPvSw/EReT/341O/bLaVcA//x6/ht4q8aJ2TkUBwAAAABJRU5ErkJggg=="
+	local function DecodeBase64(Data)
+		local Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+		local Lookup = {}
+		for I = 1, #Alphabet do Lookup[Alphabet:sub(I, I)] = I - 1 end
+		local Out, Buffer, Bits = {}, 0, 0
+		for I = 1, #Data do
+			local C = Data:sub(I, I)
+			if C ~= "=" then
+				local V = Lookup[C]
+				if V then
+					Buffer = Buffer * 64 + V
+					Bits = Bits + 6
+					if Bits >= 8 then
+						Bits = Bits - 8
+						Out[#Out + 1] = string.char(math.floor(Buffer / (2 ^ Bits)) % 256)
+						Buffer = Buffer % (2 ^ Bits)
+					end
+				end
+			end
+		end
+		return table.concat(Out)
+	end
+	pcall(function()
+		local Write = writefile
+		local GetAsset = getcustomasset or getsynasset
+		if type(GetAsset) ~= "function" then
+			pcall(function()
+				if syn and type(syn.getcustomasset) == "function" then GetAsset = syn.getcustomasset end
+			end)
+		end
+		if type(Write) ~= "function" or type(GetAsset) ~= "function" then return end
+		local Path = "Settings2016_InExperiencePlayCutout.png"
+		Write(Path, DecodeBase64(Encoded))
+		IN_EXPERIENCE_CUTOUT_IMAGE = GetAsset(Path)
+	end)
+end
 
 -- ============================================================
 -- FRIEND STATUS
@@ -8730,6 +11968,57 @@ FriendMatchesSearch =
 ActiveInviteOptions =
 	nil
 
+StyleNewInviteAction = function(Button, Label, Disabled)
+	if not Button or not Label then return end
+
+	-- Player-row Invite uses the same original HubBar MenuButton asset and
+	-- SourceSansBold label as the older invite menu. The play cutout belongs
+	-- exclusively to the In Experience presence marker, not this action button.
+	local OldCorner = Button:FindFirstChildOfClass("UICorner")
+	if OldCorner then OldCorner:Destroy() end
+	Button.BorderSizePixel = 0
+	Button.BackgroundColor3 = Color3.new(1, 1, 1)
+	Button.BackgroundTransparency = 1
+	Button.Selectable = false
+	Button.ZIndex = SETTINGS_BASE_ZINDEX + 6
+	Label.BackgroundTransparency = 1
+	Label.TextTransparency = 0
+	Label.TextWrapped = false
+	Label.TextScaled = false
+	Label.TextXAlignment = Enum.TextXAlignment.Center
+	Label.TextYAlignment = Enum.TextYAlignment.Center
+	Label.ZIndex = SETTINGS_BASE_ZINDEX + 7
+
+	if Disabled then
+		-- Keep the accepted-invite state as plain text; hide the button art fully.
+		Button.Image = BUTTON_IMAGE
+		Button.ImageTransparency = 1
+		Button.BackgroundTransparency = 1
+		Button.AutoButtonColor = false
+		Button.Active = false
+		Button.Size = UDim2.fromOffset(INVITE_BUTTON_WIDTH, INVITE_BUTTON_HEIGHT)
+		Button.Position = UDim2.new(1, -(INVITE_BUTTON_WIDTH + 12), 0.5, -(INVITE_BUTTON_HEIGHT / 2))
+		Label.Text = "Invited..."
+		Label.Font = Enum.Font.SourceSans
+		Label.TextSize = 18
+		Label.TextColor3 = INVITED_COLOR
+	else
+		Button.Image = BUTTON_IMAGE
+		Button.ImageTransparency = 0
+		Button.BackgroundTransparency = 1
+		Button.AutoButtonColor = false
+		Button.Active = true
+		Button.Size = UDim2.fromOffset(INVITE_BUTTON_WIDTH, INVITE_BUTTON_HEIGHT)
+		Button.Position = UDim2.new(1, -(INVITE_BUTTON_WIDTH + 12), 0.5, -(INVITE_BUTTON_HEIGHT / 2))
+		Label.Text = "Invite"
+		Label.Font = Enum.Font.SourceSansBold
+		Label.TextSize = 18
+		Label.TextColor3 = Color3.new(1, 1, 1)
+	end
+	Label.Size = UDim2.new(1, 0, 1, -8)
+	Label.Position = UDim2.new(0, 0, 0, 0)
+end
+
 InviteFriend =
 	function(
 		Friend,
@@ -8755,6 +12044,15 @@ InviteFriend =
 
 		local FriendKey =
 			tostring(FriendId)
+
+		-- FFlag-selected legacy invite menu: show the requested failure message and
+		-- do not invoke the modern invite prompt or falsely mark the friend invited.
+		if not USE_NEW_INVITE_MENU then
+			if type(ShowInviteFailureError) == "function" then
+				ShowInviteFailureError()
+			end
+			return
+		end
 
 		-- This is the invite path used by the older working Settings2016
 		-- builds: open the targeted native prompt first, with a generic
@@ -8833,17 +12131,20 @@ InviteFriend =
 		end
 
 		if not Success then
-			if Button then
-				Button.ImageTransparency = 0
-				Button.BackgroundTransparency = 1
-				Button.Active = true
-				Button.Selectable = false
-			end
-
-			if Label then
-				Label.Text = "Invite"
-				Label.TextColor3 = Color3.new(1, 1, 1)
-				Label.TextTransparency = 0
+			if USE_NEW_INVITE_MENU then
+				StyleNewInviteAction(Button, Label, false)
+			else
+				if Button then
+					Button.ImageTransparency = 0
+					Button.BackgroundTransparency = 1
+					Button.Active = true
+					Button.Selectable = false
+				end
+				if Label then
+					Label.Text = "Invite"
+					Label.TextColor3 = Color3.new(1, 1, 1)
+					Label.TextTransparency = 0
+				end
 			end
 			return
 		end
@@ -8855,19 +12156,22 @@ InviteFriend =
 		Friend.Invited = true
 		PendingInviteFriendIds[FriendKey] = true
 
-		if Button then
-			Button.Image = ""
-			Button.ImageTransparency = 1
-			Button.BackgroundTransparency = 1
-			Button.AutoButtonColor = false
-			Button.Active = false
-			Button.Selectable = false
-		end
-
-		if Label then
-			Label.Text = "Invited..."
-			Label.TextColor3 = INVITED_COLOR
-			Label.TextTransparency = 0
+		if USE_NEW_INVITE_MENU then
+			StyleNewInviteAction(Button, Label, true)
+		else
+			if Button then
+				Button.Image = ""
+				Button.ImageTransparency = 1
+				Button.BackgroundTransparency = 1
+				Button.AutoButtonColor = false
+				Button.Active = false
+				Button.Selectable = false
+			end
+			if Label then
+				Label.Text = "Invited..."
+				Label.TextColor3 = INVITED_COLOR
+				Label.TextTransparency = 0
+			end
 		end
 	end
 
@@ -8944,34 +12248,40 @@ local InstallInvitePromptMonitor = function()
 
 						-- The actual invite was sent by Roblox's native prompt.
 						-- Hide the Invite button and leave the status as Invited....
-						if Button then
-							Button.ImageTransparency = 1
-							Button.BackgroundTransparency = 1
-							Button.AutoButtonColor = false
-							Button.Active = false
-							Button.Selectable = false
-					end
-
-						if Label then
-							Label.Text = "Invited..."
-							Label.TextColor3 = INVITED_COLOR
-							Label.TextTransparency = 0
+						if USE_NEW_INVITE_MENU then
+							StyleNewInviteAction(Button, Label, true)
+						else
+							if Button then
+								Button.ImageTransparency = 1
+								Button.BackgroundTransparency = 1
+								Button.AutoButtonColor = false
+								Button.Active = false
+								Button.Selectable = false
+							end
+							if Label then
+								Label.Text = "Invited..."
+								Label.TextColor3 = INVITED_COLOR
+								Label.TextTransparency = 0
+							end
 						end
 					else
 						-- The native prompt was closed without sending the selected
 						-- friend. Restore the normal Invite action.
-						if Button then
-							Button.ImageTransparency = 0
-							Button.BackgroundTransparency = 1
-							Button.AutoButtonColor = false
-							Button.Active = true
-							Button.Selectable = false
-					end
-
-						if Label then
-							Label.Text = "Invite"
-							Label.TextColor3 = Color3.new(1, 1, 1)
-							Label.TextTransparency = 0
+						if USE_NEW_INVITE_MENU then
+							StyleNewInviteAction(Button, Label, false)
+						else
+							if Button then
+								Button.ImageTransparency = 0
+								Button.BackgroundTransparency = 1
+								Button.AutoButtonColor = false
+								Button.Active = true
+								Button.Selectable = false
+							end
+							if Label then
+								Label.Text = "Invite"
+								Label.TextColor3 = Color3.new(1, 1, 1)
+								Label.TextTransparency = 0
+							end
 						end
 					end
 
@@ -9075,7 +12385,7 @@ BuildInviteRow =
 							0,
 							0,
 							0,
-							PLAYER_LIST_OFFSET
+							(USE_NEW_INVITE_MENU and (INVITE_SHARE_ROW_HEIGHT + INVITE_SHARE_ROW_GAP) or PLAYER_LIST_OFFSET)
 							+ ((Index - 1) * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP))
 						),
 
@@ -9104,98 +12414,14 @@ BuildInviteRow =
 				}
 			)
 
-		local SelectionAdorner =
-			Create(
-				"ImageLabel",
-				{
-					Name = "InviteSelectionImageObject",
-					Parent = SelectionButton,
-					BackgroundTransparency = 1,
-					BorderSizePixel = 0,
-					Image = "rbxasset://textures/ui/SelectionBox@2x.png",
-					ImageTransparency = 1,
-					ScaleType = Enum.ScaleType.Slice,
-					SliceScale = 0.5,
-					SliceCenter = Rect.new(36, 36, 88, 88),
-					AnchorPoint = Vector2.new(0, 0),
-					Position = UDim2.new(0, 0, 0, 0),
-					Size = UDim2.new(1, 0, 1, 0),
-					Visible = true,
-					Active = false,
-					Selectable = false,
-					ZIndex = SETTINGS_BASE_ZINDEX + 7,
-				}
-			)
-
-		local SelectionImage =
-			Create(
-				"ImageLabel",
-				{
-					Name = "InviteSelectionVisual",
-					Parent = SelectionButton,
-					BackgroundTransparency = 1,
-					BorderSizePixel = 0,
-					Image = "rbxasset://textures/ui/SelectionBox@2x.png",
-					ScaleType = Enum.ScaleType.Slice,
-					SliceScale = 0.5,
-					SliceCenter = Rect.new(36, 36, 88, 88),
-					AnchorPoint = Vector2.new(0, 0),
-					Position = UDim2.new(0, -10, 0, -10),
-					Size = UDim2.new(1, 20, 1, 20),
-					ClipsDescendants = false,
-					Visible = false,
-					Active = false,
-					Selectable = false,
-					ZIndex = SETTINGS_BASE_ZINDEX + 8,
-				}
-			)
-
-		SelectionButton.SelectionImageObject = SelectionAdorner
-
+		-- Keep only an inert indexing object for the invite-button arrays. No
+		-- SelectionImageObject, selection border, or gamepad focus overlay is used.
+		SelectionButton.Active = false
+		SelectionButton.Selectable = false
+		SelectionButton.SelectionImageObject = nil
+		local SelectionIndex = #InviteSelectionButtons + 1
 		Insert(InviteSelectionButtons, SelectionButton)
 		Insert(InviteSelectionFriends, Friend)
-		Insert(InviteSelectionImages, SelectionImage)
-		local SelectionIndex = #InviteSelectionButtons
-
-		Connect(
-			SelectionButton.Activated,
-			function()
-				for i, Candidate in ipairs(InviteSelectionButtons) do
-					if Candidate == SelectionButton then
-						SetInviteSelection(i)
-						return
-					end
-				end
-			end
-		)
-
-		Connect(
-			SelectionButton.SelectionGained,
-			function()
-				for i, Candidate in ipairs(InviteSelectionButtons) do
-					if Candidate == SelectionButton then
-						SetInviteSelection(i, true)
-						return
-					end
-				end
-			end
-		)
-
-		Connect(
-			Row.InputBegan,
-			function(Input)
-				if Input.UserInputType == Enum.UserInputType.Touch
-					or Input.UserInputType == Enum.UserInputType.MouseButton1
-				then
-					for i, Candidate in ipairs(InviteSelectionButtons) do
-						if Candidate == SelectionButton then
-							SetInviteSelection(i, true)
-							return
-						end
-					end
-				end
-			end
-		)
 
 		Connect(
 			Row.MouseEnter,
@@ -9219,15 +12445,19 @@ BuildInviteRow =
 				{
 					Name = "AvatarBackground",
 					Parent = Row,
-					BackgroundColor3 = Color3.new(1, 1, 1),
+					BackgroundColor3 = USE_NEW_INVITE_MENU and Color3.fromRGB(48, 50, 55) or Color3.new(1, 1, 1),
 					BackgroundTransparency = 0,
-					BorderSizePixel = 2,
+					BorderSizePixel = USE_NEW_INVITE_MENU and 0 or 2,
 					BorderColor3 = Color3.fromRGB(205, 205, 205),
-					Size = UDim2.new(0, 36, 0, 36),
-					Position = UDim2.new(0, 12, 0.5, -18),
+					Size = USE_NEW_INVITE_MENU and UDim2.fromOffset(40, 40) or UDim2.new(0, 36, 0, 36),
+					Position = USE_NEW_INVITE_MENU and UDim2.new(0, 12, 0.5, -20) or UDim2.new(0, 12, 0.5, -18),
 					ZIndex = SETTINGS_BASE_ZINDEX + 2,
 				})
-
+		if USE_NEW_INVITE_MENU then
+			local AvatarCorner = Instance.new("UICorner")
+			AvatarCorner.CornerRadius = UDim.new(1, 0)
+			AvatarCorner.Parent = AvatarBackground
+		end
 
 		local Avatar =
 			Create(
@@ -9240,12 +12470,17 @@ BuildInviteRow =
 						"rbxthumb://type=AvatarBust&id="
 						.. tostring(tonumber(Friend.Id) or 1)
 						.. "&w=100&h=100",
-					Size = UDim2.new(0, 32, 0, 32),
-					Position = UDim2.new(0, 14, 0.5, -16),
+					Size = USE_NEW_INVITE_MENU and UDim2.fromOffset(36, 36) or UDim2.new(0, 32, 0, 32),
+					Position = USE_NEW_INVITE_MENU and UDim2.new(0, 14, 0.5, -18) or UDim2.new(0, 14, 0.5, -16),
 					ScaleType = Enum.ScaleType.Fit,
 					ZIndex = SETTINGS_BASE_ZINDEX + 3,
 				}
 			)
+		if USE_NEW_INVITE_MENU then
+			local AvatarCorner = Instance.new("UICorner")
+			AvatarCorner.CornerRadius = UDim.new(1, 0)
+			AvatarCorner.Parent = Avatar
+		end
 
 		local DisplayText =
 			DisplayNameSupport
@@ -9259,12 +12494,13 @@ BuildInviteRow =
 				Parent = Row,
 				BackgroundTransparency = 1,
 				Font = Enum.Font.SourceSans,
-				TextSize = 24,
+				TextSize = USE_NEW_INVITE_MENU and 22 or 24,
 				TextColor3 = Color3.new(1, 1, 1),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Text = DisplayText,
-				Size = UDim2.new(1, -330, 0, 30),
-				Position = UDim2.new(0, 60, 0, 5),
+				TextWrapped = false,
+				Size = USE_NEW_INVITE_MENU and UDim2.new(1, -184, 0, 26) or UDim2.new(1, -330, 0, 30),
+				Position = USE_NEW_INVITE_MENU and UDim2.new(0, 82, 0, 7) or UDim2.new(0, 60, 0, 5),
 				ZIndex = SETTINGS_BASE_ZINDEX + 3,
 			}
 		)
@@ -9276,12 +12512,13 @@ BuildInviteRow =
 				Parent = Row,
 				BackgroundTransparency = 1,
 				Font = Enum.Font.SourceSans,
-				TextSize = 17,
+				TextSize = USE_NEW_INVITE_MENU and 22 or 17,
 				TextColor3 = Color3.fromRGB(190, 190, 190),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Text = "@" .. (Friend.Username or ""),
-				Size = UDim2.new(1, -330, 0, 22),
-				Position = UDim2.new(0, 60, 0, 27),
+				TextWrapped = false,
+				Size = USE_NEW_INVITE_MENU and UDim2.new(1, -184, 0, 26) or UDim2.new(1, -330, 0, 22),
+				Position = USE_NEW_INVITE_MENU and UDim2.new(0, 60, 0, 29) or UDim2.new(0, 60, 0, 27),
 				ZIndex = SETTINGS_BASE_ZINDEX + 3,
 			}
 		)
@@ -9300,11 +12537,44 @@ BuildInviteRow =
 				TextColor3 = StatusColor,
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Text = StatusText,
+				Visible = not USE_NEW_INVITE_MENU,
 				Size = UDim2.new(1, -330, 0, 18),
 				Position = UDim2.new(0, 60, 0, 40),
 				ZIndex = SETTINGS_BASE_ZINDEX + 3,
 			}
 		)
+
+		if USE_NEW_INVITE_MENU then
+			local IsInExperience = StatusText == "In Experience"
+			local PresenceSize = 16 -- identical size for the white cutout circle and colored presence dots
+			local PresenceDot
+			if IsInExperience and IN_EXPERIENCE_CUTOUT_IMAGE ~= "" then
+				-- The PNG itself is a filled white circle. The triangle's alpha is
+				-- zero, so the player-row background is genuinely visible through it.
+				PresenceDot = Create("ImageLabel", {
+					Name = "PresenceDot", Parent = Row,
+					BackgroundTransparency = 1, BorderSizePixel = 0,
+					Image = IN_EXPERIENCE_CUTOUT_IMAGE,
+					ImageColor3 = Color3.new(1, 1, 1), ImageTransparency = 0,
+					ScaleType = Enum.ScaleType.Fit,
+					Size = UDim2.fromOffset(PresenceSize, PresenceSize),
+					Position = UDim2.new(0, 56, 0, 20 - PresenceSize / 2),
+					ZIndex = SETTINGS_BASE_ZINDEX + 5,
+				})
+			else
+				PresenceDot = Create("Frame", {
+					Name = "PresenceDot", Parent = Row,
+					BackgroundColor3 = StatusColor, BackgroundTransparency = 0,
+					BorderSizePixel = 0,
+					Size = UDim2.fromOffset(PresenceSize, PresenceSize),
+					Position = UDim2.new(0, 56, 0, 20 - PresenceSize / 2),
+					ZIndex = SETTINGS_BASE_ZINDEX + 5,
+				})
+				local PresenceCorner = Instance.new("UICorner")
+				PresenceCorner.CornerRadius = UDim.new(1, 0)
+				PresenceCorner.Parent = PresenceDot
+			end
+		end
 
 		-- ========================================================
 		-- INVITE STATE DISPLAY
@@ -9324,6 +12594,7 @@ BuildInviteRow =
 			InviteButton.AutoButtonColor = false
 			InviteButton.ImageTransparency = 1
 			InviteButton.BackgroundTransparency = 1
+			InviteLabel.Font = Enum.Font.SourceSans
 			InviteLabel.TextColor3 = INVITED_COLOR
 			InviteLabel.TextWrapped = false
 			InviteLabel.TextScaled = false
@@ -9389,6 +12660,14 @@ BuildInviteRow =
 
 		end
 
+		if USE_NEW_INVITE_MENU then
+			local NewButton = Row:FindFirstChild("InviteButton")
+			local NewLabel = NewButton and NewButton:FindFirstChild("InviteButtonTextLabel")
+			if NewButton and NewLabel then
+				StyleNewInviteAction(NewButton, NewLabel, Friend.Invited == true)
+			end
+		end
+
 		return Row
 
 	end
@@ -9399,29 +12678,19 @@ BuildInviteRow =
 
 UpdateInviteListScrollbar = function()
 	if not InviteList then return end
-
-	local ContentHeight = InviteList.CanvasSize.Y.Offset
-	local WindowHeight = InviteList.AbsoluteWindowSize.Y
-	if WindowHeight <= 0 then
-		WindowHeight = InviteList.AbsoluteSize.Y
-	end
-
-	local NeedsScrollbar = ContentHeight > WindowHeight + 1
-	InviteList.ScrollBarThickness = NeedsScrollbar and 6 or 0
-	InviteList.VerticalScrollBarInset =
-		NeedsScrollbar
-		and Enum.ScrollBarInset.ScrollBar
-		or Enum.ScrollBarInset.None
+	-- Keep scrolling functional without showing a visible scrollbar.
+	InviteList.ScrollBarThickness = 0
+	InviteList.VerticalScrollBarInset = Enum.ScrollBarInset.None
 end
 
 RebuildInviteList =
 	function()
 
-		local PreviousFriendId = InviteSelectedFriendId
-
-		pcall(function()
-			HideInviteSelection()
-		end)
+		-- New invite-menu rows are not selected or highlighted.
+		InviteSelectedIndex = 0
+		InviteSelectedFriendId = nil
+		Protect(function() GuiService.SelectedObject = nil end)
+		Protect(function() GuiService.SelectedCoreObject = nil end)
 
 		for _, Row in next,
 			InviteRows
@@ -9475,24 +12744,9 @@ RebuildInviteList =
 
 		end
 
-		for i, SelectionButton in ipairs(InviteSelectionButtons) do
-			SelectionButton.NextSelectionUp = InviteSelectionButtons[math.max(1, i - 1)]
-			SelectionButton.NextSelectionDown = InviteSelectionButtons[math.min(#InviteSelectionButtons, i + 1)]
-			SelectionButton.NextSelectionLeft = SelectionButton
-			SelectionButton.NextSelectionRight = SelectionButton
-		end
-
-		InviteList.CanvasSize =
-			UDim2.new(
-				0,
-				0,
-				0,
-				math.max(
-					0,
-					Count * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP)
-					- INVITE_ROW_GAP
-				)
-			)
+		local ShareScrollOffset = USE_NEW_INVITE_MENU and (INVITE_SHARE_ROW_HEIGHT + INVITE_SHARE_ROW_GAP) or 0
+		local FriendRowsHeight = math.max(0, Count * (INVITE_ROW_HEIGHT + INVITE_ROW_GAP) - INVITE_ROW_GAP)
+		InviteList.CanvasSize = UDim2.new(0, 0, 0, ShareScrollOffset + FriendRowsHeight)
 
 		UpdateInviteListScrollbar()
 		Spawn(function()
@@ -9500,21 +12754,10 @@ RebuildInviteList =
 			UpdateInviteListScrollbar()
 		end)
 
-		if Count > 0 then
-			local NewIndex = 1
-			if PreviousFriendId then
-				for i, Friend in ipairs(InviteSelectionFriends) do
-					if tostring(Friend.Id) == tostring(PreviousFriendId) then
-						NewIndex = i
-						break
-					end
-				end
-			end
-			SetInviteSelection(NewIndex, true)
-		else
-			InviteSelectedIndex = 0
-			InviteSelectedFriendId = nil
-		end
+		InviteSelectedIndex = 0
+		InviteSelectedFriendId = nil
+		Protect(function() GuiService.SelectedObject = nil end)
+		Protect(function() GuiService.SelectedCoreObject = nil end)
 
 	end
 
@@ -9560,8 +12803,11 @@ OpenInviteFriends =
 
 		InviteList.Visible =
 			true
+		InviteList.CanvasPosition = Vector2.new(0, 0)
+		if NewInviteShareRow then NewInviteShareRow.Visible = USE_NEW_INVITE_MENU end
+		if SearchFrame then SearchFrame.Visible = true end
 
-		if INVITE_MOBILE_HEADER_DIVIDER then INVITE_MOBILE_HEADER_DIVIDER.Visible = true end
+		if INVITE_MOBILE_HEADER_DIVIDER then INVITE_MOBILE_HEADER_DIVIDER.Visible = not USE_NEW_INVITE_MENU end
 
 		SearchBox.Text =
 			""
@@ -9586,15 +12832,17 @@ OpenInviteFriends =
 
 		InviteSelectedFriendId = nil
 		RefreshInviteFriends()
-		if #InviteSelectionButtons > 0 then
-			SetInviteSelection(1)
-		end
-
+		-- The invite page has no selection overlay or auto-focused player row.
+		InviteSelectedIndex = 0
+		InviteSelectedFriendId = nil
+		Protect(function() GuiService.SelectedObject = nil end)
+		Protect(function() GuiService.SelectedCoreObject = nil end)
 		ResizeHub()
-		if InviteSelectedIndex > 0 then
-			SetInviteSelection(InviteSelectedIndex, true)
-		end
 		if ConfigureInviteMobileHeader then ConfigureInviteMobileHeader() end
+		if InviteList then
+			InviteList.ScrollBarThickness = 0
+			InviteList.VerticalScrollBarInset = Enum.ScrollBarInset.None
+		end
 
 	end
 
@@ -9736,6 +12984,7 @@ SyncTopBarAppVisibility =
 		else
 			SetTopBarAppEnabled(true)
 		end
+		if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 	end
 
 CameraDefaultString =
@@ -10409,9 +13658,12 @@ CameraSensitivitySlider = MakeSlider(
 	true
 )
 
-CameraSensitivitySlider.SliderFrame.Size = UDim2.new(0, 500, 0, 50)
-CameraSensitivitySlider.SliderFrame.Position = UDim2.new(1, -502, 0.5, -25)
-StretchSliderBars(CameraSensitivitySlider, 54, 414, nil, 24)
+-- Keep the slider group centered in the same right-side control column.
+-- The numeric field occupies the last 50px of the row; keep a 6px gap before it.
+-- Use 42px hitboxes so the 30px +/- artwork does not clip at the button edges.
+CameraSensitivitySlider.SliderFrame.Size = UDim2.new(0, 430, 0, 50)
+CameraSensitivitySlider.SliderFrame.Position = UDim2.new(1, -494, 0.5, -25)
+StretchSliderBars(CameraSensitivitySlider, 60, 386, nil, 42, 4)
 
 CameraSensitivityNumberFrame = Create("Frame", {
 	Name = "CameraSensitivityNumberFrame",
@@ -10421,7 +13673,7 @@ CameraSensitivityNumberFrame = Create("Frame", {
 	BorderSizePixel = 2,
 	BorderColor3 = Color3.fromRGB(205, 205, 205),
 	Size = UDim2.new(0, 50, 0, 38),
-	Position = UDim2.new(1, -52, 0.5, -19),
+	Position = UDim2.new(1, -58, 0.5, -19),
 	ZIndex = SETTINGS_BASE_ZINDEX + 6,
 })
 
@@ -10469,53 +13721,43 @@ end)
 
 -- This is the real Roblox output-device selector.  It is intentionally
 -- independent of Voice Chat: it controls the destination for experience audio.
-OutputDeviceNames, OutputDeviceMap, CurrentOutputName, CurrentOutputGuid =
-	GetOutputDeviceOptions()
-
-if #OutputDeviceNames > 0 then
-	local CurrentOutputIndex = 1
-
-	for Index, Name in ipairs(OutputDeviceNames) do
-		local Info = OutputDeviceMap[Name]
-		if Info
-			and CurrentOutputName
-			and CurrentOutputName == Info.Name
-			and (not CurrentOutputGuid or CurrentOutputGuid == "" or CurrentOutputGuid == Info.Guid)
-		then
-			CurrentOutputIndex = Index
-			break
-		end
+OutputDeviceNames, OutputDeviceMap, CurrentOutputName, CurrentOutputGuid = GetOutputDeviceOptions()
+local CurrentOutputIndex = 1
+for Index, Name in ipairs(OutputDeviceNames) do
+	local Info = OutputDeviceMap[Name]
+	if Info and CurrentOutputName and CurrentOutputName == Info.Name
+		and (not CurrentOutputGuid or CurrentOutputGuid == "" or CurrentOutputGuid == Info.Guid) then
+		CurrentOutputIndex = Index
+		break
 	end
+end
 
-	AudioOutputSelector = MakeSelector(
-		GamePage,
-		"Output Device",
-		OutputDeviceNames,
-		CurrentOutputIndex,
-		function(Index, Value)
-			local Info = OutputDeviceMap[Value]
-			if not Info then
-				return
-			end
-
-			if not SetRealOutputDevice(Info.Name, Info.Guid) then
+AudioOutputSelector = MakeSelector(
+	GamePage,
+	"Output Device",
+	OutputDeviceNames,
+	CurrentOutputIndex,
+	function(Index, Value)
+		local Info = OutputDeviceMap[Value]
+		if not Info then return end
+		if not SetRealOutputDevice(Info.Name, Info.Guid) then
+			Spawn(function()
+				Wait(0.25)
 				local ActualName, ActualGuid = GetOutputDeviceInfo()
 				for DeviceIndex, DeviceName in ipairs(OutputDeviceNames) do
 					local ActualInfo = OutputDeviceMap[DeviceName]
-					if ActualInfo
-						and ActualName == ActualInfo.Name
-						and (not ActualGuid or ActualGuid == "" or ActualGuid == ActualInfo.Guid)
-					then
-						AudioOutputSelector:SetSelectionIndex(DeviceIndex, false)
+					if ActualInfo and ActualName == ActualInfo.Name
+						and (not ActualGuid or ActualGuid == "" or ActualGuid == ActualInfo.Guid) then
+						if AudioOutputSelector then AudioOutputSelector:SetSelectionIndex(DeviceIndex, false) end
 						break
 					end
 				end
-			end
+			end)
 		end
-	)
-end
+	end
+)
 
-MakeSlider(
+VolumeSlider = MakeSlider(
 	GamePage,
 	"Volume",
 	10,
@@ -10526,74 +13768,43 @@ MakeSlider(
 	end
 )
 
--- Only expose voice controls when this experience supports default voice and
--- the local account is voice-enabled. Never create a synthetic AudioDeviceInput.
+-- Voice UI must follow the experience's actual setting. The legacy
+-- VoiceChatInternal controller exists in clients even in places where voice is
+-- disabled, so its methods/group ID are NOT proof that this place supports VC.
+-- Fail closed if the experience setting cannot be read; never infer support from
+-- a generic controller, a "default" group, or another player's cached icon.
 GetGameVoiceSupport = function()
 	local ReadOk, Enabled = pcall(function()
 		return VoiceChatService.EnableDefaultVoice
 	end)
-	if ReadOk and Enabled == true then return true end
-
-	-- A protected property read may be denied in the client. Check evidence from
-	-- actual Roblox-created voice objects and live voice state before deciding
-	-- that the experience has no voice support.
-	local HasEvidence = false
-	for _, Player in ipairs(Players:GetPlayers()) do
-		if GetAudioDeviceInput(Player) then
-			HasEvidence = true
-			break
-		end
+	if ReadOk and type(Enabled) == "boolean" then
+		return Enabled
 	end
 
-	if not HasEvidence and VoiceChatInternal then
-		pcall(function()
-			local GroupId = tostring(VoiceChatInternal:GetGroupId() or "")
-			if GroupId ~= "" then HasEvidence = true end
+	-- EnableDefaultVoice is PluginSecurity on some client revisions. If the
+	-- ordinary property read is blocked, try the executor's hidden-property reader
+	-- if it exists. Never fall back to the generic VoiceChatInternal service: that
+	-- controller can exist in places where the creator disabled voice.
+	if type(gethiddenproperty) == "function" then
+		local HiddenOk, HiddenEnabled = pcall(function()
+			return gethiddenproperty(VoiceChatService, "EnableDefaultVoice")
 		end)
-		if not HasEvidence then
-			pcall(function()
-				local Participants = VoiceChatInternal:GetParticipants()
-				HasEvidence = type(Participants) == "table" and next(Participants) ~= nil
-			end)
-		end
-		if not HasEvidence then
-			pcall(function()
-				HasEvidence = VoiceChatInternal:IsContextVoiceEnabled() == true
-			end)
+		if HiddenOk and type(HiddenEnabled) == "boolean" then
+			return HiddenEnabled
 		end
 	end
-
-	if not HasEvidence then
-		pcall(function() RefreshNativeVoiceMirrorCache(true) end)
-		for _, Icon in pairs(NativeVoiceIconObjects) do
-			if Icon and Icon.Parent then HasEvidence = true break end
-		end
-	end
-
-	if HasEvidence then return true end
-	-- Some clients/games expose the legacy VoiceChatInternal controller while
-	-- EnableDefaultVoice is false or reports the modern path only. Do not hide
-	-- every voice control before the first participant/input has been created.
-	if ReadOk and Enabled == false then
-		return HasVoiceConnectionControls == true or HasMicDeviceControls == true
-	end
-	return HasVoiceConnectionControls == true or HasMicDeviceControls == true
+	return false
 end
 
+-- This is the documented client-side account eligibility check. It only checks
+-- the local player. If the request fails, do not guess from IsContextVoiceEnabled
+-- or from a generic CoreGui button: those can exist even when this account is not
+-- eligible. The poller retries later, so a temporary HTTP failure can recover.
 GetAccountVoiceAllowed = function()
-	local Allowed = false
-	local Success = pcall(function()
-		Allowed = VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId) == true
+	local Success, Allowed = pcall(function()
+		return VoiceChatService:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId)
 	end)
-	if Success then return Allowed end
-	-- Fall back only when the public local-entitlement query is unavailable,
-	-- not when Roblox explicitly says the account is ineligible.
-	if VoiceChatInternal then
-		local Ok, Value = pcall(function() return VoiceChatInternal:IsContextVoiceEnabled() == true end)
-		if Ok then return Value end
-	end
-	if GetAudioDeviceInput(LocalPlayer) then return true end
-	return FindNativeVoiceIcon(LocalPlayer) ~= nil
+	return Success and Allowed == true
 end
 
 HasVoiceConnectionControls = false
@@ -10613,8 +13824,12 @@ if VoiceChatInternal then
 end
 
 VoiceGameSupported = GetGameVoiceSupport()
-VoiceAccountAllowed = GetAccountVoiceAllowed()
-VoiceOptionAvailable = VoiceGameSupported and VoiceAccountAllowed
+VoiceAccountAllowed = VoiceGameSupported == true and GetAccountVoiceAllowed() == true
+VoiceOptionAvailable = VoiceGameSupported == true and VoiceAccountAllowed == true
+if VoiceAccountAllowed == true and LocalPlayer and LocalPlayer.UserId then
+	VoiceEnabledCache[tonumber(LocalPlayer.UserId) or 0] = true
+end
+if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 
 -- Do not change VoiceChatService.UseAudioApi from the client. Roblox owns the
 -- Audio API rollout and creates the real AudioDeviceInput when that path is active.
@@ -10626,56 +13841,41 @@ VoiceChatDesiredOn = VoiceOptionAvailable == true
 RefreshLocalVoiceState()
 VoiceChatSelector = nil
 
-AudioInputSelector = nil
-if VoiceOptionAvailable and HasMicDeviceControls then
-	-- Device switching is available only when this client exposes the real controller.
-	GetMicDeviceOptions = function()
-		local Names = {"Default"}
-		MicDeviceMap = {Default = {Name = "", Guid = ""}}
-		local Seen = {Default = true}
+InputDeviceNames, InputDeviceMap, CurrentInputName, CurrentInputGuid = GetInputDeviceOptions()
+local CurrentInputIndex = 1
+for Index, Name in ipairs(InputDeviceNames) do
+	local Info = InputDeviceMap[Name]
+	if Info and CurrentInputName and CurrentInputName == Info.Name
+		and (not CurrentInputGuid or CurrentInputGuid == "" or CurrentInputGuid == Info.Guid) then
+		CurrentInputIndex = Index
+		break
+	end
+end
 
-		local function AddDevice(Name, Guid)
-			if Name == nil then return end
-			Name = tostring(Name)
-			if Name == "" or Seen[Name] then return end
-			Guid = tostring(Guid or "")
-			Seen[Name] = true
-			table.insert(Names, Name)
-			MicDeviceMap[Name] = {Name = Name, Guid = Guid}
-		end
-
-		local function ParseDevice(Device, Depth)
-			if type(Device) ~= "table" or (Depth or 0) > 5 then return end
-			local Name = Device.Name or Device.name or Device.DisplayName or Device.displayName or Device.DeviceName or Device.deviceName
-			local Guid = Device.Guid or Device.guid or Device.Id or Device.id or Device.DeviceGuid or Device.deviceGuid
-			if Name then AddDevice(Name, Guid) end
-			for Key, Child in next, Device do
-				if type(Child) == "table" then
-					ParseDevice(Child, (Depth or 0) + 1)
-				elseif type(Key) == "number" and type(Child) == "string" then
-					AddDevice(Child, "")
-				end
-			end
-		end
-
-		if VoiceChatInternal then
-			pcall(function()
-				local Returned = {VoiceChatInternal:GetMicDevices()}
-				for _, Value in next, Returned do
-					if type(Value) == "table" then ParseDevice(Value, 0) end
+AudioInputSelector = MakeSelector(
+	GamePage,
+	"Input Device",
+	InputDeviceNames,
+	CurrentInputIndex,
+	function(Index, Value)
+		local Info = InputDeviceMap[Value]
+		if not Info then return end
+		if not SetRealInputDevice(Info.Name, Info.Guid) then
+			Spawn(function()
+				Wait(0.25)
+				local ActualName, ActualGuid = GetInputDeviceInfo()
+				for DeviceIndex, DeviceName in ipairs(InputDeviceNames) do
+					local ActualInfo = InputDeviceMap[DeviceName]
+					if ActualInfo and ActualName == ActualInfo.Name
+						and (not ActualGuid or ActualGuid == "" or ActualInfo.Guid == ActualGuid) then
+						if AudioInputSelector then AudioInputSelector:SetSelectionIndex(DeviceIndex, false) end
+						break
+					end
 				end
 			end)
 		end
-		return Names
 	end
-
-	MicDeviceNames = GetMicDeviceOptions()
-	AudioInputSelector = MakeSelector(GamePage, "Audio Input Device", MicDeviceNames, 1, function(Index, Value)
-		local Info = MicDeviceMap and MicDeviceMap[Value]
-		if not Info or not VoiceChatInternal then return end
-		pcall(function() VoiceChatInternal:SetMicDevice(Info.Name, Info.Guid) end)
-	end)
-end
+)
 
 RemoveVoiceFeatureRows = function()
 	local function RemoveRow(Selector)
@@ -10688,10 +13888,9 @@ RemoveVoiceFeatureRows = function()
 		end
 		pcall(function() Row:Destroy() end)
 	end
+	-- Input Device now belongs to the main Settings page, not the voice-only rows.
 	RemoveRow(VoiceChatSelector)
-	RemoveRow(AudioInputSelector)
 	VoiceChatSelector = nil
-	AudioInputSelector = nil
 	if GamePage and GamePage.ReflowRows then pcall(function() GamePage:ReflowRows() end) end
 end
 
@@ -10703,12 +13902,11 @@ Spawn(function()
 	while ScreenGui and ScreenGui.Parent do
 		Wait(VoiceOptionAvailable and 8 or 1.5)
 		local NewGameSupport = GetGameVoiceSupport()
-		local NewAccountAllowed = GetAccountVoiceAllowed()
-		if VoiceChatDesiredOn then
-			NewGameSupport = NewGameSupport or VoiceGameSupported
-			NewAccountAllowed = NewAccountAllowed or VoiceAccountAllowed
-		end
-		local NewOptionAvailable = NewGameSupport and NewAccountAllowed
+		local NewAccountAllowed = NewGameSupport == true and GetAccountVoiceAllowed() == true
+		-- Re-evaluate both gates on every pass. Never keep an old true value just
+		-- because the voice auto-join preference was previously enabled: this is what
+		-- caused voice UI to persist into places with voice disabled.
+		local NewOptionAvailable = NewGameSupport == true and NewAccountAllowed == true
 		local Changed = NewGameSupport ~= VoiceGameSupported
 			 or NewAccountAllowed ~= VoiceAccountAllowed
 			 or NewOptionAvailable ~= VoiceOptionAvailable
@@ -10716,6 +13914,7 @@ Spawn(function()
 		VoiceGameSupported = NewGameSupport
 		VoiceAccountAllowed = NewAccountAllowed
 		VoiceOptionAvailable = NewOptionAvailable
+		if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 		if SupportBecameAvailable then
 			for _, Player in ipairs(Players:GetPlayers()) do
 				if Player ~= LocalPlayer then
@@ -10728,8 +13927,15 @@ Spawn(function()
 			SetVoiceChatPreference(true)
 		elseif not VoiceOptionAvailable then
 			VoiceChatDesiredOn = false
+			VoiceConnectionAttempting = false
 			VoiceChatEnabled = false
 			LocalVoiceEnabled = false
+			-- Make the global mute/connect action impossible while the current place
+			-- or this account is not voice-enabled, even if the menu was already open.
+			if VoiceChatButton then VoiceChatButton.Visible = false end
+			VoiceEnabledCache = {}
+			VoiceMutedPlayers = {}
+			VoiceMuteAllActive = false
 		end
 		if Changed then
 			if RebuildPlayersPage then RebuildPlayersPage() end
@@ -10919,22 +14125,353 @@ end)
 ViewUntranslatedMessagesSelector = MakeBooleanSelector(GamePage, "View Untranslated Messages", GameSettings, "ChatTranslationFTUXShown", "On", "Off")
 
 
+-- Experience Language is distinct from Chat Translation Language. Prefer the
+-- universe-specific locale list, falling back to the known Roblox locale list if
+-- the client cannot fetch the localization endpoint.
+local ExperienceLanguageNameByLocale = {}
+for _, Item in ipairs(ChatTranslationLanguageEntries) do
+	ExperienceLanguageNameByLocale[NormalizeChatTranslationLocale(Item[2])] = Item[1]
+end
+
+local function FetchExperienceLanguageEntries()
+	local Result = {}
+	local Seen = {}
+	local function Add(Locale, DisplayName)
+		Locale = NormalizeChatTranslationLocale(Locale):gsub("_", "-")
+		if Locale == "" or Seen[Locale] then return end
+		DisplayName = tostring(DisplayName or ExperienceLanguageNameByLocale[Locale] or "")
+		if DisplayName == "" then
+			local Short = Locale:match("^[^-]+") or Locale
+			DisplayName = ExperienceLanguageNameByLocale[Short] or Locale
+		end
+		Seen[Locale] = true
+		table.insert(Result, {DisplayName, Locale})
+	end
+
+	local Body = nil
+	local Url = "https://gameinternationalization.roblox.com/v1/supported-languages/games/"
+		.. tostring(game.GameId) .. "/in-experience-language-selection"
+	pcall(function()
+		if game.HttpGet then Body = game:HttpGet(Url) end
+	end)
+	if Body then
+		pcall(function()
+			local Decoded = HttpService:JSONDecode(Body)
+			local List = Decoded
+			if type(Decoded) == "table" then
+				List = Decoded.languages or Decoded.supportedLanguages or Decoded.supported_languages
+					or Decoded.locales or Decoded.data or Decoded
+			end
+			if type(List) == "table" then
+				for Key, Item in pairs(List) do
+					if type(Item) == "string" then
+						if type(Key) == "string" and not tonumber(Key) then Add(Key, Item) else Add(Item, nil) end
+					elseif type(Item) == "table" then
+						local Locale = Item.localeCode or Item.locale_code or Item.locale or Item.code
+							or Item.languageCode or Item.language_code or Item.target_language_code or Item.id
+						local Display = Item.displayName or Item.display_name or Item.languageName
+							or Item.language_name or Item.nativeName or Item.native_name or Item.name
+						if Locale then Add(Locale, Display) end
+					end
+				end
+			end
+		end)
+	end
+
+	if #Result == 0 then
+		for _, Item in ipairs(ChatTranslationLanguageEntries) do Add(Item[2], Item[1]) end
+	else
+		table.sort(Result, function(A, B) return A[1]:lower() < B[1]:lower() end)
+	end
+	return Result
+end
+
+ExperienceLanguageEntries = FetchExperienceLanguageEntries()
+ExperienceLanguageNames = {}
+ExperienceLanguageCodes = {}
+for Index, Item in ipairs(ExperienceLanguageEntries) do
+	ExperienceLanguageNames[Index] = Item[1]
+	ExperienceLanguageCodes[Item[1]] = Item[2]
+end
+
+ExperienceLanguageTranslator = nil
+ExperienceLanguageTranslatorLookupAttempted = false
+GetExperienceTranslatorLocale = function()
+	local Locale = nil
+	pcall(function()
+		local Translator = ExperienceLanguageTranslator
+		if Translator then Locale = Translator.LocaleId end
+	end)
+	if type(Locale) ~= "string" or Locale == "" then return nil end
+	return NormalizeChatTranslationLocale(Locale):gsub("_", "-")
+end
+
+GetCurrentExperienceLocale = function()
+	local Locale = GetExperienceTranslatorLocale()
+
+	-- Prefer the live Translator object. Roblox updates its LocaleId when the
+	-- player changes Experience Language in the native in-game settings.
+	if not Locale and not ExperienceLanguageTranslatorLookupAttempted then
+		-- Use the documented async API rather than the older sync variant, which
+		-- can be absent or return a translator that doesn't track the live setting.
+		ExperienceLanguageTranslatorLookupAttempted = true
+		pcall(function()
+			local Translator = LocalizationService:GetTranslatorForPlayerAsync(LocalPlayer)
+			if Translator then
+				ExperienceLanguageTranslator = Translator
+				Locale = Translator.LocaleId
+			end
+		end)
+	end
+	if not Locale then
+		Locale = GetHiddenOrSetting(LocalizationService, "ExperienceSettingsLocaleId", nil)
+	end
+	if not Locale then Locale = GetSetting(LocalPlayer, "LocaleId", "en-us") end
+	return NormalizeChatTranslationLocale(Locale):gsub("_", "-")
+end
+
+SetExperienceLanguage = function(Locale)
+	Locale = NormalizeChatTranslationLocale(Locale):gsub("_", "-")
+	if Locale == "" then return false end
+
+	local function WaitForExperienceLocale()
+		-- Only count it as a native change when the live Translator actually
+		-- reports the selected locale; a hidden-property write is not proof.
+		for _ = 1, 30 do
+			Wait(0.1)
+			if GetExperienceTranslatorLocale() == Locale then
+				MenuLocalizationOverrideLocale = nil
+				MenuLastObservedExperienceLocale = Locale
+				pcall(function()
+					if type(RefreshMenuLocalization) == "function" then RefreshMenuLocalization() end
+				end)
+				return true
+			end
+		end
+		return false
+	end
+
+	if GetExperienceTranslatorLocale() == Locale then
+		MenuLocalizationOverrideLocale = nil
+		MenuLastObservedExperienceLocale = Locale
+		ApplyMenuLocalizationLocale(Locale)
+		return true
+	end
+
+	-- Current clients expose the native setter on Player (RobloxScriptSecurity).
+	-- An executor may or may not be permitted to call it, so probe it first.
+	local PlayerSetter = nil
+	pcall(function() PlayerSetter = LocalPlayer.SetExperienceSettingsLocaleId end)
+	if type(PlayerSetter) == "function" then
+		local Ok = pcall(function() PlayerSetter(LocalPlayer, Locale) end)
+		if Ok and WaitForExperienceLocale() then return true end
+	end
+
+	-- Compatibility with older/custom clients that still expose the removed
+	-- LocalizationService-level method.
+	local Method = nil
+	pcall(function() Method = LocalizationService.SetExperienceSettingsLocaleId end)
+	if type(Method) == "function" then
+		local Ok = pcall(function() Method(LocalizationService, Locale) end)
+		if Ok and WaitForExperienceLocale() then return true end
+	end
+
+	-- Last compatibility attempt for legacy executor/client combinations. If it
+	-- does not change the live translator, roll back the speculative writes.
+	if type(sethiddenproperty) == "function" then
+		local PreviousHiddenValues = {}
+		for _, Property in ipairs({"ExperienceSettingsLocaleId", "PlayerChoiceLocaleId", "InExperienceLocaleId"}) do
+			local PreviousValue = GetHiddenOrSetting(LocalizationService, Property, nil)
+			local Ok = pcall(function() sethiddenproperty(LocalizationService, Property, Locale) end)
+			if Ok then table.insert(PreviousHiddenValues, {Name = Property, Value = PreviousValue}) end
+		end
+		if #PreviousHiddenValues > 0 and WaitForExperienceLocale() then return true end
+		for _, Entry in ipairs(PreviousHiddenValues) do
+			pcall(function() sethiddenproperty(LocalizationService, Entry.Name, Entry.Value) end)
+		end
+	end
+
+	-- Do not snap the user's dropdown back to the detected account locale.
+	-- When the native setter is blocked, this choice still changes this custom
+	-- ESC menu's translations; the native Roblox experience locale may stay put.
+	MenuLocalizationOverrideLocale = Locale
+	ApplyMenuLocalizationLocale(Locale)
+	return true
+end
+local CurrentExperienceLocale = GetCurrentExperienceLocale()
+MenuLastObservedExperienceLocale = NormalizeMenuLocale(CurrentExperienceLocale)
+pcall(function()
+	if type(RefreshMenuLocalization) == "function" then RefreshMenuLocalization() end
+end)
+local CurrentExperienceLanguageIndex = nil
+for Index, Item in ipairs(ExperienceLanguageEntries) do
+	if NormalizeChatTranslationLocale(Item[2]) == CurrentExperienceLocale then
+		CurrentExperienceLanguageIndex = Index
+		break
+	end
+end
+-- Some experiences list a base locale ("es") while Roblox reports a regional
+-- locale ("es-es"). Match the base language only if no exact locale is present.
+if not CurrentExperienceLanguageIndex then
+	local CurrentLanguageBase = CurrentExperienceLocale:match("^([^-]+)") or CurrentExperienceLocale
+	for Index, Item in ipairs(ExperienceLanguageEntries) do
+		local ItemLocale = NormalizeChatTranslationLocale(Item[2])
+		if (ItemLocale:match("^([^-]+)") or ItemLocale) == CurrentLanguageBase then
+			CurrentExperienceLanguageIndex = Index
+			break
+		end
+	end
+end
+if not CurrentExperienceLanguageIndex then
+	for Index, Item in ipairs(ExperienceLanguageEntries) do
+		if NormalizeChatTranslationLocale(Item[2]) == "en-us" or NormalizeChatTranslationLocale(Item[2]) == "en" then
+			CurrentExperienceLanguageIndex = Index
+			break
+		end
+	end
+end
+CurrentExperienceLanguageIndex = CurrentExperienceLanguageIndex or 1
+
+ExperienceLanguageSelector = MakeDropDown(
+	GamePage,
+	"Experience Language",
+	ExperienceLanguageNames,
+	CurrentExperienceLanguageIndex,
+	function(Index, Value)
+		local Locale = ExperienceLanguageCodes[Value]
+		if not Locale then return end
+		SetExperienceLanguage(Locale)
+	end
+)
+-- Center the 300px dropdown in the same 502px control column as the other controls.
+-- (502 - 300) / 2 = 101px inset from the column's left edge.
+ExperienceLanguageSelector.DropDownFrame.Position = UDim2.new(1, -401, 0.5, -22)
+
+-- Follow the live in-experience language, including changes made in Roblox's
+-- native ESC settings while this custom menu is open or hidden. Use the
+-- Translator.LocaleId event for immediate updates and a small polling fallback
+-- for clients where the selector setting is exposed only through hidden state.
+do
+	local MonitorData = Data
+	local BoundTranslator = nil
+	local TranslatorLocaleConnection = nil
+	local LastSeenExperienceLocale = NormalizeChatTranslationLocale(GetCurrentExperienceLocale())
+	local NextTranslatorBindAttempt = 0
+
+	local function SyncExperienceLanguage(Locale, NativeLocaleChanged)
+		Locale = NormalizeChatTranslationLocale(Locale or GetCurrentExperienceLocale()):gsub("_", "-")
+		if Locale == "" then return end
+
+		local DetectedLocale = NormalizeMenuLocale(GetMenuExperienceLocale())
+		if NativeLocaleChanged then
+			-- Only the bound Translator's property event or a poll of that already-
+			-- bound Translator counts as a genuine native language change.
+			MenuLastObservedExperienceLocale = DetectedLocale
+			MenuLocalizationOverrideLocale = nil
+		elseif not MenuLastObservedExperienceLocale then
+			MenuLastObservedExperienceLocale = DetectedLocale
+		end
+		if MenuLocalizationOverrideLocale and not NativeLocaleChanged then
+			ApplyMenuLocalizationLocale(MenuLocalizationOverrideLocale)
+			return
+		end
+
+		if MenuLocalizationLocale ~= Locale and type(RefreshMenuLocalization) == "function" then
+			RefreshMenuLocalization()
+		end
+
+		local SelectedLanguageName = nil
+		local LocaleBase = Locale:match("^([^-]+)") or Locale
+		for _, LanguageName in ipairs(ExperienceLanguageNames) do
+			if NormalizeChatTranslationLocale(ExperienceLanguageCodes[LanguageName]) == Locale then
+				SelectedLanguageName = LanguageName
+				break
+			end
+		end
+		if not SelectedLanguageName then
+			for _, LanguageName in ipairs(ExperienceLanguageNames) do
+				local ItemLocale = NormalizeChatTranslationLocale(ExperienceLanguageCodes[LanguageName])
+				if (ItemLocale:match("^([^-]+)") or ItemLocale) == LocaleBase then
+					SelectedLanguageName = LanguageName
+					break
+				end
+			end
+		end
+		if SelectedLanguageName and ExperienceLanguageSelector then
+			pcall(function()
+				ExperienceLanguageSelector:SetSelectionByValue(SelectedLanguageName, false)
+			end)
+		end
+	end
+
+	local function BindExperienceTranslator()
+		local Translator = nil
+		pcall(function()
+			Translator = LocalizationService:GetTranslatorForPlayerAsync(LocalPlayer)
+		end)
+		if not Translator or Translator == BoundTranslator then return end
+
+		if TranslatorLocaleConnection then
+			pcall(function() TranslatorLocaleConnection:Disconnect() end)
+		end
+		BoundTranslator = Translator
+		ExperienceLanguageTranslator = Translator
+		TranslatorLocaleConnection = nil
+		pcall(function()
+			TranslatorLocaleConnection = Connect(Translator:GetPropertyChangedSignal("LocaleId"), function()
+				local Actual = GetCurrentExperienceLocale()
+				LastSeenExperienceLocale = NormalizeChatTranslationLocale(Actual)
+				SyncExperienceLanguage(Actual, true)
+			end)
+		end)
+		local Actual = GetCurrentExperienceLocale()
+		LastSeenExperienceLocale = NormalizeChatTranslationLocale(Actual)
+		SyncExperienceLanguage(Actual)
+	end
+
+	-- Try to bind immediately, then keep retrying briefly if the player translator
+	-- has not finished initializing. The monitor ends automatically on script reload.
+	Spawn(function()
+		BindExperienceTranslator()
+		while getgenv().Settings2016Data == MonitorData do
+			Wait(0.5)
+			local Actual = NormalizeChatTranslationLocale(GetCurrentExperienceLocale()):gsub("_", "-")
+			if Actual ~= "" and Actual ~= LastSeenExperienceLocale then
+				LastSeenExperienceLocale = Actual
+				SyncExperienceLanguage(Actual, BoundTranslator ~= nil)
+			end
+			if not BoundTranslator then
+				local Now = os.clock()
+				if Now >= NextTranslatorBindAttempt then
+					NextTranslatorBindAttempt = Now + 2
+					BindExperienceTranslator()
+				end
+			end
+		end
+	end)
+end
+
 MakeSectionHeader(GamePage, "Display & Graphics")
 
-MakeSelector(
+FullscreenSelector = MakeSelector(
 	GamePage,
 	"Fullscreen",
 	{"On", "Off"},
 	(GameSettings:InFullScreen() and 1) or 2,
-	function()
-		Protect(function()
-			local Success = pcall(function()
-				GuiService:ToggleFullscreen()
-			end)
-			if not Success and keypress and keyrelease then
-				keypress(0x7A)
-				keyrelease(0x7A)
-			end
+	function(Index)
+		local Desired = Index == 1
+		local Current = false
+		pcall(function() Current = GameSettings:InFullScreen() == true end)
+		if Current == Desired then return end
+		local Success = pcall(function() GuiService:ToggleFullscreen() end)
+		if not Success and keypress and keyrelease then
+			pcall(function() keypress(0x7A); keyrelease(0x7A) end)
+		end
+		Spawn(function()
+			Wait(0.25)
+			local Actual = false
+			pcall(function() Actual = GameSettings:InFullScreen() == true end)
+			if FullscreenSelector then FullscreenSelector:SetSelectionIndex(Actual and 1 or 2, false) end
 		end)
 	end
 )
@@ -11689,6 +15226,212 @@ Protect(function()
 	end)
 end)
 
+-- VR is a user setting on clients that expose the internal VREnabled property.
+-- Attempt the hidden property first, then the normal assignment; never invent a
+-- separate local-only visual state that would claim the engine changed when it did not.
+VRCurrent = GetHiddenOrSetting(GameSettings, "VREnabled", false) == true
+VRSelector = MakeSelector(
+	GamePage,
+	"VR",
+	{"On", "Off"},
+	VRCurrent and 1 or 2,
+	function(Index)
+		local Desired = Index == 1
+		local Wrote = false
+		if sethiddenproperty then
+			Wrote = pcall(function() sethiddenproperty(GameSettings, "VREnabled", Desired) end) or Wrote
+		end
+		Wrote = pcall(function() GameSettings.VREnabled = Desired end) or Wrote
+		if not Wrote and VRService then
+			if sethiddenproperty then
+				Wrote = pcall(function() sethiddenproperty(VRService, "VREnabled", Desired) end) or Wrote
+			end
+		end
+		-- Read the real property back so a rejected engine write doesn't leave the UI lying.
+		Spawn(function()
+			Wait(0.15)
+			local Actual = GetHiddenOrSetting(GameSettings, "VREnabled", VRCurrent) == true
+			VRCurrent = Actual
+			if VRSelector then VRSelector:SetSelectionIndex(Actual and 1 or 2, false) end
+		end)
+	end
+)
+
+VideoCaptureService = nil
+pcall(function() VideoCaptureService = game:GetService("VideoCaptureService") end)
+VideoCameraNames = {"System Default"}
+VideoCameraMap = { ["System Default"] = "" }
+VideoCameraSeenIds = {}
+GetVideoCameraId = function()
+	if not VideoCaptureService then return "" end
+	local Value = GetHiddenOrSetting(VideoCaptureService, "CameraID", "")
+	return tostring(Value or "")
+end
+
+local function AddVideoCamera(CameraId, DisplayName)
+	CameraId = tostring(CameraId or "")
+	DisplayName = tostring(DisplayName or "")
+	if CameraId == "" or VideoCameraSeenIds[CameraId] then return end
+	if DisplayName == "" then DisplayName = "Camera " .. tostring(#VideoCameraNames) end
+	local Label = DisplayName
+	local Suffix = 2
+	while VideoCameraMap[Label] ~= nil do
+		Label = DisplayName .. " (" .. tostring(Suffix) .. ")"
+		Suffix += 1
+	end
+	VideoCameraSeenIds[CameraId] = true
+	VideoCameraMap[Label] = CameraId
+	table.insert(VideoCameraNames, Label)
+end
+
+local function ParseVideoCameraDevices(Value, Depth)
+	Depth = Depth or 0
+	if Depth > 6 or type(Value) ~= "table" then return end
+	local CameraId = Value.CameraID or Value.CameraId or Value.cameraId or Value.cameraID
+		or Value.Id or Value.id or Value.Guid or Value.guid or Value.DeviceId or Value.deviceId
+	local DisplayName = Value.Name or Value.name or Value.DisplayName or Value.displayName
+		or Value.DeviceName or Value.deviceName or Value.Label or Value.label
+	if CameraId then AddVideoCamera(CameraId, DisplayName) end
+	for Key, Child in pairs(Value) do
+		if type(Child) == "table" then
+			ParseVideoCameraDevices(Child, Depth + 1)
+		elseif type(Key) == "string" and type(Child) == "string" then
+			local KeyLooksLikeId = Key:find("%x%x%x%x%x%x%x%x%-", 1) ~= nil
+				or (Key:sub(1, 1) == "{" and Key:sub(-1) == "}")
+				or (#Key >= 24 and not Key:find("%s"))
+			if KeyLooksLikeId then AddVideoCamera(Key, Child) else AddVideoCamera(Child, Key) end
+		end
+	end
+end
+
+if VideoCaptureService then
+	pcall(function()
+		local Devices = VideoCaptureService:GetCameraDevices()
+		ParseVideoCameraDevices(Devices, 0)
+	end)
+	local CurrentCameraId = GetVideoCameraId()
+	if CurrentCameraId ~= "" and not VideoCameraSeenIds[CurrentCameraId] then
+		AddVideoCamera(CurrentCameraId, "Current Camera")
+	end
+end
+
+local CurrentVideoCameraId = GetVideoCameraId()
+local CurrentVideoCameraIndex = 1
+for Index, Label in ipairs(VideoCameraNames) do
+	if VideoCameraMap[Label] == CurrentVideoCameraId then CurrentVideoCameraIndex = Index break end
+end
+
+VideoCameraSelector = MakeSelector(
+	GamePage,
+	"Video Camera",
+	VideoCameraNames,
+	CurrentVideoCameraIndex,
+	function(Index, Value)
+		if not VideoCaptureService then return end
+		local CameraId = VideoCameraMap[Value]
+		if CameraId == nil then return end
+		local Wrote = false
+		if sethiddenproperty then
+			Wrote = pcall(function() sethiddenproperty(VideoCaptureService, "CameraID", CameraId) end) or Wrote
+		end
+		Wrote = pcall(function() VideoCaptureService.CameraID = CameraId end) or Wrote
+		Spawn(function()
+			Wait(0.15)
+			local Actual = GetVideoCameraId()
+			for CameraIndex, CameraLabel in ipairs(VideoCameraNames) do
+				if VideoCameraMap[CameraLabel] == Actual then
+					if VideoCameraSelector then VideoCameraSelector:SetSelectionIndex(CameraIndex, false) end
+					break
+				end
+			end
+		end)
+	end
+)
+
+
+-- ============================================================
+-- MINIMAL SETTINGS PAGE: only the requested controls, in the requested order.
+-- We build controls with their normal callbacks above, then keep only these rows.
+-- ============================================================
+SetSettingsRowTitle = function(Selector, Title)
+	local Row = Selector and Selector.RowFrame
+	if not Row then return end
+	local Base = Row.Name:gsub("Frame$", "")
+	local Label = Row:FindFirstChild(Base .. "Label")
+	if Label and Label:IsA("TextLabel") then Label.Text = Title end
+end
+
+SetSettingsRowTitle(ShiftLockMode, "Shift Lock")
+SetSettingsRowTitle(CameraMode, "Camera Mode")
+SetSettingsRowTitle(MovementMode, "Movement Mode")
+SetSettingsRowTitle(ExperienceLanguageSelector, "Experience Language")
+SetSettingsRowTitle(CameraSensitivitySlider, "Camera Sensitivity")
+SetSettingsRowTitle(VolumeSlider, "Volume")
+SetSettingsRowTitle(AudioInputSelector, "Input Device")
+SetSettingsRowTitle(AudioOutputSelector, "Output Device")
+SetSettingsRowTitle(FullscreenSelector, "Fullscreen")
+SetSettingsRowTitle(GraphicsMode, "Graphics Mode")
+SetSettingsRowTitle(GraphicsSlider, "Graphics Quality")
+SetSettingsRowTitle(PerformanceSelector, "Performance Stats")
+SetSettingsRowTitle(CameraInvertedSelector, "Camera Inverted")
+SetSettingsRowTitle(VRSelector, "VR")
+SetSettingsRowTitle(VideoCameraSelector, "Video Camera")
+
+local AllowedSettingsRow = {}
+local OrderedSettingsRows = {}
+local function KeepRequestedSettingsRow(Row)
+	if Row and Row.Parent and not AllowedSettingsRow[Row] then
+		AllowedSettingsRow[Row] = true
+		table.insert(OrderedSettingsRows, Row)
+	end
+end
+
+-- Explicit append calls preserve the exact order even if a specific engine build
+-- omits one hidden/native control and returns nil for its selector object.
+KeepRequestedSettingsRow(ShiftLockMode and ShiftLockMode.RowFrame)
+KeepRequestedSettingsRow(CameraMode and CameraMode.RowFrame)
+KeepRequestedSettingsRow(MovementMode and MovementMode.RowFrame)
+KeepRequestedSettingsRow(ExperienceLanguageSelector and ExperienceLanguageSelector.RowFrame)
+KeepRequestedSettingsRow(CameraSensitivitySlider and CameraSensitivitySlider.RowFrame)
+KeepRequestedSettingsRow(VolumeSlider and VolumeSlider.RowFrame)
+KeepRequestedSettingsRow(AudioInputSelector and AudioInputSelector.RowFrame)
+KeepRequestedSettingsRow(AudioOutputSelector and AudioOutputSelector.RowFrame)
+KeepRequestedSettingsRow(FullscreenSelector and FullscreenSelector.RowFrame)
+KeepRequestedSettingsRow(GraphicsMode and GraphicsMode.RowFrame)
+KeepRequestedSettingsRow(GraphicsSlider and GraphicsSlider.RowFrame)
+KeepRequestedSettingsRow(PerformanceSelector and PerformanceSelector.RowFrame)
+KeepRequestedSettingsRow(MicroProfilerRow)
+KeepRequestedSettingsRow(CameraInvertedSelector and CameraInvertedSelector.RowFrame)
+KeepRequestedSettingsRow(VRSelector and VRSelector.RowFrame)
+KeepRequestedSettingsRow(VideoCameraSelector and VideoCameraSelector.RowFrame)
+for _, Row in ipairs(GamePage.Rows) do
+	if not AllowedSettingsRow[Row] then
+		pcall(function() Row:Destroy() end)
+	end
+end
+GamePage.Rows = OrderedSettingsRows
+local SettingsRowsY = 0
+for _, Row in ipairs(GamePage.Rows) do
+	Row.Parent = GamePage.Frame
+	Row.Position = UDim2.new(0, 0, 0, SettingsRowsY)
+	SettingsRowsY += math.max(1, Row.Size.Y.Offset)
+end
+GamePage.NextY = SettingsRowsY
+GamePage.Frame.Size = UDim2.new(1, 0, 0, PAGE_TOP_PADDING + SettingsRowsY)
+
+-- Keep the Fullscreen selector synchronized if the host/window changes outside the menu.
+Spawn(function()
+	while FullscreenSelector and FullscreenSelector.RowFrame and FullscreenSelector.RowFrame.Parent do
+		local Actual = false
+		pcall(function() Actual = GameSettings:InFullScreen() == true end)
+		local Index = Actual and 1 or 2
+		if FullscreenSelector:GetSelectedIndex() ~= Index then
+			FullscreenSelector:SetSelectionIndex(Index, false)
+		end
+		Wait(0.5)
+	end
+end)
+
 -- ============================================================
 -- REPORT PAGE
 -- ============================================================
@@ -11706,15 +15449,17 @@ Description = nil
 ReportMode = nil
 
 SetSubmitActive =
-	function(Active)
-		if not Submit or not SubmitLabel then
-			return
-		end
-		Submit.Selectable = Active
-		Submit.ImageTransparency = Active and 0 or 0.65
-		Submit.ZIndex = SETTINGS_BASE_ZINDEX + (Active and 3 or 1)
+	function(_Active)
+		if not Submit or not SubmitLabel then return end
+		-- Keep Submit interactable at all times; the click handler explains
+		-- missing selections instead of making the button look disabled.
+		Submit.Active = true
+		Submit.Selectable = true
+		Submit.AutoButtonColor = true
+		Submit.ImageTransparency = 0
+		Submit.ZIndex = SETTINGS_BASE_ZINDEX + 3
 		SubmitLabel.ZIndex = Submit.ZIndex + 1
-		SubmitLabel.TextTransparency = Active and 0 or 0.55
+		SubmitLabel.TextTransparency = 0
 	end
 
 GetReportDescription =
@@ -11761,8 +15506,8 @@ ReportMode =
 		end
 	)
 
-ReportMode:SetSize(UDim2.new(0, 400, 0, 50))
-ReportMode:SetPosition(UDim2.new(1, -400, 0.5, -25))
+ReportMode:SetSize(UDim2.new(0, 450, 0, 50))
+ReportMode:SetPosition(UDim2.new(1, -450, 0.5, -25))
 
 WhichPlayer =
 	MakeDropDown(
@@ -11774,6 +15519,10 @@ WhichPlayer =
 	)
 
 WhichPlayer:SetInteractable(false)
+if WhichPlayer.DropDownFrame then
+	WhichPlayer.DropDownFrame.Size = UDim2.new(0, 380, 0, 44)
+	WhichPlayer.DropDownFrame.Position = UDim2.new(1, -430, 0.5, -22)
+end
 
 RefreshReportPlayers =
 	function()
@@ -11816,6 +15565,10 @@ TypeOfAbuse =
 		nil,
 		function() RefreshSubmitState(ReportMode) end
 	)
+if TypeOfAbuse.DropDownFrame then
+	TypeOfAbuse.DropDownFrame.Size = UDim2.new(0, 380, 0, 44)
+	TypeOfAbuse.DropDownFrame.Position = UDim2.new(1, -430, 0.5, -22)
+end
 
 DescriptionRow = MakeRow(ReportPage, "")
 Description = Create(
@@ -11854,13 +15607,118 @@ end)
 DescriptionRow.Size = UDim2.new(1, 0, 0, 110)
 ReportPage.Frame.Size = UDim2.new(1, 0, 0, ReportPage.Frame.Size.Y.Offset + 60)
 
+SubmitReportThroughNativeCore = function(TargetPlayer, IsPlayerReport, Reason, DescriptionText)
+	local RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+	local Modules = RobloxGui and RobloxGui:FindFirstChild("Modules")
+	local SettingsModules = Modules and Modules:FindFirstChild("Settings")
+	local Pages = SettingsModules and SettingsModules:FindFirstChild("Pages")
+	local ReportModuleScript = Pages and Pages:FindFirstChild("ReportAbuseMenu")
+	if not ReportModuleScript then return false end
+
+	local RequireOk, NativeReport = pcall(require, ReportModuleScript)
+	if not RequireOk or type(NativeReport) ~= "table" or not NativeReport.HubRef then
+		return false
+	end
+
+	local OpenOk = pcall(function()
+		if IsPlayerReport then
+			NativeReport:ReportPlayer(TargetPlayer)
+		else
+			local NativeHub = NativeReport.HubRef
+			if NativeHub:GetVisibility() then
+				NativeHub:SwitchToPage(NativeReport, false)
+			else
+				NativeHub:SetVisibility(true, false, NativeReport)
+			end
+		end
+	end)
+	if not OpenOk then return false end
+
+	-- The custom menu may have a higher CoreGui display order. Hide it so the
+	-- official report form and its CoreScript-owned Submit button are accessible.
+	pcall(function()
+		if Hub and Hub.Visible and type(SetVisibility) == "function" then
+			SetVisibility(false, true)
+		end
+	end)
+
+	-- The page controls are constructed by the native Settings hub on demand.
+	local Deadline = os.clock() + 4
+	while os.clock() < Deadline do
+		if NativeReport.GameOrPlayerMode and NativeReport.WhichPlayerMode
+			and NativeReport.TypeOfAbuseMode and NativeReport.AbuseDescription
+			and NativeReport.AbuseDescription.Selection then
+			break
+		end
+		Wait(0.05)
+	end
+	if not (NativeReport.GameOrPlayerMode and NativeReport.WhichPlayerMode
+		and NativeReport.TypeOfAbuseMode and NativeReport.AbuseDescription
+		and NativeReport.AbuseDescription.Selection) then
+		return "opened"
+	end
+
+	pcall(function()
+		NativeReport.GameOrPlayerMode:SetSelectionIndex(IsPlayerReport and 2 or 1, true)
+	end)
+	Wait(0.1)
+	if IsPlayerReport and TargetPlayer then
+		pcall(function() NativeReport:UpdatePlayerDropDown() end)
+		pcall(function() NativeReport.WhichPlayerMode:SetSelectionByValue(TargetPlayer.Name, true) end)
+	end
+
+	local NativePlayerReasons = {
+		"Swearing", "Inappropriate Username", "Bullying", "Scamming", "Dating",
+		"Cheating/Exploiting", "Personal Question", "Offsite Links",
+	}
+	local NativeGameReason = "Inappropriate Content"
+	local NativeReason = IsPlayerReport and Reason or NativeGameReason
+	local NativeReasons = IsPlayerReport and NativePlayerReasons or {NativeGameReason}
+	local ReasonIndex = 1
+	for Index, Value in ipairs(NativeReasons) do
+		if Value == NativeReason then ReasonIndex = Index; break end
+	end
+	local NativeDescription = DescriptionText or ""
+	if not IsPlayerReport and Reason ~= NativeGameReason then
+		NativeDescription = "Selected report category: " .. tostring(Reason) .. "\n\n" .. NativeDescription
+	end
+	pcall(function() NativeReport.TypeOfAbuseMode:SetSelectionIndex(ReasonIndex, true) end)
+	pcall(function() NativeReport.AbuseDescription.Selection.Text = NativeDescription end)
+	Wait(0.1)
+
+	local NativeSubmit = nil
+	pcall(function()
+		NativeSubmit = NativeReport.AbuseDescription.Selection:FindFirstChild("SubmitButton", true)
+	end)
+	if not NativeSubmit and NativeReport.Page then
+		pcall(function() NativeSubmit = NativeReport.Page:FindFirstChild("SubmitButton", true) end)
+	end
+	if NativeSubmit and type(firesignal) == "function" then
+		local FireOk = pcall(function() firesignal(NativeSubmit.MouseButton1Click) end)
+		if FireOk then return "submitted" end
+	end
+
+	-- Official native page stays open and prefilled. The user can submit through the
+	-- CoreScript's own button if signal injection is unavailable in this environment.
+	pcall(function()
+		GuiService:SendNotification({
+			Title = "Report",
+			Text = "Roblox's official report form is filled in. Press Submit there to send it.",
+		})
+	end)
+	return "opened"
+end
+
 Submit, SubmitLabel =
 	MakeStyledButton(
 		"SubmitButton",
 		"Submit",
 		UDim2.new(0, 198, 0, 50),
 		function()
-			if not CanSubmitReport(ReportMode) then return end
+			if not CanSubmitReport(ReportMode) then
+				ShowAlert("Choose a report type and reason, and select a player when reporting a player.", "Ok")
+				return
+			end
 
 			local IsPlayerReport = ReportMode:GetSelectedIndex() == 2
 			local Reason = ((IsPlayerReport and ABUSE_TYPES_PLAYER) or ABUSE_TYPES_GAME)[TypeOfAbuse:GetSelectedIndex()]
@@ -11868,14 +15726,33 @@ Submit, SubmitLabel =
 			local DescriptionText = GetReportDescription()
 
 			local Success = Protect(function()
-				Players.ReportAbuse(LocalPlayer, TargetPlayer, Reason, DescriptionText)
-			end)
-
-			if not Success then
-				Success = Protect(function()
+				if IsPlayerReport then
+					if not TargetPlayer then
+						error("No valid player was selected for the report")
+					end
+					-- Same API/signature as Roblox's native ReportAbuseMenu.
 					Players:ReportAbuse(TargetPlayer, Reason, DescriptionText)
-				end)
-			end
+				else
+					-- Roblox's legacy in-experience menu submits game reports through
+					-- ReportAbuse(nil, reason, formattedPlaceDetails), not just the raw text.
+					local PlaceId = tostring(game.PlaceId)
+					local PlaceName = "N/A"
+					local PlaceDescription = "N/A"
+					pcall(function()
+						local ProductInfo = MarketplaceService:GetProductInfo(game.PlaceId, Enum.InfoType.Asset)
+						PlaceName = ProductInfo.Name or PlaceName
+						PlaceDescription = ProductInfo.Description or PlaceDescription
+					end)
+					local FormattedText = string.format(
+						"User Report: \n    %s \nPlace Title: \n    %s \nPlaceId: \n    %s \nPlace Description: \n    %s \n",
+						DescriptionText,
+						PlaceName,
+						PlaceId,
+						PlaceDescription
+					)
+					Players:ReportAbuse(nil, Reason, FormattedText)
+				end
+			end)
 
 			local AlertText = "Thanks for your report! Our moderators will review the chat logs and evaluate what happened."
 			if Reason == "Cheating/Exploiting" then
@@ -11886,7 +15763,37 @@ Submit, SubmitLabel =
 				AlertText = "Thanks for your report! Our moderators will review the place and make a determination."
 			end
 			if not Success then
-				AlertText = "Report could not be submitted in this environment."
+				local NativeFallback = SubmitReportThroughNativeCore(
+					TargetPlayer,
+					IsPlayerReport,
+					Reason,
+					DescriptionText
+				)
+				if NativeFallback == "submitted" then
+					-- Native ReportAbuseMenu owns the submission result/confirmation UI.
+					return
+				elseif NativeFallback == "opened" then
+					-- Do not cover the official report form with a custom error/alert.
+					return
+				end
+				local ReportTargetName = "the experience"
+				if IsPlayerReport then
+					ReportTargetName = (TargetPlayer and TargetPlayer.Name)
+						or tostring(WhichPlayer:GetSelectedValue() or "the selected player")
+				else
+					ReportTargetName = tostring(game.Name or "the experience")
+					pcall(function()
+						local ProductInfo = MarketplaceService:GetProductInfo(game.PlaceId, Enum.InfoType.Asset)
+						if ProductInfo and type(ProductInfo.Name) == "string" and ProductInfo.Name ~= "" then
+							ReportTargetName = ProductInfo.Name
+						end
+					end)
+				end
+				AlertText = string.format(
+					"Roblox didn't let the script report %s for %s, because they don't like scripts doing anything.",
+					ReportTargetName,
+					tostring(Reason or "the selected reason")
+				)
 			end
 
 			ShowAlert(AlertText, "Ok", function()
@@ -11895,7 +15802,7 @@ Submit, SubmitLabel =
 				TypeOfAbuse:ResetSelectionIndex()
 				Description.Text = DESCRIPTION_PLACEHOLDER
 				SetVisibility(false)
-			end)
+			end, not Success)
 		end
 	)
 
@@ -11933,10 +15840,10 @@ CreateHelpGroup =
 			BackgroundTransparency = 1,
 			Text = Title,
 			Font = Enum.Font.SourceSansBold,
-			TextSize = 18,
+			TextSize = 20,
 			TextColor3 = Color3.new(1, 1, 1),
 			TextXAlignment = Enum.TextXAlignment.Left,
-			Size = UDim2.new(1, -9, 0, 30),
+			Size = UDim2.new(1, -9, 0, 32),
 			Position = UDim2.new(0, 9, 0, 0),
 			ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
@@ -11944,11 +15851,11 @@ CreateHelpGroup =
 		for Index, Binding in ipairs(Bindings) do
 			local Row = Create("Frame", {
 				Parent = Group,
-				BackgroundColor3 = Color3.new(0, 0, 0),
-				BackgroundTransparency = 0.65,
+				BackgroundColor3 = Color3.new(1, 1, 1),
+				BackgroundTransparency = 0.82,
 				BorderSizePixel = 0,
-				Size = UDim2.new(1, 0, 0, 42),
-				Position = UDim2.new(0, 0, 0, 30 + ((Index - 1) * 44)),
+				Size = UDim2.new(1, 0, 0, 56),
+				Position = UDim2.new(0, 0, 0, 32 + ((Index - 1) * 60)),
 				ZIndex = SETTINGS_BASE_ZINDEX + 2,
 			})
 			Create("TextLabel", {
@@ -11956,7 +15863,7 @@ CreateHelpGroup =
 				BackgroundTransparency = 1,
 				Text = Binding[1],
 				Font = Enum.Font.SourceSansBold,
-				TextSize = 18,
+				TextSize = 20,
 				TextColor3 = Color3.new(1, 1, 1),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Size = UDim2.new(0.45, -9, 1, 0),
@@ -11968,7 +15875,7 @@ CreateHelpGroup =
 				BackgroundTransparency = 1,
 				Text = Binding[2],
 				Font = Enum.Font.SourceSans,
-				TextSize = 18,
+				TextSize = 20,
 				TextColor3 = Color3.new(1, 1, 1),
 				TextXAlignment = Enum.TextXAlignment.Left,
 				Size = UDim2.new(0.55, 0, 1, 0),
@@ -11977,7 +15884,7 @@ CreateHelpGroup =
 			})
 		end
 
-		Group.Size = UDim2.new(Group.Size.X.Scale, Group.Size.X.Offset, 0, 30 + (#Bindings * 44))
+		Group.Size = UDim2.new(Group.Size.X.Scale, Group.Size.X.Offset, 0, 32 + (#Bindings * 60))
 		return Group
 	end
 
@@ -12049,9 +15956,14 @@ ApplyMobileReportLayout = function()
 	end
 	for _, Selector in ipairs({ReportMode, WhichPlayer, TypeOfAbuse}) do
 		if Selector and Selector.SelectorFrame then
-			Selector.SelectorFrame.Size = UDim2.new(0.6, 0, 0, 50)
-			Selector.SelectorFrame.Position = UDim2.new(1, 0, 0.5, 0)
+			Selector.SelectorFrame.Size = UDim2.new(0.64, 0, 0, 50)
+			Selector.SelectorFrame.Position = UDim2.new(1, -2, 0.5, 0)
 			Selector.SelectorFrame.AnchorPoint = Vector2.new(1, 0.5)
+		end
+		if Selector and Selector.DropDownFrame then
+			Selector.DropDownFrame.Size = UDim2.new(0.64, 0, 0, 44)
+			Selector.DropDownFrame.Position = UDim2.new(1, -2, 0.5, -22)
+			Selector.DropDownFrame.AnchorPoint = Vector2.new(1, 0)
 		end
 	end
 	if DescriptionRow and Description then
@@ -12573,7 +16485,7 @@ end
 
 Protect(function()
 	local Platform = UserInputService:GetPlatform()
-	if Platform == Enum.Platform.Windows or Platform == Enum.Platform.OSX then
+	if (Platform == Enum.Platform.Windows or IsOSX) then
 		RecordPage = MakePage("Record")
 		AddPage(RecordPage, "Record", "rbxasset://textures/ui/Settings/MenuBarIcons/RecordTab.png", 130)
 
@@ -12672,6 +16584,26 @@ Protect(function()
 	end
 end)
 
+-- Keep the custom Record tab on Windows and macOS. Remove stale copies
+-- only on platforms where this menu does not provide the Record tab.
+if not IsOSX and UserInputService:GetPlatform() ~= Enum.Platform.Windows then
+	-- Remove any stale Record tab left by earlier runs on unsupported platforms.
+	RecordPage = nil
+	RecorderPageButton = nil
+	RecorderPageButtonLabel = nil
+	if Hub and Hub.HubBarContainer then
+		for _, Tab in ipairs(Hub.HubBarContainer:GetChildren()) do
+			local Name = string.lower(tostring(Tab.Name or ""))
+			local Label = Tab:FindFirstChild("TabLabel", true)
+			local Title = Label and Label:FindFirstChild("Title", true)
+			local Text = Title and tostring(Title.Text or "") or ""
+			if Name:find("record", 1, true) or Text == "Record" then
+				pcall(function() Tab:Destroy() end)
+			end
+		end
+	end
+end
+
 -- ============================================================
 -- CONFIRMATION PAGES
 -- ============================================================
@@ -12708,7 +16640,8 @@ ApplyResetButtonAvailability = function()
 		ResetButton.Active = Allowed
 		ResetButton.Selectable = Allowed
 		ResetButton.AutoButtonColor = false
-		ResetButton.ImageColor3 = Allowed and NormalColor or DisabledColor
+		-- ImageColor3 tints the sliced button background, so keep it normal.
+		ResetButton.ImageColor3 = NormalColor
 		if ResetButtonLabel then
 			ResetButtonLabel.TextColor3 = Allowed and NormalColor or DisabledColor
 		end
@@ -12719,7 +16652,8 @@ ApplyResetButtonAvailability = function()
 		Button.Active = Allowed
 		Button.Selectable = Allowed
 		Button.AutoButtonColor = false
-		Button.ImageColor3 = Allowed and NormalColor or DisabledColor
+		-- Preserve the button background; the nested icon and label are tinted below.
+		Button.ImageColor3 = NormalColor
 		for _, Child in next, Button:GetDescendants() do
 			if Child:IsA("ImageLabel") or Child:IsA("ImageButton") then
 				Child.ImageColor3 = Allowed and NormalColor or DisabledColor
@@ -12901,7 +16835,7 @@ PositionMobileConfirmationButtons =
 ActiveAlert = nil
 
 ShowAlert =
-	function(AlertMessage, OkButtonText, Cleanup)
+	function(AlertMessage, OkButtonText, Cleanup, ForceBlueButton)
 		if ActiveAlert then
 			ActiveAlert:Destroy()
 			ActiveAlert = nil
@@ -12964,6 +16898,13 @@ ShowAlert =
 			end
 		)
 		Button.Parent = Alert
+		if ForceBlueButton then
+			-- Keep the selected blue Roblox button asset for the entire lifetime
+			-- of the error dialog; don't rely on hover/selection state.
+			Button.Image = BUTTON_SELECTED_IMAGE
+			Button.ImageColor3 = Color3.new(1, 1, 1)
+			Button.AutoButtonColor = false
+		end
 		local AlertButtonWidth = IsPhone and math.min(170, AlertWidth - 32) or 200
 		Button.Position = UDim2.new(0.5, -AlertButtonWidth / 2, 0.68, 0)
 		if ButtonText then ButtonText.TextSize = IsPhone and 16 or ButtonText.TextSize end
@@ -12988,7 +16929,8 @@ PushPage =
 		Hub.PageView.ScrollBarThickness = 0
 		SwitchToPage(Page, true, true)
 		if Hub.InConfirmation then
-			if IsPhone then
+			if IsMobile then
+				-- Phones and tablets use mobile-style confirmation buttons at the bottom.
 				PositionMobileConfirmationButtons()
 			else
 				PositionDesktopConfirmationButtons()
@@ -13121,6 +17063,7 @@ local function EnsureVoiceMuteErrorBanner()
 	Label.TextColor3 = Color3.fromRGB(255, 255, 255)
 	Label.Text = ""
 	Label.ZIndex = 9
+	RegisterMenuLocalizableText(Label)
 
 	VoiceMuteErrorFrame = Frame
 	VoiceMuteErrorLabel = Label
@@ -13131,6 +17074,26 @@ local function ShowVoiceMuteError(TargetMuted)
 	local Action = TargetMuted and "mute" or "unmute"
 	local Message = "An error occurred while trying to " .. Action .. ". Please try the voice chat bubble to " .. Action .. "."
 
+	local Ok = pcall(function()
+		local Frame, Label = EnsureVoiceMuteErrorBanner()
+		Label.Text = Message
+		Frame.Visible = true
+	end)
+	if not Ok then return false end
+
+	VoiceMuteErrorGeneration = VoiceMuteErrorGeneration + 1
+	local ThisGeneration = VoiceMuteErrorGeneration
+	task.spawn(function()
+		task.wait(4)
+		if ThisGeneration == VoiceMuteErrorGeneration and VoiceMuteErrorFrame then
+			pcall(function() VoiceMuteErrorFrame.Visible = false end)
+		end
+	end)
+	return true
+end
+
+ShowInviteFailureError = function()
+	local Message = "Experience Invite could not be sent. Please try again later."
 	local Ok = pcall(function()
 		local Frame, Label = EnsureVoiceMuteErrorBanner()
 		Label.Text = Message
@@ -13300,6 +17263,34 @@ ConfigureMobileActionButtons = function()
 	end
 end
 
+
+-- One-time low-noise capability diagnostic (no device names or private mic data).
+Spawn(function()
+	Wait(2)
+	local Mode = GetVoiceAudioApiEnabled()
+	local ModeText = Mode == true and "Enabled" or (Mode == false and "Automatic/Disabled" or "unreadable")
+	local LocalInput = GetVoiceMeterInput(LocalPlayer)
+	local LocalAnalyzer = LocalInput and EnsureVoiceMeterAnalyzer(LocalPlayer) or nil
+	local LocalWireConnected = false
+	local LocalWire = VoiceAnalyzerWires[LocalPlayer]
+	if LocalWire and LocalWire.Parent then pcall(function() LocalWireConnected = LocalWire.Connected == true end) end
+	local RemoteInputs, RemoteWires = 0, 0
+	for _, Player in ipairs(Players:GetPlayers()) do
+		if Player ~= LocalPlayer then
+			local Input = GetVoiceMeterInput(Player)
+			if Input then
+				RemoteInputs += 1
+				local Analyzer = VoiceAnalyzers[Player]
+				local Wire = VoiceAnalyzerWires[Player]
+				local Connected = false
+				if Wire and Wire.Parent then pcall(function() Connected = Wire.Connected == true end) end
+				if Analyzer and Connected then RemoteWires += 1 end
+			end
+		end
+	end
+	print(string.format("[Settings2016 Voice Meter] AudioAPI=%s | LocalInput=%s | LocalAnalyzer=%s | LocalWire=%s | RemoteInputs=%d | RemoteWiredAnalyzers=%d", ModeText, LocalInput and "found" or "missing", LocalAnalyzer and "created" or "missing", LocalWireConnected and "connected" or "disconnected/missing", RemoteInputs, RemoteWires))
+end)
+
 -- ============================================================
 -- RESET BUTTON AVAILABILITY WATCH
 -- ============================================================
@@ -13310,9 +17301,7 @@ Spawn(function()
 	end
 end)
 
--- ============================================================
--- VOICE CHAT UI UPDATES
--- ============================================================
+-- Meter discovery is handled by VoiceMeterDiscoveryWorkerStarted above; do not run a second scanner.
 
 VoiceAutoReconnectStamp = 0
 
@@ -13320,7 +17309,7 @@ VoiceAutoReconnectStamp = 0
 -- microphone icon on a fast sampling loop so it follows live microphone peaks.
 Spawn(function()
 	while ScreenGui and ScreenGui.Parent do
-		if VoiceChatEnabled and LocalVoiceEnabled and VoiceChatButton and VoiceChatButton.Parent then
+		if VoiceOptionAvailable == true and VoiceChatButton and VoiceChatButton.Parent then
 			LocalVoiceMuted = GetLocalVoiceMuted()
 			local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
 			if Icon then
@@ -13328,7 +17317,7 @@ Spawn(function()
 				if Icon.Image ~= Image then Icon.Image = Image end
 			end
 		end
-		Wait(0.033)
+		Wait(0.016)
 	end
 end)
 
@@ -13379,7 +17368,7 @@ Spawn(function()
 						break
 					elseif VoiceButton then
 						-- Remote eligibility cannot be queried client-side, so keep the button
-						-- visible and update its activity/mute image even before a native bubble exists.
+						-- visible and update its activity/mute image as soon as independent voice evidence arrives.
 						VoiceButton.Visible = HasConfirmedPlayerVoice(Player)
 						local VoiceIcon = VoiceButton:FindFirstChild("VoiceIcon")
 						if VoiceIcon then
@@ -13395,7 +17384,7 @@ Spawn(function()
 		end
 	end)
 
--- Refresh visible player-row mic meters frequently; eligibility checks remain on the slower loop below.
+-- Refresh visible player-row mic meters at 30 Hz; only cached analyser/event values are read here.
 Spawn(function()
 	while ScreenGui and ScreenGui.Parent do
 		if VoiceGameSupported and Hub and Hub.Visible and PlayersPage and PlayersPage.Frame then
@@ -13406,13 +17395,13 @@ Spawn(function()
 					local VoiceButton = Row and Row:FindFirstChild(Player.Name .. "VoiceButton")
 					local VoiceIcon = VoiceButton and VoiceButton:FindFirstChild("VoiceIcon")
 					if VoiceIcon then
-						local Image = VoiceContrastIcon(GetVoiceIcon(Player, GetRemoteVoiceMuted(Player)))
+						local Image = VoiceContrastIcon(GetVoiceIcon(Player, VoiceMutedPlayers[UserId] == true))
 						if VoiceIcon.Image ~= Image then VoiceIcon.Image = Image end
 					end
 				end
 			end
 		end
-		Wait(0.2)
+		Wait(1 / 30)
 	end
 end)
 
@@ -13430,6 +17419,9 @@ end)
 
 Connect(SoundService.DescendantAdded, function(Descendant)
 	if not Descendant:IsA("AudioDeviceInput") then return end
+	-- Ignore AudioDeviceInput as eligibility proof when the place is using legacy
+	-- voice. We still keep the analyzer/meter path available above where appropriate.
+	if GetVoiceAudioApiEnabled() == false then return end
 	local Owner = nil
 	pcall(function() Owner = Descendant.Player end)
 	if not Owner then return end
@@ -13441,13 +17433,15 @@ Connect(SoundService.DescendantAdded, function(Descendant)
 		end
 	else
 		local UserId = tonumber(Owner.UserId or Owner.userId) or 0
-		VoiceEnabledCache[UserId] = true
-		VoiceCheckError[UserId] = nil
-		local Override = VoiceMutedPlayers[UserId]
-		if Override ~= nil then
-			SetRemoteVoiceMuted(Owner, Override)
-		elseif VoiceMuteAllActive then
-			SetRemoteVoiceMuted(Owner, true)
+		if IsConfirmedRemoteVoiceInput(Owner, Descendant) then
+			VoiceEnabledCache[UserId] = true
+			VoiceCheckError[UserId] = nil
+			local Override = VoiceMutedPlayers[UserId]
+			if Override ~= nil then
+				SetRemoteVoiceMuted(Owner, Override)
+			elseif VoiceMuteAllActive then
+				SetRemoteVoiceMuted(Owner, true)
+			end
 		end
 	end
 	EnsureVoiceAnalyzer(Owner)
@@ -13462,14 +17456,18 @@ local function WatchVoicePlayerAudio(Player)
 	VoicePlayerAudioHooks[Player] = true
 	Connect(Player.ChildAdded, function(Child)
 		if not Child:IsA("AudioDeviceInput") then return end
+		if GetVoiceAudioApiEnabled() == false then return end
 		GetAudioDeviceInputCache[Player] = Child
-		VoiceEnabledCache[Player.UserId] = true
+		VoiceMeterInputCache[Player] = nil
 		VoiceEligibilityQueryStamp[Player.UserId] = nil
-		local Override = VoiceMutedPlayers[Player.UserId]
-		if Override ~= nil then SetRemoteVoiceMuted(Player, Override)
-		elseif VoiceMuteAllActive then SetRemoteVoiceMuted(Player, true) end
-		EnsureVoiceAnalyzer(Player)
-		if RebuildPlayersPage then RebuildPlayersPage() end
+		if IsConfirmedRemoteVoiceInput(Player, Child) then
+			VoiceEnabledCache[Player.UserId] = true
+			local Override = VoiceMutedPlayers[Player.UserId]
+			if Override ~= nil then SetRemoteVoiceMuted(Player, Override)
+			elseif VoiceMuteAllActive then SetRemoteVoiceMuted(Player, true) end
+			EnsureVoiceAnalyzer(Player, Child)
+			if RebuildPlayersPage then RebuildPlayersPage() end
+		end
 	end)
 end
 
@@ -13486,6 +17484,8 @@ Connect(Players.PlayerAdded, function(Player)
 	VoiceActivityStamp[UserId] = nil
 	VoiceActivityPeakMeasured[UserId] = nil
 	VoiceActivityActive[UserId] = nil
+	VoiceActivitySpeakingState[UserId] = nil
+	VoiceActivitySpeakingStateStamp[UserId] = nil
 	WatchVoicePlayerAudio(Player)
 	ScheduleNativeVoiceMirrorRefresh()
 	-- Build the row immediately instead of waiting for this player to create an input.
@@ -13509,6 +17509,8 @@ Connect(Players.PlayerRemoving, function(Player)
 	VoiceActivityStamp[UserId] = nil
 	VoiceActivityPeakMeasured[UserId] = nil
 	VoiceActivityActive[UserId] = nil
+	VoiceActivitySpeakingState[UserId] = nil
+	VoiceActivitySpeakingStateStamp[UserId] = nil
 	NativeVoiceIconObjects[UserId] = nil
 	NativeVoiceIconImages[UserId] = nil
 	NativeVoiceIconLastImages[UserId] = nil
@@ -13523,8 +17525,8 @@ if VoiceChatInternal then
 	Protect(function()
 		Connect(VoiceChatInternal.ParticipantsStateChanged, function()
 			if not VoiceGameSupported then return end
-			RefreshVoiceParticipants()
-			if RebuildPlayersPage then RebuildPlayersPage() end
+			local Changed = RefreshVoiceParticipants()
+			if Changed and RebuildPlayersPage then RebuildPlayersPage() end
 		end)
 	end)
 	Protect(function()
@@ -13544,39 +17546,31 @@ if VoiceChatInternal then
 				if not UserId then return end
 				Payload.userId = UserId
 			end
-			local HasSpeakingField = Payload.active ~= nil or Payload.Active ~= nil
-				or Payload.isSpeaking ~= nil or Payload.IsSpeaking ~= nil or Payload.is_speaking ~= nil
-				or Payload.speaking ~= nil or Payload.Speaking ~= nil or Payload.isActive ~= nil
-				or Payload.IsActive ~= nil or Payload.isMicActive ~= nil or Payload.IsMicActive ~= nil
-				or Payload.isVoiceActive ~= nil or Payload.IsVoiceActive ~= nil or Payload.isTalking ~= nil
-				or Payload.IsTalking ~= nil or Payload.talking ~= nil or Payload.isSpeakingNow ~= nil
-				or Payload.SpeakingNow ~= nil
-			local HasPeakField = Payload.peakLevel ~= nil or Payload.PeakLevel ~= nil or Payload.peak ~= nil
-				or Payload.Peak ~= nil or Payload.level ~= nil or Payload.Level ~= nil
-			if type(SpeakingOrInfo) == "boolean" and not HasSpeakingField then
+			if type(SpeakingOrInfo) == "boolean" then
+				-- A separate boolean argument is the current event state; it must win over
+				-- stale activity flags copied from the payload table.
 				Payload.isSpeaking = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "number" then
-				-- If this client splits level out as argument 2, it is fresher than
-				-- any stale/default level value contained in the activity dictionary.
 				Payload.peakLevel = SpeakingOrInfo
 			elseif type(SpeakingOrInfo) == "table" then
 				for Key, Value in next, SpeakingOrInfo do if Payload[Key] == nil then Payload[Key] = Value end end
 			end
-			if type(PeakValue) == "number" then Payload.peakLevel = PeakValue end
+			if type(PeakValue) == "number" then
+				local ExistingPeak = tonumber(Payload.peakLevel or Payload.PeakLevel or Payload.peak or Payload.Peak or Payload.level or Payload.Level)
+				local ExplicitlyInactive = Payload.isSpeaking == false or Payload.IsSpeaking == false or Payload.active == false or Payload.Active == false
+				-- Preserve a positive measured peak unless the event explicitly reports inactivity.
+				if PeakValue > 0 or ExistingPeak == nil or ExistingPeak <= 0 or ExplicitlyInactive then
+					Payload.peakLevel = PeakValue
+				end
+			end
+			if Payload.isSpeaking == false or Payload.IsSpeaking == false or Payload.active == false or Payload.Active == false then
+				Payload.peakLevel = 0
+			end
 			VoiceProcessActivityInfo(Payload)
 		end)
 	end)
 end
 
-Connect(CoreGui.DescendantAdded, function(Descendant)
-	if not VoiceGameSupported then return end
-	if Descendant:IsA("ImageLabel") or Descendant:IsA("ImageButton") then
-		local Image = tostring(Descendant.Image or "")
-		if Image:find("VoiceChat", 1, true) then
-			ScheduleNativeVoiceMirrorRefresh()
-		end
-	end
-end)
 
 -- ============================================================
 -- NATIVE SETTINGS HIDING
@@ -13786,6 +17780,7 @@ SetVisibility =
 
 		Hub.Visible = Visible
 		Hub.Modal.Visible = Visible
+		if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 
 		if not Visible then
 			Hub.InInviteMenu = false
@@ -13887,6 +17882,7 @@ SetVisibility =
 				Hub.Shield.Visible = false
 			else
 				SystemMenuButtonClosing = true
+				if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 				if SystemMenuHitbox then
 					SystemMenuHitbox.Visible = true
 					SystemMenuHitbox.Position = UDim2.fromOffset(SYSTEM_MENU_OFFSET_X - 4, SYSTEM_MENU_OFFSET_Y - 4)
@@ -13903,6 +17899,7 @@ SetVisibility =
 						Hub.Shield.Visible = false
 						SystemMenuButtonClosing = false
 						SyncTopBarAppVisibility()
+						if RefreshVoiceBetaBadgeVisibility then RefreshVoiceBetaBadgeVisibility() end
 						SetRecorderOverlayVisibility(true)
 						-- Keep the invisible 40x40 shield permanently over the native top-left button.
 						if SystemMenuHitbox then
@@ -14158,6 +18155,8 @@ CloseInvitePage =
 		if SearchPlaceholder then SearchPlaceholder.Visible = true end
 		if InviteHeader then InviteHeader.Visible = false end
 		if InviteList then InviteList.Visible = false end
+		if NewInviteShareRow then NewInviteShareRow.Visible = false end
+		if INVITE_MOBILE_HEADER_DIVIDER then INVITE_MOBILE_HEADER_DIVIDER.Visible = false end
 		Hub.HubBar.Visible = true
 		Hub.PageClipper.Visible = true
 		Hub.BottomButtonFrame.Visible = not IsMobile
@@ -14402,6 +18401,8 @@ end
 -- INITIAL STATE
 -- ============================================================
 
+RegisterMenuLocalizationTree(ScreenGui)
+RegisterMenuLocalizationTree(VoiceBetaBadgeRoot)
 SetTopBarAppEnabled(true)
 SwitchToPage(GamePage, true, true)
 ConfigureMobileActionButtons()
