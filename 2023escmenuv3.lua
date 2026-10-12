@@ -12,8 +12,8 @@ VOICE_CHAT_FORCE_OFF = VOICE_CHAT_MODE == "NEVER"
 
 -- INVITE FRIENDS ROW TEXT SIZE (applies on every device)
 -- Adjust these values to tune how small/large "Invite friends to join" can render.
-INVITE_FRIENDS_TEXT_MIN_SIZE = 14
-INVITE_FRIENDS_TEXT_MAX_SIZE = 18
+INVITE_FRIENDS_TEXT_MIN_SIZE = 16
+INVITE_FRIENDS_TEXT_MAX_SIZE = 20
 
 CoreGui = game:GetService("CoreGui")
 -- Remove a debug panel left behind by an earlier copy of this script.
@@ -4774,54 +4774,44 @@ ResizeHub = function()
 
 			local UiScale = GetMobileUiScale()
 			local ActionHeight = 62
-			local ActionWidth = 1 / 3
-
-			if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
-				MobileButtonsContainer = Create("Frame", {
-					Name = "ButtonsContainer",
-					Parent = PlayersPage.Frame,
-					BackgroundTransparency = 1,
-					BorderSizePixel = 0,
-					Size = UDim2.new(1, 0, 0, 62),
-					Position = UDim2.new(0, 0, 0, 0),
-					ZIndex = SETTINGS_BASE_ZINDEX + 1,
-				})
-			end
-			MobileButtonsContainer.Size = UDim2.new(1, 0, 0, 62)
-			MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
-
-			local ActionHeight = 62
             local MobileVoiceIncluded = VoiceOptionAvailable == true and VoiceChatButton ~= nil and not VOICE_CHAT_FORCE_OFF
             if VoiceChatButton then
                 VoiceChatButton.Visible = MobileVoiceIncluded
                 if not MobileVoiceIncluded then VoiceChatButton.Parent = nil end
             end
-            local PhoneActionButtons = {
-                MobileActionButtons.Leave,
-                MobileActionButtons.Reset,
-                MobileActionButtons.Resume,
-            }
-            if MobileVoiceIncluded then table.insert(PhoneActionButtons, VoiceChatButton) end
+            -- ResizeHub can run before the action-button objects are constructed.
+            -- Build a dense list only from buttons that actually exist; including a
+            -- nil first element makes ipairs stop and previously crashed at .Leave.
+            local PhoneActionButtons = {}
+            if type(MobileActionButtons) == "table" then
+                if MobileActionButtons.Leave then table.insert(PhoneActionButtons, MobileActionButtons.Leave) end
+                if MobileActionButtons.Reset then table.insert(PhoneActionButtons, MobileActionButtons.Reset) end
+                if MobileActionButtons.Resume then table.insert(PhoneActionButtons, MobileActionButtons.Resume) end
+            end
+            if MobileVoiceIncluded and VoiceChatButton then table.insert(PhoneActionButtons, VoiceChatButton) end
             local ActionCount = #PhoneActionButtons
             -- Every visible phone action gets one equal-width slot. This keeps
             -- VC next to the other controls instead of stranded at the far edge.
             local ActionWidth = 1 / math.max(1, ActionCount)
 
-            if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
-                MobileButtonsContainer = Create("Frame", {
-                    Name = "ButtonsContainer",
-                    Parent = PlayersPage.Frame,
-                    BackgroundTransparency = 1,
-                    BorderSizePixel = 0,
-                    Size = UDim2.new(1, 0, 0, ActionHeight),
-                    Position = UDim2.new(0, 0, 0, 0),
-                    ZIndex = SETTINGS_BASE_ZINDEX + 1,
-                })
-            end
-            MobileButtonsContainer.Size = UDim2.new(1, 0, 0, ActionHeight)
-            MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
+            -- A resize callback can fire while this script is still constructing
+            -- the action buttons. Do not create an empty container during that phase.
+            if ActionCount > 0 then
+                if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
+                    MobileButtonsContainer = Create("Frame", {
+                        Name = "ButtonsContainer",
+                        Parent = PlayersPage.Frame,
+                        BackgroundTransparency = 1,
+                        BorderSizePixel = 0,
+                        Size = UDim2.new(1, 0, 0, ActionHeight),
+                        Position = UDim2.new(0, 0, 0, 0),
+                        ZIndex = SETTINGS_BASE_ZINDEX + 1,
+                    })
+                end
+                MobileButtonsContainer.Size = UDim2.new(1, 0, 0, ActionHeight)
+                MobileButtonsContainer.Position = UDim2.new(0, 0, 0, 0)
 
-            for Index, Button in ipairs(PhoneActionButtons) do
+                for Index, Button in ipairs(PhoneActionButtons) do
                 if Button then
                     Button.Parent = MobileButtonsContainer
                     Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
@@ -4867,7 +4857,8 @@ ResizeHub = function()
                         end
                     end
                 end
-            end
+                end
+            end -- ActionCount > 0
 
 			local PlayerRows = {}
 			for _, Child in ipairs(PlayersPage.Frame:GetChildren()) do
@@ -4878,8 +4869,8 @@ ResizeHub = function()
 			table.sort(PlayerRows, function(A, B) return A.Name < B.Name end)
 
 			local PlayerStartY =
-				(LayoutPhonePlayerActionRows and LayoutPhonePlayerActionRows(PlayersPage.Frame, 72))
-				or 72
+				(LayoutPhonePlayerActionRows and LayoutPhonePlayerActionRows(PlayersPage.Frame, 66))
+				or 66
 			for Index, Row in ipairs(PlayerRows) do
 				Row.Size = UDim2.new(1, -16, 0, 62)
 				Row.Position = UDim2.new(0, 8, 0, PlayerStartY + ((Index - 1) * 72))
@@ -5275,11 +5266,11 @@ LayoutTabs = function()
 				Page.Icon.ImageTransparency = Selected and 0 or 0.5
 				local Title = Page.Icon:FindFirstChild("Title")
 				if IsMobile then
-					local IconWidth = 36
-					local IconHeight = 36
+					local IconWidth = 32
+					local IconHeight = 32
 					local GroupGap = 2
 					local MinLeftInset = 4
-					local RightInset = 8
+					local RightInset = 10
 					local TabWidth = tonumber(Tab.AbsoluteSize.X) or 0
 					if TabWidth <= 0 then
 						local BarWidth = tonumber(Hub.HubBar.AbsoluteSize.X) or 0
@@ -10804,7 +10795,7 @@ MakeInviteFriendsRow = function(Page)
 	local PhoneLayout = IsPhone == true
 	local RowHeight = 62
 	local SideBySide = VoiceActive and InviteFriends and not PhoneLayout
-	local FullRowSize = UDim2.new(1, 0, 0, RowHeight)
+	local FullRowSize = PhoneLayout and UDim2.new(1, -16, 0, RowHeight) or UDim2.new(1, 0, 0, RowHeight)
 	local HalfRowSize = UDim2.new(0.5, -3, 0, RowHeight)
 	local function BaseRow(Name, Pos, Size)
 		return Create("ImageButton", {
@@ -10825,7 +10816,7 @@ MakeInviteFriendsRow = function(Page)
 
 	local Row
 	if InviteFriends then
-		Row = BaseRow("InviteFriendsToJoin", UDim2.new(0, 0, 0, 0), SideBySide and HalfRowSize or FullRowSize)
+		Row = BaseRow("InviteFriendsToJoin", UDim2.new(0, PhoneLayout and 8 or 0, 0, 0), SideBySide and HalfRowSize or FullRowSize)
 		Create("ImageLabel", {
 			Name = "Icon", Parent = Row, BackgroundTransparency = 1,
 			Image = "rbxassetid://80022950003290",
@@ -10908,23 +10899,27 @@ LayoutPhonePlayerActionRows = function(Frame, StartY)
 	local MuteRow = Frame:FindFirstChild("MuteAllVoiceRow")
 	local RowHeight = 62
 	local RowGap = 6
-	local Cursor = StartY or 72
+	local Cursor = StartY or 66
 	local HasBothActions = InviteRow ~= nil and MuteRow ~= nil
 	local HalfWidth = UDim2.new(0.5, -3, 0, RowHeight)
 
 	if HasBothActions then
-		-- Full-width stacked action rows leave enough room for the exact 24px
-		-- bottom-button typography used by both labels.
-		InviteRow.Size = UDim2.new(1, 0, 0, RowHeight)
-		InviteRow.Position = UDim2.new(0, 0, 0, Cursor)
+		-- The Invite row follows the same 8px side inset as player rows.
+		InviteRow.Size = UDim2.new(1, -16, 0, RowHeight)
+		InviteRow.Position = UDim2.new(0, 8, 0, Cursor)
 		MuteRow.Size = UDim2.new(1, 0, 0, RowHeight)
 		MuteRow.Position = UDim2.new(0, 0, 0, Cursor + RowHeight + RowGap)
 		Cursor = Cursor + (RowHeight * 2) + RowGap + 10
 	else
 		local OnlyRow = InviteRow or MuteRow
 		if OnlyRow then
-			OnlyRow.Size = UDim2.new(1, 0, 0, RowHeight)
-			OnlyRow.Position = UDim2.new(0, 0, 0, Cursor)
+			if OnlyRow.Name == "InviteFriendsToJoin" then
+				OnlyRow.Size = UDim2.new(1, -16, 0, RowHeight)
+				OnlyRow.Position = UDim2.new(0, 8, 0, Cursor)
+			else
+				OnlyRow.Size = UDim2.new(1, 0, 0, RowHeight)
+				OnlyRow.Position = UDim2.new(0, 0, 0, Cursor)
+			end
 			Cursor = Cursor + RowHeight + 10
 		end
 	end
@@ -10990,7 +10985,7 @@ RebuildPlayersPage = function()
 	if InviteFriends or VoiceActive then
 		local InviteRow, MuteRow = MakeInviteFriendsRow(PlayersPage)
 		if IsPhone then
-			local PlayerRowsStart = LayoutPhonePlayerActionRows(PlayersPage.Frame, 72) or 144
+			local PlayerRowsStart = LayoutPhonePlayerActionRows(PlayersPage.Frame, 66) or 138
 			InviteOffset = math.max(0, PlayerRowsStart - MobileActionOffset)
 		else
 			local RowY = 0
@@ -18499,7 +18494,7 @@ Insert(Data.Objects, SystemMenuHitbox)
 
 NativeSystemMenuButtonCache = NativeSystemMenuButtonCache or {}
 NativeSystemMenuButtonCacheInitialized = NativeSystemMenuButtonCacheInitialized or false
-NativeSystemMenuReference = NativeSystemMenuReference or nil
+NativeSystemMenuReference = nil
 
 -- Find Roblox's own top-bar close/menu control, anchored to the same branch as
 -- ChatIcon. The native control may live in LegacyCloseFrame or a similarly named
@@ -18512,60 +18507,73 @@ FindNativeSystemMenuReference =
 		end
 
 		local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
-		local App = TopBarRoot and (TopBarRoot:FindFirstChild("TopBarApp") or TopBarRoot)
-		local TopBarFrame = App and App:FindFirstChild("TopBarFrame", true)
-		if not TopBarFrame then return nil end
+		if not TopBarRoot then
+			TopBarRoot = CoreGui:FindFirstChild("TopBarApp", true)
+		end
+		if not TopBarRoot then return nil end
 
-		local ChatIcon = TopBarFrame:FindFirstChild("ChatIcon", true)
-		local LeftFrame = ChatIcon and ChatIcon.Parent
-		local SearchRoot = (LeftFrame and LeftFrame.Parent) or TopBarFrame
 		local BestButton = nil
 		local BestSizeDifference = math.huge
-		local TargetSize = 30
+		local TargetWidth, TargetHeight = 30, 30
 
-		local function ConsiderButton(Button)
-			if not Button or not Button:IsA("GuiButton") then return end
-			local Size = Button.AbsoluteSize
-			if not Size or Size.X <= 0 or Size.Y <= 0 then return end
-			local Difference = math.abs(Size.X - TargetSize) + math.abs(Size.Y - TargetSize)
+		local function ConsiderButton(Object)
+			if not Object or not Object:IsA("GuiButton") then return end
+			local Size = Object.AbsoluteSize
+			local Width, Height = Size.X, Size.Y
+			if Width <= 0 or Height <= 0 then
+				-- Use the configured offsets if CoreGui has not completed its first layout pass.
+				Width = Object.Size.X.Offset
+				Height = Object.Size.Y.Offset
+			end
+			if Width <= 0 or Height <= 0 then return end
+			local Difference = math.abs(Width - TargetWidth) + math.abs(Height - TargetHeight)
 			if Difference < BestSizeDifference then
-				BestButton = Button
+				BestButton = Object
 				BestSizeDifference = Difference
 			end
 		end
 
-		local function SearchCloseContainer(Container)
-			if not Container then return end
-			local FrameContainer = Container:FindFirstChild("Frame", true)
-			local SearchContainer = FrameContainer and FrameContainer:IsA("GuiObject") and FrameContainer or Container
-			if SearchContainer:IsA("GuiButton") then ConsiderButton(SearchContainer) end
-			for _, Descendant in ipairs(SearchContainer:GetDescendants()) do
+		local function SearchCloseFrame(CloseFrame)
+			if not CloseFrame or CloseFrame.ClassName ~= "Frame" then return end
+			-- Search every nested level because LegacyCloseFrame varies between builds.
+			for _, Descendant in ipairs(CloseFrame:GetDescendants()) do
 				ConsiderButton(Descendant)
 			end
+			if CloseFrame:IsA("GuiButton") then ConsiderButton(CloseFrame) end
 		end
 
-		-- First honor the requested LegacyCloseFrame / close-child pattern.
-		for _, Child in ipairs(SearchRoot:GetChildren()) do
-			local LowerName = string.lower(Child.Name)
-			local HasClose = LowerName:find("close", 1, true) ~= nil or Child:FindFirstChild("Close") ~= nil
-			local FrameNode = Child:FindFirstChild("Frame", true)
-			if HasClose and (FrameNode or Child:IsA("Frame")) then
-				SearchCloseContainer(Child)
+		local LeftFrames = {}
+		for _, Descendant in ipairs(TopBarRoot:GetDescendants()) do
+			if string.lower(Descendant.Name) == "leftframe" then
+				table.insert(LeftFrames, Descendant)
 			end
 		end
 
-		-- Fallback for client builds where the close frame is nested one level deeper.
-		if not BestButton then
-			for _, Descendant in ipairs(SearchRoot:GetDescendants()) do
-				local LowerName = string.lower(Descendant.Name)
-				local HasClose = LowerName:find("legacycloseframe", 1, true) ~= nil
-						or (LowerName:find("close", 1, true) ~= nil and Descendant:FindFirstChild("Frame", true) ~= nil)
-				if HasClose then SearchCloseContainer(Descendant) end
+		-- The desired close frame is a sibling of LeftFrame, under LeftFrame.Parent.
+		for _, LeftFrame in ipairs(LeftFrames) do
+			local LeftParent = LeftFrame.Parent
+			if LeftParent then
+				for _, Child in ipairs(LeftParent:GetChildren()) do
+					local LowerName = string.lower(Child.Name)
+					if LowerName:find("close", 1, true) and Child.ClassName == "Frame" then
+						SearchCloseFrame(Child)
+					end
+				end
 			end
 		end
 
-		-- Reject distant-size matches rather than accidentally locking onto an unrelated
-		-- close button. If Roblox changes dimensions, the existing position remains safe.
+		-- Fallback: some client versions add another wrapper around LegacyCloseFrame.
+		-- Still require a close-named object whose ClassName is exactly Frame.
+		if not BestButton or BestSizeDifference > 2 then
+			for _, Descendant in ipairs(TopBarRoot:GetDescendants()) do
+				if Descendant.ClassName == "Frame"
+					and string.lower(Descendant.Name):find("close", 1, true) then
+					SearchCloseFrame(Descendant)
+				end
+			end
+		end
+
+		-- The reference must match the custom button's current 30x30 dimensions.
 		if BestButton and BestSizeDifference <= 2 then
 			NativeSystemMenuReference = BestButton
 			return BestButton
