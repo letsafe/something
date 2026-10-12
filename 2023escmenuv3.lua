@@ -12,8 +12,8 @@ VOICE_CHAT_FORCE_OFF = VOICE_CHAT_MODE == "NEVER"
 
 -- INVITE FRIENDS ROW TEXT SIZE (applies on every device)
 -- Adjust these values to tune how small/large "Invite friends to join" can render.
-INVITE_FRIENDS_TEXT_MIN_SIZE = 18
-INVITE_FRIENDS_TEXT_MAX_SIZE = 22
+INVITE_FRIENDS_TEXT_MIN_SIZE = 14
+INVITE_FRIENDS_TEXT_MAX_SIZE = 18
 
 CoreGui = game:GetService("CoreGui")
 -- Remove a debug panel left behind by an earlier copy of this script.
@@ -4881,11 +4881,15 @@ ResizeHub = function()
 				(LayoutPhonePlayerActionRows and LayoutPhonePlayerActionRows(PlayersPage.Frame, 72))
 				or 72
 			for Index, Row in ipairs(PlayerRows) do
-				Row.Position = UDim2.new(0, 0, 0, PlayerStartY + ((Index - 1) * 72))
+				Row.Size = UDim2.new(1, -16, 0, 62)
+				Row.Position = UDim2.new(0, 8, 0, PlayerStartY + ((Index - 1) * 72))
 			end
 
 			local ContentHeight = PlayerStartY + (#PlayerRows * 72)
-			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, ContentHeight, PageHeight))
+			-- The content frame follows its real contents. PageView.CanvasSize remains
+			-- viewport-sized when needed, so the page scrolls without making player
+			-- rows or the underlying list frame itself fullscreen-height.
+			PlayersPage.Frame.Size = UDim2.new(1, 0, 0, math.max(240, ContentHeight))
 			Hub.PageView.CanvasSize = UDim2.new(0, 0, 0, math.max(ContentHeight, PageHeight))
 
 		else
@@ -5274,33 +5278,39 @@ LayoutTabs = function()
 					local IconWidth = 36
 					local IconHeight = 36
 					local GroupGap = 2
-					local LeftInset = 4
+					local MinLeftInset = 4
 					local RightInset = 8
 					local TabWidth = tonumber(Tab.AbsoluteSize.X) or 0
 					if TabWidth <= 0 then
 						local BarWidth = tonumber(Hub.HubBar.AbsoluteSize.X) or 0
 						TabWidth = BarWidth / Count
 					end
-					local TitleWidth = math.max(28, math.floor(TabWidth - LeftInset - IconWidth - GroupGap - RightInset))
+					local MaxTitleWidth = math.max(28, math.floor(TabWidth - IconWidth - GroupGap - MinLeftInset - RightInset))
+					local TitleWidth = MaxTitleWidth
+					local FittedTextSize = 15
+					if Title then
+						for CandidateSize = 18, 15, -1 do
+							local MeasuredWidth = GetMenuMeasuredTextWidth(Title, Title.Text, CandidateSize)
+							FittedTextSize = CandidateSize
+							if MeasuredWidth <= MaxTitleWidth then
+								TitleWidth = math.max(28, math.ceil(MeasuredWidth + 3))
+								break
+							end
+						end
+					end
+					local GroupWidth = IconWidth + GroupGap + TitleWidth
+					local IconLeft = math.max(MinLeftInset, math.floor(TabWidth - RightInset - GroupWidth + 0.5))
 					Page.Icon.Size = UDim2.fromOffset(IconWidth, IconHeight)
-					Page.Icon.Position = UDim2.new(0, LeftInset, 0.5, -IconHeight / 2)
+					Page.Icon.Position = UDim2.new(0, IconLeft, 0.5, -IconHeight / 2)
 					if Title then
 						Title.TextColor3 = Color3.new(1, 1, 1)
 						Title.TextTransparency = Selected and 0 or 0.5
 						Title.Size = UDim2.new(0, TitleWidth, 1, 0)
 						Title.Position = UDim2.new(1, GroupGap, 0, 0)
-						Title.TextWrapped = true
+						Title.TextWrapped = false
 						Title.TextScaled = false
-						Title.TextXAlignment = Enum.TextXAlignment.Left
+						Title.TextXAlignment = Enum.TextXAlignment.Right
 						Title.TextYAlignment = Enum.TextYAlignment.Center
-						local FittedTextSize = 16
-						for CandidateSize = 18, 15, -1 do
-							if GetMenuMeasuredTextWidth(Title, Title.Text, CandidateSize) <= TitleWidth then
-								FittedTextSize = CandidateSize
-								break
-							end
-							FittedTextSize = CandidateSize
-						end
 						Title.TextSize = FittedTextSize
 						Title.ClipsDescendants = false
 					end
@@ -7980,12 +7990,12 @@ MakePlayerRow = function(
 					),
 
 				Size =
-					UDim2.new(1, 0, 0, 62),
+					IsPhone and UDim2.new(1, -16, 0, 62) or UDim2.new(1, 0, 0, 62),
 
 				Position =
 					UDim2.new(
 						0,
-						0,
+						IsPhone and 8 or 0,
 						0,
 						PLAYER_LIST_OFFSET
 						+ (
@@ -11012,10 +11022,13 @@ RebuildPlayersPage = function()
 
 		if Row then
 
+			if IsPhone then
+				Row.Size = UDim2.new(1, -16, 0, 62)
+			end
 			Row.Position =
 				UDim2.new(
 					0,
-					0,
+					IsPhone and 8 or 0,
 					0,
 					MobileActionOffset
 					+ InviteOffset
@@ -11608,7 +11621,13 @@ ConfigureInviteMobileHeader = function()
 	InviteBackLabel.TextYAlignment = Enum.TextYAlignment.Center
 	InviteBackButton.Size = UDim2.fromOffset(USE_NEW_INVITE_MENU and 52 or 44, 48)
 	InviteBackButton.Position = UDim2.fromOffset(4, 4)
+	InviteBackButton.BackgroundTransparency = 1
+	InviteBackButton.BackgroundColor3 = Color3.new(0, 0, 0)
+	InviteBackButton.BorderSizePixel = 0
 	InviteBackButton.Image = ""
+	InviteBackButton.ImageTransparency = 1
+	InviteBackButton.AutoButtonColor = false
+	InviteBackLabel.BackgroundTransparency = 1
 
 	local Expanded = INVITE_MOBILE_SEARCH_EXPANDED
 	local Width = Expanded and INVITE_MOBILE_SEARCH_WIDTH or INVITE_MOBILE_SEARCH_COLLAPSED
@@ -18480,6 +18499,88 @@ Insert(Data.Objects, SystemMenuHitbox)
 
 NativeSystemMenuButtonCache = NativeSystemMenuButtonCache or {}
 NativeSystemMenuButtonCacheInitialized = NativeSystemMenuButtonCacheInitialized or false
+NativeSystemMenuReference = NativeSystemMenuReference or nil
+
+-- Find Roblox's own top-bar close/menu control, anchored to the same branch as
+-- ChatIcon. The native control may live in LegacyCloseFrame or a similarly named
+-- close container, so discovery checks children of LeftFrame.Parent instead of
+-- hard-coding one fragile full path.
+FindNativeSystemMenuReference =
+	function()
+		if NativeSystemMenuReference and NativeSystemMenuReference.Parent then
+			return NativeSystemMenuReference
+		end
+
+		local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
+		local App = TopBarRoot and (TopBarRoot:FindFirstChild("TopBarApp") or TopBarRoot)
+		local TopBarFrame = App and App:FindFirstChild("TopBarFrame", true)
+		if not TopBarFrame then return nil end
+
+		local ChatIcon = TopBarFrame:FindFirstChild("ChatIcon", true)
+		local LeftFrame = ChatIcon and ChatIcon.Parent
+		local SearchRoot = (LeftFrame and LeftFrame.Parent) or TopBarFrame
+		local BestButton = nil
+		local BestSizeDifference = math.huge
+		local TargetSize = 30
+
+		local function ConsiderButton(Button)
+			if not Button or not Button:IsA("GuiButton") then return end
+			local Size = Button.AbsoluteSize
+			if not Size or Size.X <= 0 or Size.Y <= 0 then return end
+			local Difference = math.abs(Size.X - TargetSize) + math.abs(Size.Y - TargetSize)
+			if Difference < BestSizeDifference then
+				BestButton = Button
+				BestSizeDifference = Difference
+			end
+		end
+
+		local function SearchCloseContainer(Container)
+			if not Container then return end
+			local FrameContainer = Container:FindFirstChild("Frame", true)
+			local SearchContainer = FrameContainer and FrameContainer:IsA("GuiObject") and FrameContainer or Container
+			if SearchContainer:IsA("GuiButton") then ConsiderButton(SearchContainer) end
+			for _, Descendant in ipairs(SearchContainer:GetDescendants()) do
+				ConsiderButton(Descendant)
+			end
+		end
+
+		-- First honor the requested LegacyCloseFrame / close-child pattern.
+		for _, Child in ipairs(SearchRoot:GetChildren()) do
+			local LowerName = string.lower(Child.Name)
+			local HasClose = LowerName:find("close", 1, true) ~= nil or Child:FindFirstChild("Close") ~= nil
+			local FrameNode = Child:FindFirstChild("Frame", true)
+			if HasClose and (FrameNode or Child:IsA("Frame")) then
+				SearchCloseContainer(Child)
+			end
+		end
+
+		-- Fallback for client builds where the close frame is nested one level deeper.
+		if not BestButton then
+			for _, Descendant in ipairs(SearchRoot:GetDescendants()) do
+				local LowerName = string.lower(Descendant.Name)
+				local HasClose = LowerName:find("legacycloseframe", 1, true) ~= nil
+						or (LowerName:find("close", 1, true) ~= nil and Descendant:FindFirstChild("Frame", true) ~= nil)
+				if HasClose then SearchCloseContainer(Descendant) end
+			end
+		end
+
+		-- Reject distant-size matches rather than accidentally locking onto an unrelated
+		-- close button. If Roblox changes dimensions, the existing position remains safe.
+		if BestButton and BestSizeDifference <= 2 then
+			NativeSystemMenuReference = BestButton
+			return BestButton
+		end
+		return nil
+	end
+
+GetNativeSystemMenuPosition =
+	function()
+		local Reference = FindNativeSystemMenuReference and FindNativeSystemMenuReference()
+		if not Reference or not Reference.Parent then return nil end
+		local Position = Reference.AbsolutePosition
+		if not Position then return nil end
+		return Position
+	end
 
 HideNativeSystemMenuButtons =
 	function()
@@ -18520,18 +18621,27 @@ AlignSystemMenuButton =
 
 		SystemMenuButton.Visible = true
 		SystemMenuButton.Size = UDim2.fromOffset(30, 30)
+		local NativePosition = GetNativeSystemMenuPosition and GetNativeSystemMenuPosition()
+		local CustomParentOrigin = Vector2.new(0, 0)
+		if SystemMenuButton.Parent and SystemMenuButton.Parent:IsA("GuiObject") then
+			CustomParentOrigin = SystemMenuButton.Parent.AbsolutePosition
+		end
+		local AlignedPosition = NativePosition
+			and UDim2.fromOffset(NativePosition.X - CustomParentOrigin.X, NativePosition.Y - CustomParentOrigin.Y)
+			or UDim2.fromOffset(GetSystemMenuButtonOffsetX(), SYSTEM_MENU_OFFSET_Y)
 		if SystemMenuHitbox then
 			SystemMenuHitbox.Visible = true
-			SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
 			SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
+			if IsMobile and NativePosition then
+				-- Center the 40x40 touch target over the native 30x30 visual button.
+				SystemMenuHitbox.Position = UDim2.fromOffset(NativePosition.X - 5, NativePosition.Y - 5)
+			else
+				SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
+			end
 		end
 
 		if Hub.Visible then
-			SystemMenuButton.Position =
-				UDim2.fromOffset(
-					GetSystemMenuButtonOffsetX(),
-					SYSTEM_MENU_OFFSET_Y
-				)
+			SystemMenuButton.Position = AlignedPosition
 			SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 			pcall(function()
 				SystemMenuButton.ImageTransparency = 0
@@ -18540,22 +18650,14 @@ AlignSystemMenuButton =
 			-- While closing, preserve the normal visible 30x30 button. After the
 			-- tween completes, SetVisibility hides the visual button permanently.
 			if SystemMenuButtonClosing then
-				SystemMenuButton.Position =
-					UDim2.fromOffset(
-						GetSystemMenuButtonOffsetX(),
-						SYSTEM_MENU_OFFSET_Y
-					)
+				SystemMenuButton.Position = AlignedPosition
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 				pcall(function()
 					SystemMenuButton.ImageTransparency = 0
 				end)
 				SystemMenuButton.Visible = true
 			else
-				SystemMenuButton.Position =
-					UDim2.fromOffset(
-						GetSystemMenuButtonOffsetX(),
-						SYSTEM_MENU_OFFSET_Y
-					)
+				SystemMenuButton.Position = AlignedPosition
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 				pcall(function()
 					SystemMenuButton.ImageTransparency = 0
