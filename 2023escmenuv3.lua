@@ -5266,31 +5266,45 @@ LayoutTabs = function()
 				Page.Icon.ImageTransparency = Selected and 0 or 0.5
 				local Title = Page.Icon:FindFirstChild("Title")
 				if IsMobile then
-					local IconWidth = 32
-					local IconHeight = 32
+					local IconWidth = 28
+					local IconHeight = 28
 					local GroupGap = 2
-					local MinLeftInset = 4
-					local RightInset = 18
-					local TabWidth = tonumber(Tab.AbsoluteSize.X) or 0
+					local MinLeftInset = 2
+					local RightInset = 10
+					local ContainerWidth = tonumber(Hub.HubBarContainer.AbsoluteSize.X) or 0
+					-- Calculate from the equal-width tab scale, not a possibly stale
+					-- AbsoluteSize from before the phone's fullscreen resize completed.
+					local TabWidth = (Tab.Size.X.Scale * ContainerWidth) + Tab.Size.X.Offset
+					if TabWidth <= 0 then TabWidth = tonumber(Tab.AbsoluteSize.X) or 0 end
 					if TabWidth <= 0 then
-						local BarWidth = tonumber(Hub.HubBar.AbsoluteSize.X) or 0
-						TabWidth = BarWidth / Count
+						ContainerWidth = tonumber(Hub.HubBar.AbsoluteSize.X) or 0
+						TabWidth = ContainerWidth / Count
 					end
-					local MaxTitleWidth = math.max(28, math.floor(TabWidth - IconWidth - GroupGap - MinLeftInset - RightInset))
+					-- Reserve both left and right padding BEFORE measuring the label.
+					-- Never force a too-wide group back to the left, which used to let text
+					-- touch the tab's right edge on narrow phones.
+					local MaxTitleWidth = math.max(18, math.floor(TabWidth - IconWidth - GroupGap - MinLeftInset - RightInset))
 					local TitleWidth = MaxTitleWidth
-					local FittedTextSize = 15
+					local FittedTextSize = 12
 					if Title then
-						for CandidateSize = 18, 15, -1 do
+						local FoundFit = false
+						for CandidateSize = 16, 11, -1 do
 							local MeasuredWidth = GetMenuMeasuredTextWidth(Title, Title.Text, CandidateSize)
-							FittedTextSize = CandidateSize
-							if MeasuredWidth <= MaxTitleWidth then
-								TitleWidth = math.max(28, math.ceil(MeasuredWidth + 3))
+							if MeasuredWidth + 2 <= MaxTitleWidth then
+								FittedTextSize = CandidateSize
+								TitleWidth = math.max(18, math.ceil(MeasuredWidth + 2))
+								FoundFit = true
 								break
 							end
 						end
+						if not FoundFit then
+							TitleWidth = MaxTitleWidth
+							FittedTextSize = 11
+						end
 					end
 					local GroupWidth = IconWidth + GroupGap + TitleWidth
-					local IconLeft = math.max(MinLeftInset, math.floor(TabWidth - RightInset - GroupWidth + 0.5))
+					local IconLeft = math.floor(TabWidth - RightInset - GroupWidth + 0.5)
+					if IconLeft < MinLeftInset then IconLeft = MinLeftInset end
 					Page.Icon.Size = UDim2.fromOffset(IconWidth, IconHeight)
 					Page.Icon.Position = UDim2.new(0, IconLeft, 0.5, -IconHeight / 2)
 					if Title then
@@ -5300,10 +5314,10 @@ LayoutTabs = function()
 						Title.Position = UDim2.new(1, GroupGap, 0, 0)
 						Title.TextWrapped = false
 						Title.TextScaled = false
-						Title.TextXAlignment = Enum.TextXAlignment.Right
+						Title.TextXAlignment = Enum.TextXAlignment.Left
 						Title.TextYAlignment = Enum.TextYAlignment.Center
 						Title.TextSize = FittedTextSize
-						Title.ClipsDescendants = false
+						Title.ClipsDescendants = true
 					end
 				else
 					if Title then
@@ -18494,108 +18508,6 @@ Insert(Data.Objects, SystemMenuHitbox)
 
 NativeSystemMenuButtonCache = NativeSystemMenuButtonCache or {}
 NativeSystemMenuButtonCacheInitialized = NativeSystemMenuButtonCacheInitialized or false
-NativeSystemMenuReference = nil
-
--- Find Roblox's own top-bar close/menu control, anchored to the same branch as
--- ChatIcon. The native control may live in LegacyCloseFrame or a similarly named
--- close container, so discovery checks children of LeftFrame.Parent instead of
--- hard-coding one fragile full path.
-FindNativeSystemMenuReference =
-	function()
-		if NativeSystemMenuReference and NativeSystemMenuReference.Parent
-			and NativeSystemMenuReference:IsA("GuiButton") then
-			return NativeSystemMenuReference
-		end
-		NativeSystemMenuReference = nil
-
-		-- Search CoreGui.TopBarApp recursively. The native frame's full name is
-		-- intentionally unknown: match any case-insensitive name containing "close".
-		local TopBarRoot = CoreGui:FindFirstChild("TopBarApp", true)
-		if not TopBarRoot then return nil end
-
-		local BestButton = nil
-		local BestSizeDifference = math.huge
-		local TargetWidth, TargetHeight = 30, 30
-
-		local function ConsiderButton(Object)
-			if not Object or not Object:IsA("GuiButton") then return end
-			local ConfiguredSize = Object.Size
-			local OffsetDifference = math.abs(ConfiguredSize.X.Offset - TargetWidth)
-				+ math.abs(ConfiguredSize.Y.Offset - TargetHeight)
-			local AbsoluteDifference = math.huge
-			pcall(function()
-				local AbsoluteSize = Object.AbsoluteSize
-				if AbsoluteSize.X > 0 and AbsoluteSize.Y > 0 then
-					AbsoluteDifference = math.abs(AbsoluteSize.X - TargetWidth)
-						+ math.abs(AbsoluteSize.Y - TargetHeight)
-				end
-			end)
-			-- Prefer the same configured 30x30 size. AbsoluteSize can differ under
-			-- UIScale, so it is a secondary metric rather than a rejection test.
-			local Difference = math.min(OffsetDifference, AbsoluteDifference)
-			if Difference < BestSizeDifference then
-				BestButton = Object
-				BestSizeDifference = Difference
-			end
-		end
-
-		local function SearchCloseFrame(CloseFrame)
-			if not CloseFrame or not CloseFrame:IsA("Frame") then return end
-			for _, Descendant in ipairs(CloseFrame:GetDescendants()) do
-				ConsiderButton(Descendant)
-			end
-			if CloseFrame:IsA("GuiButton") then ConsiderButton(CloseFrame) end
-		end
-
-		local LeftFrames = {}
-		for _, Descendant in ipairs(TopBarRoot:GetDescendants()) do
-			if string.lower(tostring(Descendant.Name)):find("leftframe", 1, true) then
-				table.insert(LeftFrames, Descendant)
-			end
-		end
-
-		-- For every LeftFrame at any depth, inspect its parent's children and
-		-- search inside every Frame whose name CONTAINS "close" (case-insensitive).
-		for _, LeftFrame in ipairs(LeftFrames) do
-			local LeftParent = LeftFrame.Parent
-			if LeftParent then
-				for _, Child in ipairs(LeftParent:GetChildren()) do
-					local LowerName = string.lower(tostring(Child.Name))
-					if LowerName:find("close", 1, true) and Child:IsA("Frame") then
-						SearchCloseFrame(Child)
-					end
-				end
-			end
-		end
-
-		-- Fallback for client builds with one or more wrappers around the close frame.
-		if not BestButton then
-			for _, Descendant in ipairs(TopBarRoot:GetDescendants()) do
-				if Descendant:IsA("Frame")
-					and string.lower(tostring(Descendant.Name)):find("close", 1, true) then
-					SearchCloseFrame(Descendant)
-				end
-			end
-		end
-
-		-- Do not fail just because Roblox reports a scaled AbsoluteSize other than
-		-- 30x30. If the matching close frame contains a button, return the best fit.
-		if BestButton and BestButton.Parent then
-			NativeSystemMenuReference = BestButton
-			return BestButton
-		end
-		return nil
-	end
-
-GetNativeSystemMenuPosition =
-	function()
-		local Reference = FindNativeSystemMenuReference and FindNativeSystemMenuReference()
-		if not Reference or not Reference.Parent then return nil end
-		local Position = nil
-		local Ok = pcall(function() Position = Reference.AbsolutePosition end)
-		if not Ok or not Position then return nil end
-		return Position
-	end
 
 HideNativeSystemMenuButtons =
 	function()
@@ -18636,27 +18548,18 @@ AlignSystemMenuButton =
 
 		SystemMenuButton.Visible = true
 		SystemMenuButton.Size = UDim2.fromOffset(30, 30)
-		local NativePosition = GetNativeSystemMenuPosition and GetNativeSystemMenuPosition()
-		local CustomParentOrigin = Vector2.new(0, 0)
-		if SystemMenuButton.Parent and SystemMenuButton.Parent:IsA("GuiObject") then
-			CustomParentOrigin = SystemMenuButton.Parent.AbsolutePosition
-		end
-		local AlignedPosition = NativePosition
-			and UDim2.fromOffset(NativePosition.X - CustomParentOrigin.X, NativePosition.Y - CustomParentOrigin.Y)
-			or UDim2.fromOffset(GetSystemMenuButtonOffsetX(), SYSTEM_MENU_OFFSET_Y)
 		if SystemMenuHitbox then
 			SystemMenuHitbox.Visible = true
+			SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
 			SystemMenuHitbox.Size = UDim2.fromOffset(40, 40)
-			if IsMobile and NativePosition then
-				-- Center the 40x40 touch target over the native 30x30 visual button.
-				SystemMenuHitbox.Position = UDim2.fromOffset(NativePosition.X - 5, NativePosition.Y - 5)
-			else
-				SystemMenuHitbox.Position = UDim2.fromOffset(GetSystemMenuButtonOffsetX() - 4, SYSTEM_MENU_OFFSET_Y - 4)
-			end
 		end
 
 		if Hub.Visible then
-			SystemMenuButton.Position = AlignedPosition
+			SystemMenuButton.Position =
+				UDim2.fromOffset(
+					GetSystemMenuButtonOffsetX(),
+					SYSTEM_MENU_OFFSET_Y
+				)
 			SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 			pcall(function()
 				SystemMenuButton.ImageTransparency = 0
@@ -18665,14 +18568,22 @@ AlignSystemMenuButton =
 			-- While closing, preserve the normal visible 30x30 button. After the
 			-- tween completes, SetVisibility hides the visual button permanently.
 			if SystemMenuButtonClosing then
-				SystemMenuButton.Position = AlignedPosition
+				SystemMenuButton.Position =
+					UDim2.fromOffset(
+						SYSTEM_MENU_OFFSET_X,
+						SYSTEM_MENU_OFFSET_Y
+					)
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 				pcall(function()
 					SystemMenuButton.ImageTransparency = 0
 				end)
 				SystemMenuButton.Visible = true
 			else
-				SystemMenuButton.Position = AlignedPosition
+				SystemMenuButton.Position =
+					UDim2.fromOffset(
+						SYSTEM_MENU_OFFSET_X,
+						SYSTEM_MENU_OFFSET_Y
+					)
 				SystemMenuButton.Size = UDim2.fromOffset(30, 30)
 				pcall(function()
 					SystemMenuButton.ImageTransparency = 0
