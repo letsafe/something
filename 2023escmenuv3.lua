@@ -12,8 +12,8 @@ VOICE_CHAT_FORCE_OFF = VOICE_CHAT_MODE == "NEVER"
 
 -- INVITE FRIENDS ROW TEXT SIZE (applies on every device)
 -- Adjust these values to tune how small/large "Invite friends to join" can render.
-INVITE_FRIENDS_TEXT_MIN_SIZE = 16
-INVITE_FRIENDS_TEXT_MAX_SIZE = 20
+INVITE_FRIENDS_TEXT_MIN_SIZE = 18
+INVITE_FRIENDS_TEXT_MAX_SIZE = 22
 
 CoreGui = game:GetService("CoreGui")
 -- Remove a debug panel left behind by an earlier copy of this script.
@@ -2265,7 +2265,7 @@ ApplyMenuLocalizedText = function(Object, Source)
 		local Parent = Object.Parent
 		if Object.Name == "NameLabel" and Parent and Parent.Name == "InviteFriendsToJoin" then
 			Object.Font = Enum.Font.SourceSans
-			-- Keep localization from restoring the old oversized 24–28px text.
+			-- Keep localization refreshes synchronized with the adjustable Invite Friends text size.
 			-- These configurable values apply equally on PC, phones, and tablets.
 			Object.TextSize = INVITE_FRIENDS_TEXT_MAX_SIZE
 			Object.TextScaled = true
@@ -5270,7 +5270,7 @@ LayoutTabs = function()
 					local IconHeight = 32
 					local GroupGap = 2
 					local MinLeftInset = 4
-					local RightInset = 10
+					local RightInset = 18
 					local TabWidth = tonumber(Tab.AbsoluteSize.X) or 0
 					if TabWidth <= 0 then
 						local BarWidth = tonumber(Hub.HubBar.AbsoluteSize.X) or 0
@@ -18502,14 +18502,15 @@ NativeSystemMenuReference = nil
 -- hard-coding one fragile full path.
 FindNativeSystemMenuReference =
 	function()
-		if NativeSystemMenuReference and NativeSystemMenuReference.Parent then
+		if NativeSystemMenuReference and NativeSystemMenuReference.Parent
+			and NativeSystemMenuReference:IsA("GuiButton") then
 			return NativeSystemMenuReference
 		end
+		NativeSystemMenuReference = nil
 
-		local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
-		if not TopBarRoot then
-			TopBarRoot = CoreGui:FindFirstChild("TopBarApp", true)
-		end
+		-- Search CoreGui.TopBarApp recursively. The native frame's full name is
+		-- intentionally unknown: match any case-insensitive name containing "close".
+		local TopBarRoot = CoreGui:FindFirstChild("TopBarApp", true)
 		if not TopBarRoot then return nil end
 
 		local BestButton = nil
@@ -18518,15 +18519,20 @@ FindNativeSystemMenuReference =
 
 		local function ConsiderButton(Object)
 			if not Object or not Object:IsA("GuiButton") then return end
-			local Size = Object.AbsoluteSize
-			local Width, Height = Size.X, Size.Y
-			if Width <= 0 or Height <= 0 then
-				-- Use the configured offsets if CoreGui has not completed its first layout pass.
-				Width = Object.Size.X.Offset
-				Height = Object.Size.Y.Offset
-			end
-			if Width <= 0 or Height <= 0 then return end
-			local Difference = math.abs(Width - TargetWidth) + math.abs(Height - TargetHeight)
+			local ConfiguredSize = Object.Size
+			local OffsetDifference = math.abs(ConfiguredSize.X.Offset - TargetWidth)
+				+ math.abs(ConfiguredSize.Y.Offset - TargetHeight)
+			local AbsoluteDifference = math.huge
+			pcall(function()
+				local AbsoluteSize = Object.AbsoluteSize
+				if AbsoluteSize.X > 0 and AbsoluteSize.Y > 0 then
+					AbsoluteDifference = math.abs(AbsoluteSize.X - TargetWidth)
+						+ math.abs(AbsoluteSize.Y - TargetHeight)
+				end
+			end)
+			-- Prefer the same configured 30x30 size. AbsoluteSize can differ under
+			-- UIScale, so it is a secondary metric rather than a rejection test.
+			local Difference = math.min(OffsetDifference, AbsoluteDifference)
 			if Difference < BestSizeDifference then
 				BestButton = Object
 				BestSizeDifference = Difference
@@ -18534,8 +18540,7 @@ FindNativeSystemMenuReference =
 		end
 
 		local function SearchCloseFrame(CloseFrame)
-			if not CloseFrame or CloseFrame.ClassName ~= "Frame" then return end
-			-- Search every nested level because LegacyCloseFrame varies between builds.
+			if not CloseFrame or not CloseFrame:IsA("Frame") then return end
 			for _, Descendant in ipairs(CloseFrame:GetDescendants()) do
 				ConsiderButton(Descendant)
 			end
@@ -18544,37 +18549,38 @@ FindNativeSystemMenuReference =
 
 		local LeftFrames = {}
 		for _, Descendant in ipairs(TopBarRoot:GetDescendants()) do
-			if string.lower(Descendant.Name) == "leftframe" then
+			if string.lower(tostring(Descendant.Name)):find("leftframe", 1, true) then
 				table.insert(LeftFrames, Descendant)
 			end
 		end
 
-		-- The desired close frame is a sibling of LeftFrame, under LeftFrame.Parent.
+		-- For every LeftFrame at any depth, inspect its parent's children and
+		-- search inside every Frame whose name CONTAINS "close" (case-insensitive).
 		for _, LeftFrame in ipairs(LeftFrames) do
 			local LeftParent = LeftFrame.Parent
 			if LeftParent then
 				for _, Child in ipairs(LeftParent:GetChildren()) do
-					local LowerName = string.lower(Child.Name)
-					if LowerName:find("close", 1, true) and Child.ClassName == "Frame" then
+					local LowerName = string.lower(tostring(Child.Name))
+					if LowerName:find("close", 1, true) and Child:IsA("Frame") then
 						SearchCloseFrame(Child)
 					end
 				end
 			end
 		end
 
-		-- Fallback: some client versions add another wrapper around LegacyCloseFrame.
-		-- Still require a close-named object whose ClassName is exactly Frame.
-		if not BestButton or BestSizeDifference > 2 then
+		-- Fallback for client builds with one or more wrappers around the close frame.
+		if not BestButton then
 			for _, Descendant in ipairs(TopBarRoot:GetDescendants()) do
-				if Descendant.ClassName == "Frame"
-					and string.lower(Descendant.Name):find("close", 1, true) then
+				if Descendant:IsA("Frame")
+					and string.lower(tostring(Descendant.Name)):find("close", 1, true) then
 					SearchCloseFrame(Descendant)
 				end
 			end
 		end
 
-		-- The reference must match the custom button's current 30x30 dimensions.
-		if BestButton and BestSizeDifference <= 2 then
+		-- Do not fail just because Roblox reports a scaled AbsoluteSize other than
+		-- 30x30. If the matching close frame contains a button, return the best fit.
+		if BestButton and BestButton.Parent then
 			NativeSystemMenuReference = BestButton
 			return BestButton
 		end
@@ -18585,8 +18591,9 @@ GetNativeSystemMenuPosition =
 	function()
 		local Reference = FindNativeSystemMenuReference and FindNativeSystemMenuReference()
 		if not Reference or not Reference.Parent then return nil end
-		local Position = Reference.AbsolutePosition
-		if not Position then return nil end
+		local Position = nil
+		local Ok = pcall(function() Position = Reference.AbsolutePosition end)
+		if not Ok or not Position then return nil end
 		return Position
 	end
 
