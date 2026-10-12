@@ -10,6 +10,11 @@ if VOICE_CHAT_MODE ~= "NORMAL" and VOICE_CHAT_MODE ~= "NEVER" then
 end
 VOICE_CHAT_FORCE_OFF = VOICE_CHAT_MODE == "NEVER"
 
+-- INVITE FRIENDS ROW TEXT SIZE (applies on every device)
+-- Adjust these values to tune how small/large "Invite friends to join" can render.
+INVITE_FRIENDS_TEXT_MIN_SIZE = 18
+INVITE_FRIENDS_TEXT_MAX_SIZE = 22
+
 CoreGui = game:GetService("CoreGui")
 -- Remove a debug panel left behind by an earlier copy of this script.
 pcall(function()
@@ -359,13 +364,13 @@ INVITE_SHARE_ROW_GAP = 8
 
 -- The 2016-style phone tab bar is compact; tablet and desktop keep their
 -- own heights below.
-MOBILE_HUBBAR_HEIGHT = 46
+MOBILE_HUBBAR_HEIGHT = 48
 TABLET_HUBBAR_HEIGHT = 48
 
 -- Custom SystemMenuButton offsets.
 SYSTEM_MENU_OFFSET_X = 16
 SYSTEM_MENU_OFFSET_Y = 4
-MOBILE_SYSTEM_MENU_OFFSET_X = 32
+MOBILE_SYSTEM_MENU_OFFSET_X = 16
 GetSystemMenuButtonOffsetX = function()
     return IsPhone and MOBILE_SYSTEM_MENU_OFFSET_X or SYSTEM_MENU_OFFSET_X
 end
@@ -2260,11 +2265,16 @@ ApplyMenuLocalizedText = function(Object, Source)
 		local Parent = Object.Parent
 		if Object.Name == "NameLabel" and Parent and Parent.Name == "InviteFriendsToJoin" then
 			Object.Font = Enum.Font.SourceSans
-			Object.TextSize = 28
+			-- Keep localization from restoring the old oversized 24–28px text.
+			-- These configurable values apply equally on PC, phones, and tablets.
+			Object.TextSize = INVITE_FRIENDS_TEXT_MAX_SIZE
 			Object.TextScaled = true
 			Object.TextWrapped = true
 			local Constraint = Object:FindFirstChildOfClass("UITextSizeConstraint")
-			if Constraint then Constraint.MinTextSize = 24; Constraint.MaxTextSize = 28 end
+			if Constraint then
+				Constraint.MinTextSize = INVITE_FRIENDS_TEXT_MIN_SIZE
+				Constraint.MaxTextSize = INVITE_FRIENDS_TEXT_MAX_SIZE
+			end
 		elseif Object.Name == "MuteAllLabel" and Parent and Parent.Name == "MuteAllVoiceRow" then
 			Object.Font = Enum.Font.SourceSans
 			Object.TextSize = 28
@@ -4793,7 +4803,9 @@ ResizeHub = function()
             }
             if MobileVoiceIncluded then table.insert(PhoneActionButtons, VoiceChatButton) end
             local ActionCount = #PhoneActionButtons
-            local ActionWidth = MobileVoiceIncluded and 0.25 or (1 / math.max(1, ActionCount))
+            -- Every visible phone action gets one equal-width slot. This keeps
+            -- VC next to the other controls instead of stranded at the far edge.
+            local ActionWidth = 1 / math.max(1, ActionCount)
 
             if not MobileButtonsContainer or not MobileButtonsContainer.Parent then
                 MobileButtonsContainer = Create("Frame", {
@@ -4816,9 +4828,9 @@ ResizeHub = function()
                     Button.Visible = Button ~= VoiceChatButton or MobileVoiceIncluded
 
                     if Button == VoiceChatButton then
-                        Button.AnchorPoint = Vector2.new(1, 0)
-                        Button.Size = UDim2.fromOffset(ActionHeight, ActionHeight)
-                        Button.Position = UDim2.new(1, -2, 0, 0)
+                        Button.AnchorPoint = Vector2.new(0, 0)
+                        Button.Size = UDim2.new(ActionWidth, -4, 0, ActionHeight)
+                        Button.Position = UDim2.new((Index - 1) * ActionWidth, 2, 0, 0)
                         Button.ClipsDescendants = true
                         local VoiceIcon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
                         if VoiceIcon then
@@ -5227,7 +5239,7 @@ LayoutTabs = function()
 		if Hub.HubBarContainerLayout then
 			Hub.HubBarContainerLayout.Parent = Hub.HubBarContainer
 			Hub.HubBarContainerLayout.FillDirection = Enum.FillDirection.Horizontal
-			Hub.HubBarContainerLayout.HorizontalAlignment = IsPhone and Enum.HorizontalAlignment.Right or Enum.HorizontalAlignment.Center
+			Hub.HubBarContainerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
 			Hub.HubBarContainerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
 			Hub.HubBarContainerLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			Hub.HubBarContainerLayout.Padding = UDim.new(0, 0)
@@ -10807,13 +10819,13 @@ MakeInviteFriendsRow = function(Page)
 		Create("ImageLabel", {
 			Name = "Icon", Parent = Row, BackgroundTransparency = 1,
 			Image = "rbxassetid://80022950003290",
-			Size = UDim2.fromOffset(PhoneLayout and 20 or 24, PhoneLayout and 20 or 24),
+			Size = UDim2.fromOffset(PhoneLayout and 22 or 26, PhoneLayout and 22 or 26),
 			Position = UDim2.new(0, PhoneLayout and 8 or 14, 0.5, PhoneLayout and -10 or -12),
 			ScaleType = Enum.ScaleType.Fit, ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
 		Create("TextLabel", {
 			Name = "NameLabel", Parent = Row, BackgroundTransparency = 1,
-			Font = Enum.Font.SourceSans, TextSize = 28,
+			Font = Enum.Font.SourceSans, TextSize = INVITE_FRIENDS_TEXT_MAX_SIZE,
 			TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
 			TextYAlignment = Enum.TextYAlignment.Center,
 			Text = "Invite friends to join", TextWrapped = true, TextScaled = true,
@@ -10821,7 +10833,12 @@ MakeInviteFriendsRow = function(Page)
 			Position = UDim2.new(0, PhoneLayout and 36 or 50, 0, PhoneLayout and 2 or 0),
 			ZIndex = SETTINGS_BASE_ZINDEX + 3,
 		})
-		Create("UITextSizeConstraint", {Name = "InviteFriendsTextConstraint", Parent = Row:FindFirstChild("NameLabel"), MinTextSize = 24, MaxTextSize = 28})
+		Create("UITextSizeConstraint", {
+			Name = "InviteFriendsTextConstraint",
+			Parent = Row:FindFirstChild("NameLabel"),
+			MinTextSize = INVITE_FRIENDS_TEXT_MIN_SIZE,
+			MaxTextSize = INVITE_FRIENDS_TEXT_MAX_SIZE,
+		})
 	end
 
 	local MuteRow
@@ -14139,11 +14156,51 @@ VolumeSlider = MakeSlider(
 	end
 )
 
--- Voice UI must follow the actual place-level voice configuration, not merely
--- the existence of VoiceChatService (Roblox exposes that service in places where
--- voice cannot be used). Fail closed when the configuration cannot be verified.
--- IsContextVoiceEnabled is a separate live signal: when readable, an explicit
--- false vetoes the place flag because the current experience context is not voice-enabled.
+-- Voice UI must be gated by a real native voice control for this experience.
+-- EnableDefaultVoice is CreatorHub/PluginSecurity and defaults to true; by itself
+-- it is NOT reliable proof that the current experience exposes voice to players.
+-- Likewise, account eligibility is not proof that this particular experience allows it.
+-- The native ESC self-mute control is created by Roblox's own voice UI in a
+-- voice-enabled context. Require that control and its genuine VoiceChat state icon
+-- in addition to the live internal context check; fail closed if either is missing.
+local function HasNativeExperienceVoiceControl()
+    local RobloxGui = nil
+    local SettingsShield = nil
+    local NativeButton = nil
+    local Ok = pcall(function()
+        RobloxGui = CoreGui:FindFirstChild("RobloxGui")
+        SettingsShield = RobloxGui and RobloxGui:FindFirstChild("SettingsClippingShield")
+        NativeButton = SettingsShield and SettingsShield:FindFirstChild("MuteSelfButton", true)
+    end)
+    if not Ok or not NativeButton then return false end
+
+    local Candidates = {NativeButton}
+    local DescendantsOk, Descendants = pcall(function()
+        return NativeButton:GetDescendants()
+    end)
+    if DescendantsOk and type(Descendants) == "table" then
+        for _, Descendant in ipairs(Descendants) do
+            table.insert(Candidates, Descendant)
+        end
+    end
+
+    for _, Candidate in ipairs(Candidates) do
+        local IsImage, Image = false, ""
+        pcall(function()
+            IsImage = Candidate:IsA("ImageLabel") or Candidate:IsA("ImageButton")
+            Image = tostring(Candidate.Image or "")
+        end)
+        if IsImage and Image:find("VoiceChat", 1, true)
+            and (Image:find("Muted", 1, true)
+                or Image:find("Unmuted", 1, true)
+                or Image:find("Connecting", 1, true)
+                or Image:find("Error", 1, true)) then
+            return true
+        end
+    end
+    return false
+end
+
 GetGameVoiceSupport = function()
     -- The top-of-file "NEVER" mode intentionally overrides all automatic
     -- place/context checks, so the rest of the script sees voice as unavailable.
@@ -14192,6 +14249,11 @@ GetGameVoiceSupport = function()
 	if not ContextOk or type(ContextEnabled) ~= "boolean" or ContextEnabled ~= true then
 		return false
 	end
+
+    -- This prevents the false positive where the service's default-true property
+    -- plus a stale/overly-broad internal context result makes custom VC controls
+    -- appear in an experience where Roblox has not exposed its own voice controls.
+    if not HasNativeExperienceVoiceControl() then return false end
 
 	return true
 end
@@ -17589,9 +17651,9 @@ ConfigureMobileActionButtons = function()
             Button.ZIndex = SETTINGS_BASE_ZINDEX + 4
             Button.Visible = Button ~= VoiceChatButton or VoiceActive
             if Button == VoiceChatButton then
-                Button.AnchorPoint = Vector2.new(1, 0)
-                Button.Size = UDim2.fromOffset(ActionHeight, ActionHeight)
-                Button.Position = UDim2.new(1, -2, 0, 0)
+                Button.AnchorPoint = Vector2.new(0, 0)
+                Button.Size = UDim2.new(Fraction, -4, 0, ActionHeight)
+                Button.Position = UDim2.new((Index - 1) * Fraction, 2, 0, 0)
                 Button.ClipsDescendants = true
                 local Icon = VoiceChatButton:FindFirstChildWhichIsA("ImageLabel", true)
                 if Icon then
@@ -17603,9 +17665,8 @@ ConfigureMobileActionButtons = function()
                 end
             else
                 Button.AnchorPoint = Vector2.new(0, 0)
-                local ActionFraction = VoiceActive and 0.25 or Fraction
-                Button.Size = UDim2.new(ActionFraction, -4, 0, ActionHeight)
-                Button.Position = UDim2.new((Index - 1) * ActionFraction, 2, 0, 0)
+                Button.Size = UDim2.new(Fraction, -4, 0, ActionHeight)
+                Button.Position = UDim2.new((Index - 1) * Fraction, 2, 0, 0)
                 for _, Child in ipairs(Button:GetChildren()) do
                     if Child:IsA("ImageLabel") then Child.Visible = false end
                 end
