@@ -1,7 +1,7 @@
 local Environment = type(getgenv) == "function" and getgenv() or _G
 local NativeRequire = require
 
-local DEBUG = true
+local DEBUG = false
 
 local Settings = Environment.YekuSettings
     or Environment.LegacySettings
