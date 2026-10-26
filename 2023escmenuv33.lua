@@ -3,7 +3,7 @@
     RBXMSUITE PACKAGE DOWNLOAD - BUNDLED CORESCRIPTS SOURCES ONLY
 
     Package source is intentionally unchanged:
-        Suite.download("letsafe/something@v1.0.0", "yepa.rbxm")
+        Suite.download("letsafe/something@v1.0.0", "shovel.rbxm")
 
     Preserves:
       - Bundled CoreScripts from Main.Modules.<Year>.CoreScriptsRoot.
@@ -27,14 +27,15 @@
 local Environment = type(getgenv) == "function" and getgenv() or _G
 local NativeRequire = require
 
-local Settings = Environment.YekuSettings
+-- Existing CoreScripts loader config (Year / SafeChat), unrelated to the recording bridge.
+local LoaderConfig = Environment.YekuSettings
     or Environment.LegacySettings
     or {
         Year = 2019,
         SafeChat = false,
     }
 
-local Year = math.floor(tonumber(Settings.Year) or 2019)
+local Year = math.floor(tonumber(LoaderConfig.Year) or 2019)
 local PREFIX = "[Yeku CoreScripts]"
 
 local CoreGui = game:GetService("CoreGui")
@@ -808,6 +809,8 @@ local function TryHideGuiObject(Object, Label)
 end
 
 HideNativeCoreUI = function()
+    local OurRoot = CoreGui:FindFirstChild("NewRobloxGui")
+    local UseNativePlayerList = OurRoot and OurRoot:GetAttribute("UseNativePlayerList") == true
     local NativeRobloxGui = CoreGui:FindFirstChild("RobloxGui")
 
     if NativeRobloxGui and NativeRobloxGui.Name ~= "NewRobloxGui" then
@@ -823,6 +826,46 @@ HideNativeCoreUI = function()
 
             if Surface then
                 RestrictNativeGuiToInspect(NativeRobloxGui, Surface)
+            end
+        elseif UseNativePlayerList then
+            -- This one topbar variant deliberately uses the native PlayerList.
+            -- Keep RobloxGui enabled only so that list can render, while hiding
+            -- every unrelated native GUI object/screen.
+            if NativeRobloxGui:IsA("LayerCollector") then
+                pcall(function() NativeRobloxGui.Enabled = true end)
+            end
+            local function belongsToPlayerList(Object)
+                local Current = Object
+                while Current and Current ~= NativeRobloxGui do
+                    if string.lower(Current.Name):find("playerlist", 1, true) then
+                        return true
+                    end
+                    Current = Current.Parent
+                end
+                return false
+            end
+            local function containsPlayerList(Object)
+                for _, Child in ipairs(Object:GetDescendants()) do
+                    if string.lower(Child.Name):find("playerlist", 1, true) then
+                        return true
+                    end
+                end
+                return false
+            end
+            for _, Descendant in ipairs(NativeRobloxGui:GetDescendants()) do
+                if Descendant:IsA("LayerCollector") or Descendant:IsA("GuiObject") then
+                    if belongsToPlayerList(Descendant) or containsPlayerList(Descendant) then
+                        -- Keep the PlayerList branch and the ancestors required to
+                        -- render it; unrelated siblings are still hidden individually.
+                        if Descendant:IsA("LayerCollector") then
+                            pcall(function() Descendant.Enabled = true end)
+                        else
+                            pcall(function() Descendant.Visible = true end)
+                        end
+                    else
+                        TryHideGuiObject(Descendant, "CoreGui.RobloxGui." .. Descendant.Name)
+                    end
+                end
             end
         else
             TryHideGuiObject(NativeRobloxGui, "CoreGui.RobloxGui")
@@ -869,7 +912,6 @@ HideNativeCoreUI = function()
         end
     end
 
-    local OurRoot = CoreGui:FindFirstChild("NewRobloxGui")
     local RequestedNativeRoots = {
         experiencechat = true,
         playerlist = true,
@@ -879,11 +921,21 @@ HideNativeCoreUI = function()
         if not (OurRoot and Descendant:IsDescendantOf(OurRoot))
             and (Descendant:IsA("LayerCollector") or Descendant:IsA("GuiObject")) then
 
-            if RequestedNativeRoots[string.lower(Descendant.Name)] then
-                TryHideGuiObject(
-                    Descendant,
-                    "CoreGui." .. Descendant:GetFullName()
-                )
+            local DescendantName = string.lower(Descendant.Name)
+            if RequestedNativeRoots[DescendantName] then
+                if UseNativePlayerList and DescendantName == "playerlist" then
+                    -- Undo an earlier hide if this Topbar starts after the loader.
+                    if Descendant:IsA("LayerCollector") then
+                        pcall(function() Descendant.Enabled = true end)
+                    elseif Descendant:IsA("GuiObject") then
+                        pcall(function() Descendant.Visible = true end)
+                    end
+                else
+                    TryHideGuiObject(
+                        Descendant,
+                        "CoreGui." .. Descendant:GetFullName()
+                    )
+                end
             end
         end
     end
@@ -1145,127 +1197,698 @@ end)
 -- 04. RECORDING / SCREENSHOT EVENTS
 --==============================================================
 
-Section("RECORDING / SCREENSHOT EVENTS")
+do
+    Section("RECORDING / SCREENSHOT EVENTS")
 
-local EventActions = {}
+    -- UI contract: Topbar.lua and Record.lua send only local-executor command
+    -- RemoteEvents: RecordSomething:FireServer("start" | "stop" | ...).
+    -- The loader explicitly registers VideoRecording SetCore/GetCore adapters.
+    -- SetCore does NOT call itself recursively: its adapter taps native F12 once,
+    -- while GetCore returns the state observed from GameSettings' native signal.
+    -- Status events are emitted only from an observed native state transition
+    -- (or as a same-state acknowledgement when the actual state is already known).
 
-local function GetOrCreateEvent(Name, Action)
-    local Event = ReplicatedStorage:FindFirstChild(Name)
-
-    if Event and not Event:IsA("RemoteEvent") then
-        Warn(Name .. " exists but is not a RemoteEvent.")
-        return nil
+    if type(Environment.__YekuRecordBridgeCleanup) == "function" then
+        pcall(Environment.__YekuRecordBridgeCleanup)
     end
 
-    if not Event then
-        Event = Instance.new("RemoteEvent")
-        Event.Name = Name
-        Event.Parent = ReplicatedStorage
+    local Connections = {}
+    local RemoteActions = {}
+    local BridgeAlive = true
+    local PendingRequest = nil
+    local RequestGeneration = 0
+    local NativeSignalObservedAt = 0
+
+    local Registry = Environment.__YekuVideoRecordingCore
+    if type(Registry) ~= "table" then
+        Registry = {}
+        Environment.__YekuVideoRecordingCore = Registry
     end
 
-    EventActions[Event] = Action
-    Log("Event ready: " .. Name)
+    local OldRegistrationPresent = Registry.SetCoreRegistered == true
+        or Registry.GetCoreRegistered == true
+    local OldContract = Registry.Contract
 
-    return Event
-end
+    -- A prior Yeku revision used Registry.State as a pretend recording state.
+    -- Do not trust it when upgrading that contract: only the current native
+    -- signal (or a genuine pre-existing Core value read before registration)
+    -- can establish the state.
+    if OldRegistrationPresent and OldContract ~= "YekuVideoRecordingCore-F12Adapter-v3" then
+        Registry.ObservedState = nil
+        Registry.State = nil
+        Warn("Upgrading an older VideoRecording Core adapter; previous cached state discarded until native state is observed.")
+    end
+    if type(Registry.ObservedState) ~= "boolean" then
+        Registry.ObservedState = nil
+    end
+    Registry.State = Registry.ObservedState
+    Registry.Contract = "YekuVideoRecordingCore-F12Adapter-v3"
+    Registry.SetCoreDispatchSerial = tonumber(Registry.SetCoreDispatchSerial) or 0
+    Registry.HeartbeatGeneration = tonumber(Registry.HeartbeatGeneration) or 0
+    Registry.HeartbeatRunning = false
+    Registry.SetRequest = nil
+    Registry.GetRequest = nil
 
-GetOrCreateEvent("ScreenshotEvent", "screenshot")
-GetOrCreateEvent("recordingstart", "recording-start")
-GetOrCreateEvent("recordingend", "recording-end")
+    local function FindOrReplaceRemoteEvent(Name)
+        local Event = ReplicatedStorage:FindFirstChild(Name)
+        if Event and not Event:IsA("RemoteEvent") then
+            Warn("ReplicatedStorage." .. Name .. " was " .. Event.ClassName
+                .. "; replacing it with the required client command RemoteEvent.")
+            Event:Destroy()
+            Event = nil
+        end
+        if not Event then
+            Event = Instance.new("RemoteEvent")
+            Event.Name = Name
+            Event.Parent = ReplicatedStorage
+        end
+        return Event
+    end
 
-local RecordingActive = false
+    local function FindOrReplaceStatusEvent(Name)
+        local Event = ReplicatedStorage:FindFirstChild(Name)
+        if Event and not Event:IsA("BindableEvent") then
+            Warn("ReplicatedStorage." .. Name .. " was " .. Event.ClassName
+                .. "; replacing it with a client-local BindableEvent status output.")
+            Event:Destroy()
+            Event = nil
+        end
+        if not Event then
+            Event = Instance.new("BindableEvent")
+            Event.Name = Name
+            Event.Parent = ReplicatedStorage
+        end
+        return Event
+    end
 
-local function HandleRecordingAction(Action)
-    Log("[RECORDING ACTION] " .. tostring(Action))
+    local RecordSomething = FindOrReplaceRemoteEvent("RecordSomething")
+    local ScreenshotEvent = FindOrReplaceRemoteEvent("ScreenshotEvent")
+    local StatusEvents = {
+        RecordingStart = FindOrReplaceStatusEvent("RecordingStart"),
+        RecordingStop = FindOrReplaceStatusEvent("RecordingStop"),
+        RecordingEnd = FindOrReplaceStatusEvent("RecordingEnd"),
+        OnGoingRecording = FindOrReplaceStatusEvent("OnGoingRecording"),
+        RecordingContinue = FindOrReplaceStatusEvent("RecordingContinue"),
+        RecordingResume = FindOrReplaceStatusEvent("RecordingResume"),
+        RecordingPause = FindOrReplaceStatusEvent("RecordingPause"),
+        RecordingChanged = FindOrReplaceStatusEvent("RecordingChanged"),
+    }
 
-    if Action == "screenshot" then
+    local function FireStatus(Name, ...)
+        local Event = StatusEvents[Name]
+        if not Event or not Event.Parent or not Event:IsA("BindableEvent") then
+            Event = FindOrReplaceStatusEvent(Name)
+            StatusEvents[Name] = Event
+        end
+        local Arguments = table.pack(...)
+        local OK, ErrorMessage = pcall(function()
+            Event:Fire(table.unpack(Arguments, 1, Arguments.n))
+        end)
+        if not OK then
+            Warn(Name .. ":Fire failed: " .. tostring(ErrorMessage))
+            return false
+        end
+        return true
+    end
+
+    local function FireStateAcknowledgement(Value, Source, Action)
+        if Value then
+            FireStatus("RecordingStart", true, Source)
+        else
+            FireStatus("RecordingStop", false, Source)
+            FireStatus("RecordingEnd", false, Source)
+        end
+        if Action == "continue" then
+            FireStatus("RecordingContinue", Value)
+        elseif Action == "resume" then
+            FireStatus("RecordingResume", Value)
+        elseif Action == "pause" then
+            FireStatus("RecordingPause", Value)
+        end
+    end
+
+    local function StartOngoingHeartbeat()
+        if Registry.HeartbeatRunning then
+            return
+        end
+        Registry.HeartbeatRunning = true
+        Registry.HeartbeatGeneration += 1
+        local Generation = Registry.HeartbeatGeneration
         task.spawn(function()
-            for Attempt = 1, 10 do
-                local Success, ErrorMessage = pcall(function()
-                    StarterGui:SetCore("TakeScreenshot")
-                end)
-
-                if Success then
-                    Log("Screenshot requested.")
-                    return
-                end
-
-                Log("Screenshot attempt " .. Attempt .. ": " .. tostring(ErrorMessage))
-                task.wait(0.25)
+            while BridgeAlive
+                and Registry.ObservedState == true
+                and Registry.HeartbeatGeneration == Generation do
+                FireStatus("OnGoingRecording", true, os.clock())
+                task.wait(0.12)
             end
-
-            Warn("Screenshot request exhausted all attempts.")
+            if Registry.HeartbeatGeneration == Generation then
+                Registry.HeartbeatRunning = false
+            end
         end)
-
-        return
     end
 
-    local ShouldRecord = Action == "recording-start"
+    local function PublishObservedState(Value, Source)
+        if type(Value) ~= "boolean" then
+            return false
+        end
 
-    if ShouldRecord == RecordingActive then
-        return
-    end
+        local PreviousValue = Registry.ObservedState
+        Registry.ObservedState = Value
+        Registry.State = Value
+        NativeSignalObservedAt = os.clock()
 
-    local Success, ErrorMessage = pcall(function()
-        CoreGui:ToggleRecording()
-    end)
-
-    if not Success then
-        Warn("ToggleRecording failed: " .. tostring(ErrorMessage))
-        return
-    end
-
-    RecordingActive = ShouldRecord
-    Log("Recording state requested: " .. tostring(RecordingActive))
-end
-
-local function InstallRecordingHook()
-    if type(hookmetamethod) ~= "function"
-        or type(getnamecallmethod) ~= "function" then
-
-        Warn("Recording hook unavailable; continuing.")
-        return
-    end
-
-    local OldNamecall
-
-    local function Namecall(Self, ...)
-        local Method
-
-        pcall(function()
-            Method = getnamecallmethod()
-        end)
-
-        if Method == "FireServer" then
-            local Action = EventActions[Self]
-
-            if Action then
-                task.spawn(HandleRecordingAction, Action)
-                return nil
+        if PreviousValue ~= Value then
+            FireStatus("RecordingChanged", Value, PreviousValue, Source)
+            if Value then
+                FireStatus("RecordingStart", true, Source)
+            else
+                -- The native event has confirmed a false state, even if this
+                -- loader joined mid-session and did not observe the old true.
+                FireStatus("RecordingStop", false, Source)
+                FireStatus("RecordingEnd", false, Source)
             end
         end
 
-        return OldNamecall(Self, ...)
+        if Value then
+            StartOngoingHeartbeat()
+        else
+            Registry.HeartbeatGeneration += 1
+            Registry.HeartbeatRunning = false
+        end
+
+        local Request = PendingRequest
+        if Request then
+            if Request.Target == Value then
+                PendingRequest = nil
+                RequestGeneration += 1
+                if PreviousValue == Value then
+                    -- No actual transition occurred, but the desired state is
+                    -- already observed; acknowledge that existing truth.
+                    FireStateAcknowledgement(Value, "AlreadyObserved", Request.Action)
+                elseif Request.Action == "continue" then
+                    FireStatus("RecordingContinue", true)
+                elseif Request.Action == "resume" then
+                    FireStatus("RecordingResume", true)
+                elseif Request.Action == "pause" then
+                    FireStatus("RecordingPause", false)
+                end
+                Log("[RECORD BRIDGE] " .. tostring(Request.Action)
+                    .. " confirmed by native state signal: " .. tostring(Value))
+            else
+                PendingRequest = nil
+                RequestGeneration += 1
+                Warn("[RECORD BRIDGE] Native state became " .. tostring(Value)
+                    .. " but request wanted " .. tostring(Request.Target)
+                    .. "; UI follows actual state and no second F12 tap was sent.")
+            end
+        end
+        return true
     end
 
-    local Handler = Namecall
-
-    if type(newcclosure) == "function" then
-        Handler = newcclosure(Namecall)
+    -- GetCore is checked BEFORE Yeku registers its own callback. This can seed
+    -- an already-running native recorder on clients that still expose the key.
+    -- Never use a prior Yeku state-only callback as proof of real capture state.
+    if not OldRegistrationPresent then
+        local SeedOK, SeedValue = pcall(function()
+            return StarterGui:GetCore("VideoRecording")
+        end)
+        if SeedOK and type(SeedValue) == "boolean" then
+            Registry.ObservedState = SeedValue
+            Registry.State = SeedValue
+            Log("Seeded recording state from pre-registration GetCore('VideoRecording')="
+                .. tostring(SeedValue))
+        else
+            Log("Pre-registration GetCore('VideoRecording') is unavailable; waiting for native state signal.")
+        end
     end
 
-    local Success, Result = pcall(function()
-        OldNamecall = hookmetamethod(game, "__namecall", Handler)
+    -- Current Roblox builds removed GameSettings.VideoRecording. Its
+    -- VideoRecordingChangeRequest event remains the event signal used here.
+    local GameSettingsService
+    local GameSettingsOK, GameSettingsError = pcall(function()
+        GameSettingsService = settings():GetService("GameSettings")
+    end)
+    if not GameSettingsOK or not GameSettingsService then
+        local UserSettingsOK, UserSettingsObject = pcall(function()
+            return UserSettings()
+        end)
+        if UserSettingsOK and UserSettingsObject then
+            local FallbackOK, FallbackService = pcall(function()
+                return UserSettingsObject.GameSettings
+            end)
+            if FallbackOK and FallbackService then
+                GameSettingsService = FallbackService
+                GameSettingsOK = true
+                GameSettingsError = nil
+            end
+        end
+    end
+
+    local function FindKeytap()
+        local DirectCandidate
+        pcall(function() DirectCandidate = keytap end)
+        if type(DirectCandidate) == "function" then
+            return DirectCandidate
+        end
+        for _, Scope in ipairs({Environment, _G}) do
+            if type(Scope) == "table" then
+                local OK, Candidate = pcall(function()
+                    return Scope.keytap
+                end)
+                if OK and type(Candidate) == "function" then
+                    return Candidate
+                end
+            end
+        end
+        return nil
+    end
+
+    local function TapNativeF12()
+        local Keytap = FindKeytap()
+        if not Keytap then
+            Warn("Executor keytap is unavailable; cannot request native F12. No recording status will be fabricated.")
+            return false
+        end
+
+        local KeyCandidates = {Enum.KeyCode.F12, "F12", 0x7B}
+        local LastError
+        for _, Key in ipairs(KeyCandidates) do
+            local OK, Result = pcall(Keytap, Key)
+            if OK and Result ~= false then
+                Log("[RECORD BRIDGE] Sent one native F12 keytap through executor.")
+                return true
+            end
+            LastError = Result
+        end
+
+        Warn("Executor keytap could not send F12: " .. tostring(LastError))
+        return false
+    end
+
+    local function RequestNativeRecording(TargetValue, Action, Source)
+        if type(TargetValue) ~= "boolean" then
+            error("VideoRecording expects a boolean", 2)
+        end
+
+        Action = string.lower(tostring(Action or (TargetValue and "start" or "stop")))
+        Source = tostring(Source or "VideoRecording.SetCore")
+
+        if Registry.ObservedState == TargetValue then
+            FireStateAcknowledgement(TargetValue, "AlreadyObserved", Action)
+            Log("[RECORD BRIDGE] " .. Action .. " already matches the observed native state.")
+            return true
+        end
+
+        if PendingRequest then
+            if PendingRequest.Target == TargetValue then
+                Log("[RECORD BRIDGE] Coalesced duplicate " .. Action .. " request while awaiting native confirmation.")
+                return true
+            end
+            Warn("[RECORD BRIDGE] Opposite recording request rejected while another native transition is pending.")
+            return false
+        end
+
+        RequestGeneration += 1
+        local Generation = RequestGeneration
+        PendingRequest = {
+            Target = TargetValue,
+            Action = Action,
+            Source = Source,
+            Generation = Generation,
+            StartedAt = os.clock(),
+        }
+
+        if not TapNativeF12() then
+            if PendingRequest and PendingRequest.Generation == Generation then
+                PendingRequest = nil
+            end
+            return false
+        end
+
+        task.spawn(function()
+            local Deadline = os.clock() + 2.5
+            while BridgeAlive and RequestGeneration == Generation
+                and PendingRequest and PendingRequest.Generation == Generation
+                and os.clock() < Deadline do
+                task.wait(0.05)
+            end
+
+            if PendingRequest and PendingRequest.Generation == Generation then
+                PendingRequest = nil
+                RequestGeneration += 1
+                Warn("[RECORD BRIDGE] Native F12 was sent, but no VideoRecordingChangeRequest confirmation arrived. No false RecordingStart/RecordingEnd event was fired.")
+            end
+        end)
+        return true
+    end
+
+    Registry.NextSetCoreAction = nil
+    Registry.LastSetCoreAccepted = false
+    Registry.SetRequest = function(Value, Source)
+        if type(Value) ~= "boolean" then
+            error("VideoRecording SetCore expects a boolean", 2)
+        end
+        Registry.SetCoreDispatchSerial += 1
+        local Action = Registry.NextSetCoreAction
+        Registry.NextSetCoreAction = nil
+        Action = Action or (Value and "start" or "stop")
+        Registry.LastSetCoreAccepted = RequestNativeRecording(
+            Value,
+            Action,
+            Source or "VideoRecording.SetCore"
+        ) == true
+        return Registry.LastSetCoreAccepted
+    end
+
+    Registry.GetRequest = function()
+        -- Keep this a boolean for Core callers. It reflects the latest native
+        -- state event, never the fact that a request or keytap was issued.
+        return Registry.ObservedState == true
+    end
+
+    -- The registered closures intentionally dereference the current shared
+    -- registry instead of capturing this injection's local state. That permits
+    -- clean reinjection without installing chains of stale callbacks.
+    Registry.Set = function(Value, Source)
+        return Registry.SetRequest(Value, Source)
+    end
+    Registry.Get = function()
+        return Registry.GetRequest()
+    end
+
+    local RegisteredSet, RegisterSetError = pcall(function()
+        StarterGui:RegisterSetCore("VideoRecording", function(Value)
+            local Current = Environment.__YekuVideoRecordingCore
+            if type(Current) ~= "table" or type(Current.SetRequest) ~= "function" then
+                error("VideoRecording SetCore adapter is not ready", 2)
+            end
+            return Current.SetRequest(Value, "RegisteredSetCore")
+        end)
+    end)
+    if RegisteredSet then
+        Registry.SetCoreRegistered = true
+        Log("Registered StarterGui:RegisterSetCore('VideoRecording').")
+    elseif Registry.SetCoreRegistered == true then
+        Warn("RegisterSetCore('VideoRecording') could not be re-registered: "
+            .. tostring(RegisterSetError) .. ". Keeping the existing Yeku registration, whose closure uses the refreshed shared registry.")
+    else
+        Registry.SetCoreRegistered = false
+        Warn("RegisterSetCore('VideoRecording') failed: " .. tostring(RegisterSetError))
+    end
+
+    local RegisteredGet, RegisterGetError = pcall(function()
+        StarterGui:RegisterGetCore("VideoRecording", function()
+            local Current = Environment.__YekuVideoRecordingCore
+            if type(Current) ~= "table" or type(Current.GetRequest) ~= "function" then
+                error("VideoRecording GetCore adapter is not ready", 2)
+            end
+            return Current.GetRequest()
+        end)
+    end)
+    if RegisteredGet then
+        Registry.GetCoreRegistered = true
+        Log("Registered StarterGui:RegisterGetCore('VideoRecording').")
+    elseif Registry.GetCoreRegistered == true then
+        Warn("RegisterGetCore('VideoRecording') could not be re-registered: "
+            .. tostring(RegisterGetError) .. ". Keeping the existing Yeku registration, whose closure uses the refreshed shared registry.")
+    else
+        Registry.GetCoreRegistered = false
+        Warn("RegisterGetCore('VideoRecording') failed: " .. tostring(RegisterGetError))
+    end
+
+    -- The RemoteEvent contract remains the only UI command surface. Routing via
+    -- SetCore ensures the registered handler is used. If the callback was not
+    -- invoked (for example the registration API is unavailable in this client),
+    -- wait briefly for a genuine native signal/Core value before using the direct
+    -- F12 fallback; this avoids double-toggling a native handler that did work.
+    local function RequestThroughSetCore(TargetValue, Action)
+        local DispatchBefore = Registry.SetCoreDispatchSerial
+        local ObservedBefore = Registry.ObservedState
+        Registry.NextSetCoreAction = Action
+        local CoreOK, CoreError = pcall(function()
+            StarterGui:SetCore("VideoRecording", TargetValue)
+        end)
+
+        if Registry.SetCoreDispatchSerial ~= DispatchBefore then
+            Log("[RECORD BRIDGE] " .. Action .. " routed through registered VideoRecording SetCore.")
+            return Registry.LastSetCoreAccepted == true
+        end
+
+        Registry.NextSetCoreAction = nil
+        if not CoreOK then
+            Warn("SetCore('VideoRecording', " .. tostring(TargetValue) .. ") failed: " .. tostring(CoreError))
+        else
+            Warn("SetCore('VideoRecording') returned without invoking the Yeku handler; waiting briefly before the F12 fallback.")
+        end
+
+        task.spawn(function()
+            local Deadline = os.clock() + 0.45
+            while BridgeAlive and os.clock() < Deadline do
+                if Registry.ObservedState == TargetValue then
+                    Log("[RECORD BRIDGE] " .. Action .. " was confirmed by a native event while waiting for SetCore routing.")
+                    return
+                end
+                task.wait(0.05)
+            end
+
+            -- If no Yeku SetCore callback ran, a still-available preexisting
+            -- Core handler may have processed the call. Consult GetCore only
+            -- when Yeku's own getter was not registered successfully.
+            if not Registry.GetCoreRegistered then
+                local ReadOK, NativeValue = pcall(function()
+                    return StarterGui:GetCore("VideoRecording")
+                end)
+                if ReadOK and type(NativeValue) == "boolean" and NativeValue == TargetValue then
+                    PublishObservedState(NativeValue, "NativeGetCoreConfirmation")
+                    Log("[RECORD BRIDGE] Native GetCore confirmed " .. tostring(NativeValue) .. "; skipped F12 fallback.")
+                    return
+                end
+            end
+
+            if not BridgeAlive or Registry.SetCoreDispatchSerial ~= DispatchBefore then
+                return
+            end
+            if Registry.ObservedState ~= TargetValue then
+                Registry.SetRequest(TargetValue, "RemoteEventFallback:" .. Action)
+            elseif ObservedBefore ~= Registry.ObservedState then
+                Log("[RECORD BRIDGE] State changed natively; skipped fallback keytap.")
+            end
+        end)
+        return true
+    end
+
+    local function NormalizeCommand(Command)
+        if Command == true then return "start" end
+        if Command == false then return "stop" end
+        local Action = string.lower(tostring(Command or ""))
+        Action = Action:gsub("[%s_]+", "-")
+        if Action == "on" or Action == "recording-start" then
+            return "start"
+        elseif Action == "off" or Action == "end" or Action == "recording-stop"
+            or Action == "recording-end" then
+            return "stop"
+        elseif Action == "recording-toggle" then
+            return "toggle"
+        end
+        return Action
+    end
+
+    local function HandleRecordSomething(Command)
+        local Action = NormalizeCommand(Command)
+        Log("[RECORD BRIDGE] intercepted RecordSomething:FireServer(" .. Action .. ")")
+
+        if Action == "toggle" then
+            local Current = Registry.ObservedState
+            if type(Current) ~= "boolean" then
+                Warn("Cannot resolve toggle because recording state is not observed yet; no action was taken.")
+                return false
+            end
+            local TargetValue = not Current
+            return RequestThroughSetCore(TargetValue, TargetValue and "start" or "stop")
+        elseif Action == "start" then
+            return RequestThroughSetCore(true, "start")
+        elseif Action == "stop" then
+            return RequestThroughSetCore(false, "stop")
+        elseif Action == "continue" then
+            return RequestThroughSetCore(true, "continue")
+        elseif Action == "resume" then
+            return RequestThroughSetCore(true, "resume")
+        elseif Action == "pause" then
+            return RequestThroughSetCore(false, "pause")
+        end
+
+        Warn("Unknown RecordSomething command: " .. Action
+            .. "; expected start/stop/continue/resume/pause/toggle.")
+        return false
+    end
+
+    local function HandleScreenshotRequest()
+        task.spawn(function()
+            for Attempt = 1, 10 do
+                if not BridgeAlive then return end
+                local OK, ErrorMessage = pcall(function()
+                    StarterGui:SetCore("TakeScreenshot")
+                end)
+                if OK then
+                    Log("Screenshot requested through SetCore('TakeScreenshot').")
+                    return
+                end
+                Log("Screenshot attempt " .. Attempt .. " failed: " .. tostring(ErrorMessage))
+                task.wait(0.25)
+            end
+            Warn("Screenshot request exhausted all attempts.")
+        end)
+    end
+
+    local function Dispatch(Action, Argument)
+        if Action == "record-something" then
+            HandleRecordSomething(Argument)
+        elseif Action == "screenshot" then
+            HandleScreenshotRequest()
+        end
+    end
+
+    local function MonitorEndpoint(Event, Action)
+        if not Event or not Event:IsA("RemoteEvent") then
+            Warn("A recording command endpoint is missing or not a RemoteEvent: " .. tostring(Event))
+            return
+        end
+        RemoteActions[Event] = Action
+        Log("Monitoring intercepted RemoteEvent:FireServer on " .. Event:GetFullName()
+            .. " as " .. Action .. ".")
+    end
+
+    MonitorEndpoint(RecordSomething, "record-something")
+    MonitorEndpoint(ScreenshotEvent, "screenshot")
+
+    Connections[#Connections + 1] = ReplicatedStorage.ChildAdded:Connect(function(Child)
+        if Child.Name == "RecordSomething" then
+            RecordSomething = Child
+            MonitorEndpoint(RecordSomething, "record-something")
+        elseif Child.Name == "ScreenshotEvent" then
+            ScreenshotEvent = Child
+            MonitorEndpoint(ScreenshotEvent, "screenshot")
+        end
     end)
 
-    if Success and type(OldNamecall) == "function" then
-        Log("Recording interception installed.")
-    else
-        Warn("Recording hook failed: " .. tostring(Result))
+    -- Persistent executor hook: reinjection updates its dispatch table rather
+    -- than adding another __namecall hook layer.
+    local HookState = Environment.__YekuRecordNamecallHook
+    if type(HookState) ~= "table" then
+        HookState = {Installed = false, Actions = {}, Dispatch = nil}
+        Environment.__YekuRecordNamecallHook = HookState
     end
-end
+    HookState.Actions = RemoteActions
+    HookState.Dispatch = Dispatch
 
-InstallRecordingHook()
+    if not HookState.Installed then
+        if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
+            local OldNamecall
+            local function Namecall(Self, ...)
+                local Method
+                pcall(function() Method = getnamecallmethod() end)
+                local Current = Environment.__YekuRecordNamecallHook
+                if Method == "FireServer" and type(Current) == "table" then
+                    local ActionName = Current.Actions and Current.Actions[Self]
+                    local Handler = Current.Dispatch
+                    if ActionName and type(Handler) == "function" then
+                        local Arguments = table.pack(...)
+                        local OK, ErrorMessage = pcall(Handler, ActionName, Arguments[1])
+                        if not OK then
+                            Warn("Intercepted " .. tostring(ActionName) .. " failed: " .. tostring(ErrorMessage))
+                        end
+                        return nil
+                    end
+                end
+                if type(OldNamecall) == "function" then
+                    return OldNamecall(Self, ...)
+                end
+                return nil
+            end
+            local Wrapped = Namecall
+            if type(newcclosure) == "function" then
+                Wrapped = newcclosure(Namecall)
+            end
+            local HookOK, HookResult = pcall(function()
+                OldNamecall = hookmetamethod(game, "__namecall", Wrapped)
+            end)
+            if HookOK and type(OldNamecall) == "function" then
+                HookState.Installed = true
+                Log("Persistent local RemoteEvent FireServer interception installed.")
+            else
+                HookState.Installed = false
+                Warn("RemoteEvent FireServer interception failed: " .. tostring(HookResult))
+            end
+        else
+            HookState.Installed = false
+            Warn("Executor lacks hookmetamethod/getnamecallmethod; RemoteEvent commands cannot be intercepted locally.")
+        end
+    else
+        Log("Reusing persistent RemoteEvent FireServer interception.")
+    end
+
+    -- Native F12/menu toggles are not replayed. Their actual transition is
+    -- forwarded from the GameSettings signal and drives status events/GetCore.
+    if GameSettingsOK and GameSettingsService then
+        local SignalOK, SignalOrError = pcall(function()
+            return GameSettingsService.VideoRecordingChangeRequest:Connect(function(Value)
+                if type(Value) == "boolean" then
+                    Log("[RECORD BRIDGE] native VideoRecordingChangeRequest=" .. tostring(Value))
+                    PublishObservedState(Value, "GameSettings.VideoRecordingChangeRequest")
+                end
+            end)
+        end)
+        if SignalOK and SignalOrError then
+            Connections[#Connections + 1] = SignalOrError
+            Log("Connected GameSettings.VideoRecordingChangeRequest for F12/native menu state updates.")
+        else
+            Warn("Could not connect GameSettings.VideoRecordingChangeRequest: " .. tostring(SignalOrError))
+        end
+    else
+        Warn("GameSettings service unavailable for recording notifications: " .. tostring(GameSettingsError))
+    end
+
+    -- Don't respond to native F12 input by issuing another F12 keytap. This
+    -- listener only logs key observation; the GameSettings signal is authoritative.
+    Connections[#Connections + 1] = UserInputService.InputBegan:Connect(function(Input)
+        if Input.KeyCode == Enum.KeyCode.F12 then
+            Log("[RECORD BRIDGE] physical F12 observed; waiting for native recording-change signal.")
+        end
+    end)
+
+    Environment.__YekuRecordBridgeCleanup = function()
+        BridgeAlive = false
+        RequestGeneration += 1
+        Registry.HeartbeatGeneration += 1
+        Registry.HeartbeatRunning = false
+        PendingRequest = nil
+        for _, Connection in ipairs(Connections) do
+            pcall(function()
+                if typeof(Connection) == "RBXScriptConnection" then
+                    Connection:Disconnect()
+                end
+            end)
+        end
+        table.clear(Connections)
+        table.clear(RemoteActions)
+        local Current = Environment.__YekuRecordNamecallHook
+        if type(Current) == "table" and Current.Actions == RemoteActions then
+            Current.Dispatch = nil
+        end
+    end
+
+    if Registry.ObservedState == true then
+        StartOngoingHeartbeat()
+    end
+
+    Log("VideoRecording adapters: RegisterSetCore=" .. tostring(Registry.SetCoreRegistered)
+        .. ", RegisterGetCore=" .. tostring(Registry.GetCoreRegistered))
+    Log("Command input: ReplicatedStorage.RecordSomething (RemoteEvent intercepted locally).")
+    Log("Screenshot input: ReplicatedStorage.ScreenshotEvent (RemoteEvent intercepted locally).")
+    Log("SetCore('VideoRecording') invokes the executor's native F12 adapter; GetCore('VideoRecording') returns the last observed native state.")
+    Log("Status outputs: RecordingStart, RecordingStop, RecordingEnd, OnGoingRecording, "
+        .. "RecordingContinue, RecordingResume, RecordingPause, RecordingChanged.")
+end
 
 --==============================================================
 -- 05. RBXMSUITE
@@ -1337,17 +1960,17 @@ Section("PACKAGE DOWNLOAD")
 
 local PackagePath
 
--- KEEP USING yepa.rbxm AND THE EXISTING PACKAGE IDENTIFIER.
+-- KEEP USING shovel.rbxm AND THE EXISTING PACKAGE IDENTIFIER.
 local DownloadSuccess, DownloadResult = ProtectedCall(
-    "Suite.download(letsafe/something@v1.0.0, scnwop.rbxm)",
+    "Suite.download(letsafe/something@v1.0.0, knifethingy.rbxm)",
     function()
-        return Suite.download("letsafe/something@v1.0.0", "scnwop.rbxm")
+        return Suite.download("letsafe/something@v1.0.0", "knifethingy.rbxm")
     end
 )
 
 assert(
     DownloadSuccess and DownloadResult,
-    PREFIX .. " Suite.download failed for yepa.rbxm: " .. tostring(DownloadResult)
+    PREFIX .. " Suite.download failed for shovel.rbxm: " .. tostring(DownloadResult)
 )
 
 PackagePath = DownloadResult
@@ -2714,6 +3337,7 @@ LoadModule = function(Module)
 
     return Result
 end
+-- Recording SetCore/GetCore bridge is registered in section 04.
 
 --==============================================================
 -- 13. BUNDLED DEPENDENCY VALIDATION
