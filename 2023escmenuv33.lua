@@ -674,19 +674,28 @@ local function FindChild(Parent, Name)
 end
 
 local function FindModuleRecursive(Root, Name)
+    -- Do not enumerate descendants or inspect each Instance from executor
+    -- context. Some mobile executors expose a restricted Instance capability,
+    -- which can throw before the CoreScripts startup sequence completes.
     if not Root then
         return nil
     end
 
     local Wanted = NormalizeName(Name)
 
-    if Root:IsA("ModuleScript") and NormalizeName(Root.Name) == Wanted then
-        return Root
+    -- Exact recursive lookup is performed by Roblox's own Instance API rather
+    -- than manually traversing GetDescendants() and reading every child.
+    local Candidate = Root:FindFirstChild(Name, true)
+    if Candidate then
+        return Candidate
     end
 
-    for _, Child in ipairs(Root:GetDescendants()) do
-        if Child:IsA("ModuleScript") and NormalizeName(Child.Name) == Wanted then
-            return Child
+    -- Support bundled names that include a .lua suffix, without enumerating
+    -- Instances. Most package modules use exact names, so fail safely otherwise.
+    if Wanted ~= Name then
+        Candidate = Root:FindFirstChild(Wanted, true)
+        if Candidate then
+            return Candidate
         end
     end
 
@@ -2550,10 +2559,12 @@ local function TryRequireNamedModule(Root, Name)
         Candidate = Root:FindFirstChild(Name, true)
     end
 
-    if not Candidate or not Candidate:IsA("ModuleScript") then
+    if not Candidate then
         return nil
     end
 
+    -- require() is protected below; a non-ModuleScript candidate simply fails
+    -- safely instead of aborting the entire bridge initialization.
     local Success, Result = pcall(NativeRequire, Candidate)
 
     if Success and type(Result) == "table" then
