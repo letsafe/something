@@ -31,7 +31,7 @@ local NativeRequire = require
 local LoaderConfig = Environment.YekuSettings
     or Environment.LegacySettings
     or {
-        Year = 2019,
+        Year = 2017,
         SafeChat = false,
     }
 
