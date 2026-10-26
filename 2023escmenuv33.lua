@@ -2542,60 +2542,14 @@ local OnMainChannelSet = GetOrCreateBridgeObject("BindableEvent", "OnMainChannel
 local SayMessageRequest = GetOrCreateBridgeObject("BindableEvent", "SayMessageRequest")
 local GetInitDataRequest = GetOrCreateBridgeObject("BindableFunction", "GetInitDataRequest")
 
-local function TryRequireNamedModule(Root, Name)
-    if not Root then
-        return nil
-    end
-
-    local Candidate = FindModuleRecursive(Root, Name)
-
-    if not Candidate then
-        return nil
-    end
-
-    -- require() is protected below; a non-ModuleScript candidate simply fails
-    -- safely instead of aborting the entire bridge initialization.
-    local Success, Result = pcall(NativeRequire, Candidate)
-
-    if Success and type(Result) == "table" then
-        return Result
-    end
-
-    return nil
-end
-
-local BridgeChatSettings
-local BridgeChatConstants
-local InstalledGui = CoreGui:FindFirstChild("NewRobloxGui")
-local InstalledModulesRoot = InstalledGui and InstalledGui:FindFirstChild("Modules")
-
-if InstalledModulesRoot then
-    BridgeChatSettings = TryRequireNamedModule(InstalledModulesRoot, "ChatSettings")
-    BridgeChatConstants = TryRequireNamedModule(InstalledModulesRoot, "ChatConstants")
-end
-
-if not BridgeChatSettings or not BridgeChatConstants then
-    local NativeClientChatModules = ChatService:FindFirstChild("ClientChatModules")
-
-    if NativeClientChatModules then
-        BridgeChatSettings = BridgeChatSettings
-            or TryRequireNamedModule(NativeClientChatModules, "ChatSettings")
-
-        BridgeChatConstants = BridgeChatConstants
-            or TryRequireNamedModule(NativeClientChatModules, "ChatConstants")
-    end
-end
-
-local BridgeGeneralName =
-    (BridgeChatSettings and BridgeChatSettings.GeneralChannelName) or "All"
-
-local BridgeMessageTypeDefault =
-    (BridgeChatConstants
-        and (BridgeChatConstants.MessageTypeDefault or BridgeChatConstants.MessageTypeSay))
-    or "Message"
-
-local BridgeMessageTypeSystem =
-    (BridgeChatConstants and BridgeChatConstants.MessageTypeSystem) or "System"
+-- Delta/mobile executor compatibility:
+-- Do not inspect or require ChatSettings / ChatConstants from the bridge.
+-- Some mobile executor threads throw a Plugin-capability error while reading
+-- Instances in this lookup path, which aborts the whole loader before the
+-- bridge can start. These values are only defaults; use stable legacy values.
+local BridgeGeneralName = "All"
+local BridgeMessageTypeDefault = "Message"
+local BridgeMessageTypeSystem = "System"
 
 local BridgeKnownChannels = {}
 local BridgeNextMessageId = 0
