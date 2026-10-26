@@ -36,6 +36,11 @@ local LoaderConfig = Environment.YekuSettings
     }
 
 local Year = math.floor(tonumber(LoaderConfig.Year) or 2019)
+
+-- DEBUG SETTING: false disables the debug console and verbose diagnostic output.
+-- Set to true when you need the PLAYERS / GUISERVICE console and extra logs.
+local DEBUG_ENABLED = false
+
 local PREFIX = "[Yeku CoreScripts]"
 
 local CoreGui = game:GetService("CoreGui")
@@ -100,6 +105,10 @@ local function RefreshDebugText()
 end
 
 local function AppendLine(Level, Message)
+    if not DEBUG_ENABLED then
+        return
+    end
+
     local Output = os.date("%H:%M:%S")
         .. " [" .. tostring(Level) .. "] "
         .. tostring(Message)
@@ -139,6 +148,10 @@ local function AppendLine(Level, Message)
 end
 
 local function Log(Message)
+    if not DEBUG_ENABLED then
+        return
+    end
+
     local Output = PREFIX .. " " .. tostring(Message)
     AppendLine("INFO", Output)
     print(Output)
@@ -208,6 +221,10 @@ local function FindClipboard()
 end
 
 local function CreateDebugConsole()
+    if not DEBUG_ENABLED then
+        return
+    end
+
     local Old = CoreGui:FindFirstChild("YekuDebugConsole")
     if Old then
         Old:Destroy()
@@ -387,42 +404,54 @@ local function CreateDebugConsole()
     RefreshDebugText()
 end
 
-local UIOK, UIError = pcall(CreateDebugConsole)
-if not UIOK then
-    warn(PREFIX .. " Could not create debug console: " .. tostring(UIError))
-end
+if DEBUG_ENABLED then
+    local UIOK, UIError = pcall(CreateDebugConsole)
+    if not UIOK then
+        warn(PREFIX .. " Could not create debug console: " .. tostring(UIError))
+    end
 
-pcall(function()
-    LogService.MessageOut:Connect(function(Message, MessageType)
-        local Output = tostring(Message)
+    pcall(function()
+        LogService.MessageOut:Connect(function(Message, MessageType)
+            local Output = tostring(Message)
 
-        if Output:sub(1, #PREFIX) == PREFIX then
-            return
-        end
+            if Output:sub(1, #PREFIX) == PREFIX then
+                return
+            end
 
-        local Lower = string.lower(Output)
+            local Lower = string.lower(Output)
 
-        if Lower:find("guiservice", 1, true)
-            or Lower:find("inspectplayerfromuserid", 1, true)
-            or Lower:find("avatarinspect", 1, true) then
+            if Lower:find("guiservice", 1, true)
+                or Lower:find("inspectplayerfromuserid", 1, true)
+                or Lower:find("avatarinspect", 1, true) then
 
-            AppendLine("ROBLOX " .. tostring(MessageType),
-                "[GUISERVICE] " .. Output)
+                AppendLine("ROBLOX " .. tostring(MessageType),
+                    "[GUISERVICE] " .. Output)
 
-        elseif Lower:find("playerlist", 1, true)
-            or Lower:find("players", 1, true) then
+            elseif Lower:find("playerlist", 1, true)
+                or Lower:find("players", 1, true) then
 
-            AppendLine("ROBLOX " .. tostring(MessageType),
-                "[PLAYERS] " .. Output)
-        end
+                AppendLine("ROBLOX " .. tostring(MessageType),
+                    "[PLAYERS] " .. Output)
+            end
+        end)
     end)
-end)
+else
+    -- Remove a console left over from an earlier enabled run/reinjection.
+    local OldDebugGui = CoreGui:FindFirstChild("YekuDebugConsole")
+    if OldDebugGui then
+        OldDebugGui:Destroy()
+    end
+end
 
 --==============================================================
 -- 03. DIAGNOSTICS AND NATIVE UI VISIBILITY
 --==============================================================
 
 local function Section(Name)
+    if not DEBUG_ENABLED then
+        return
+    end
+
     Log("")
     Log(string.rep("=", 58))
     Log(Name)
@@ -481,7 +510,7 @@ local function DescribeChildren(Parent)
 end
 
 local function DumpTree(Root, MaxDepth, MaxEntries)
-    if not Root then
+    if not DEBUG_ENABLED or not Root then
         return
     end
 
@@ -523,6 +552,10 @@ local function DumpTree(Root, MaxDepth, MaxEntries)
 end
 
 local function DebugInstance(Label, Object)
+    if not DEBUG_ENABLED then
+        return
+    end
+
     Log("---- " .. Label .. " ----")
 
     if not Object then
@@ -538,6 +571,10 @@ local function DebugInstance(Label, Object)
 end
 
 local function DebugModule(Module, Label)
+    if not DEBUG_ENABLED then
+        return
+    end
+
     DebugInstance(Label, Module)
 
     if not Module or not Module:IsA("ModuleScript") then
@@ -1180,18 +1217,20 @@ local function RunInitialGuiServiceDiagnostics()
     Log("[GUISERVICE] Inspect menu is not called automatically; use TEST INSPECT.")
 end
 
-pcall(RunInitialPlayerDiagnostics)
-pcall(RunInitialGuiServiceDiagnostics)
+if DEBUG_ENABLED then
+    pcall(RunInitialPlayerDiagnostics)
+    pcall(RunInitialGuiServiceDiagnostics)
 
-Players.PlayerAdded:Connect(function(Player)
-    Log("[PLAYERS] PlayerAdded name=" .. tostring(Player.Name)
-        .. " userId=" .. tostring(Player.UserId))
-end)
+    Players.PlayerAdded:Connect(function(Player)
+        Log("[PLAYERS] PlayerAdded name=" .. tostring(Player.Name)
+            .. " userId=" .. tostring(Player.UserId))
+    end)
 
-Players.PlayerRemoving:Connect(function(Player)
-    Log("[PLAYERS] PlayerRemoving name=" .. tostring(Player.Name)
-        .. " userId=" .. tostring(Player.UserId))
-end)
+    Players.PlayerRemoving:Connect(function(Player)
+        Log("[PLAYERS] PlayerRemoving name=" .. tostring(Player.Name)
+            .. " userId=" .. tostring(Player.UserId))
+    end)
+end
 
 --==============================================================
 -- 04. RECORDING / SCREENSHOT EVENTS
@@ -1980,8 +2019,8 @@ Log("Suite.download returned package path: " .. tostring(PackagePath))
 local LaunchSuccess, LaunchResult = ProtectedCall("Suite.launch", function()
     return table.pack(Suite.launch(PackagePath, {
         runscripts = false,
-        debug = true,
-        verbose = true,
+        debug = DEBUG_ENABLED,
+        verbose = DEBUG_ENABLED,
         nocirculardeps = true,
     }))
 end)
@@ -3116,7 +3155,9 @@ YekuBubbleConfig:GetPropertyChangedSignal("MaxBubbles"):Connect(
     SuppressModernBubbles
 )
 
-print("[Yeku] Modern CoreGui bubble suppression installed")
+if DEBUG_ENABLED then
+    print("[Yeku] Modern CoreGui bubble suppression installed")
+end
 --==============================================================
 -- YEKU: HIDE MODERN TEXTCHAT NPC BUBBLES
 -- Keeps the legacy BubbleChat.lua untouched.
@@ -3161,7 +3202,9 @@ YekuBubbleTextChat.OnBubbleAdded = function(message, adornee)
     return properties
 end
 
-print("[Yeku] Modern NPC bubble callback installed")
+if DEBUG_ENABLED then
+    print("[Yeku] Modern NPC bubble callback installed")
+end
 local function RemoveRBXMSuitePrefix(Source)
     local Prefixes = {
         'local script, require = unpack((...)[',
