@@ -37,9 +37,9 @@ local LoaderConfig = Environment.YekuSettings
 
 local Year = math.floor(tonumber(LoaderConfig.Year) or 2019)
 
--- DEBUG SETTING: false disables the debug console and verbose diagnostic output.
--- Set to true when you need the PLAYERS / GUISERVICE console and extra logs.
-local DEBUG_ENABLED = false
+-- DEBUG SETTING: set false after troubleshooting to disable the debug console/logs.
+-- This diagnostic build defaults to true so mobile startup failures are visible.
+local DEBUG_ENABLED = true
 
 local PREFIX = "[Yeku CoreScripts]"
 
@@ -71,6 +71,7 @@ local HideNativeCoreUI
 --==============================================================
 
 local DebugLines = {
+    GENERAL = {},
     PLAYERS = {},
     GUISERVICE = {},
 }
@@ -81,7 +82,7 @@ local DebugTextBox
 local DebugStatus
 local PauseRefresh = false
 local RefreshPending = false
-local DebugCategory = "PLAYERS"
+local DebugCategory = "GENERAL"
 
 local function SetStatus(Message)
     if DebugStatus then
@@ -120,10 +121,9 @@ local function AppendLine(Level, Message)
         Category = "PLAYERS"
     elseif Upper:find("[GUISERVICE]", 1, true) then
         Category = "GUISERVICE"
-    end
-
-    if not Category then
-        return
+    else
+        -- Startup, download, package, and loader errors belong in GENERAL.
+        Category = "GENERAL"
     end
 
     local Lines = DebugLines[Category]
@@ -182,9 +182,9 @@ local function CreateObject(ClassName, Name, Parent, Properties)
     return Object
 end
 
-local function CreateButton(Name, Caption, X, Width, Parent)
+local function CreateButton(Name, Caption, X, Width, Parent, BottomOffset)
     return CreateObject("TextButton", Name, Parent, {
-        Position = UDim2.new(0, X, 1, -40),
+        Position = UDim2.new(0, X, 1, -(BottomOffset or 40)),
         Size = UDim2.new(0, Width, 0, 28),
         BackgroundColor3 = Color3.fromRGB(48, 54, 62),
         BorderSizePixel = 0,
@@ -237,10 +237,14 @@ local function CreateDebugConsole()
         Enabled = true,
     })
 
+    local IsTouchLayout = UserInputService.TouchEnabled
+
     local Panel = CreateObject("Frame", "Panel", DebugGui, {
         AnchorPoint = Vector2.new(0.5, 0.5),
         Position = UDim2.new(0.5, 0, 0.5, 0),
-        Size = UDim2.new(0, 820, 0, 560),
+        Size = IsTouchLayout
+            and UDim2.new(0.96, 0, 0.84, 0)
+            or UDim2.new(0, 820, 0, 560),
         BackgroundColor3 = Color3.fromRGB(21, 24, 29),
         BorderSizePixel = 0,
         Active = true,
@@ -255,15 +259,19 @@ local function CreateDebugConsole()
         Size = UDim2.new(1, -24, 0, 30),
         BackgroundTransparency = 1,
         Font = Enum.Font.Code,
-        Text = "YEKU DEBUG  |  PLAYERS / GUISERVICE  |  F8 TO HIDE / SHOW",
+        Text = IsTouchLayout
+            and "YEKU DEBUG  |  GENERAL / PLAYERS / GUI"
+            or "YEKU DEBUG  |  GENERAL / PLAYERS / GUISERVICE  |  F8 TO HIDE / SHOW",
         TextColor3 = Color3.fromRGB(140, 225, 160),
-        TextSize = 15,
+        TextSize = IsTouchLayout and 12 or 15,
         TextXAlignment = Enum.TextXAlignment.Left,
     })
 
     DebugTextBox = CreateObject("TextBox", "Output", Panel, {
-        Position = UDim2.new(0, 12, 0, 40),
-        Size = UDim2.new(1, -24, 1, -88),
+        Position = UDim2.new(0, IsTouchLayout and 8 or 12, 0, IsTouchLayout and 36 or 40),
+        Size = IsTouchLayout
+            and UDim2.new(1, -16, 1, -146)
+            or UDim2.new(1, -24, 1, -88),
         BackgroundColor3 = Color3.fromRGB(11, 13, 16),
         BorderSizePixel = 0,
         ClearTextOnFocus = false,
@@ -282,17 +290,43 @@ local function CreateDebugConsole()
         CornerRadius = UDim.new(0, 4),
     })
 
-    local PlayersButton = CreateButton("PlayersMode", "PLAYERS", 12, 88, Panel)
-    local GuiServiceButton = CreateButton("GuiServiceMode", "GUISERVICE", 106, 110, Panel)
-    local InspectButton = CreateButton("InspectTest", "TEST INSPECT", 222, 112, Panel)
-    local CopyButton = CreateButton("CopyAll", "COPY VIEW", 340, 92, Panel)
-    local RefreshButton = CreateButton("Refresh", "REFRESH", 438, 82, Panel)
-    local ClearButton = CreateButton("Clear", "CLEAR", 526, 65, Panel)
-    local HideButton = CreateButton("Hide", "HIDE", 597, 60, Panel)
+    local GeneralButton
+    local PlayersButton
+    local GuiServiceButton
+    local InspectButton
+    local CopyButton
+    local RefreshButton
+    local ClearButton
+    local HideButton
+
+    if IsTouchLayout then
+        -- Two compact rows keep every control reachable on a phone screen.
+        GeneralButton = CreateButton("GeneralMode", "GENERAL", 8, 64, Panel, 76)
+        PlayersButton = CreateButton("PlayersMode", "PLAYERS", 76, 64, Panel, 76)
+        GuiServiceButton = CreateButton("GuiServiceMode", "GUI SERVICE", 144, 84, Panel, 76)
+        InspectButton = CreateButton("InspectTest", "INSPECT", 232, 92, Panel, 76)
+        CopyButton = CreateButton("CopyAll", "COPY", 8, 62, Panel, 40)
+        RefreshButton = CreateButton("Refresh", "REFRESH", 74, 66, Panel, 40)
+        ClearButton = CreateButton("Clear", "CLEAR", 144, 52, Panel, 40)
+        HideButton = CreateButton("Hide", "HIDE", 200, 58, Panel, 40)
+    else
+        GeneralButton = CreateButton("GeneralMode", "GENERAL", 12, 65, Panel)
+        PlayersButton = CreateButton("PlayersMode", "PLAYERS", 81, 88, Panel)
+        GuiServiceButton = CreateButton("GuiServiceMode", "GUISERVICE", 173, 110, Panel)
+        InspectButton = CreateButton("InspectTest", "TEST INSPECT", 287, 112, Panel)
+        CopyButton = CreateButton("CopyAll", "COPY VIEW", 403, 92, Panel)
+        RefreshButton = CreateButton("Refresh", "REFRESH", 499, 82, Panel)
+        ClearButton = CreateButton("Clear", "CLEAR", 585, 65, Panel)
+        HideButton = CreateButton("Hide", "HIDE", 654, 60, Panel)
+    end
 
     DebugStatus = CreateObject("TextLabel", "Status", Panel, {
-        Position = UDim2.new(0, 12, 1, -68),
-        Size = UDim2.new(1, -24, 0, 22),
+        Position = IsTouchLayout
+            and UDim2.new(0, 8, 1, -106)
+            or UDim2.new(0, 12, 1, -68),
+        Size = IsTouchLayout
+            and UDim2.new(1, -16, 0, 22)
+            or UDim2.new(1, -24, 0, 22),
         BackgroundTransparency = 1,
         Font = Enum.Font.Code,
         Text = "Ready",
@@ -300,6 +334,13 @@ local function CreateDebugConsole()
         TextSize = 11,
         TextXAlignment = Enum.TextXAlignment.Left,
     })
+
+    GeneralButton.MouseButton1Click:Connect(function()
+        DebugCategory = "GENERAL"
+        PauseRefresh = false
+        RefreshDebugText()
+        SetStatus("Showing general startup diagnostics.")
+    end)
 
     PlayersButton.MouseButton1Click:Connect(function()
         DebugCategory = "PLAYERS"
@@ -414,7 +455,14 @@ if DEBUG_ENABLED then
         LogService.MessageOut:Connect(function(Message, MessageType)
             local Output = tostring(Message)
 
+            local MessageTypeName = string.lower(tostring(MessageType))
+
             if Output:sub(1, #PREFIX) == PREFIX then
+                -- Assertions and uncaught loader errors can bypass Warn(); retain
+                -- engine-reported errors in GENERAL without duplicating normal logs.
+                if MessageTypeName:find("error", 1, true) then
+                    AppendLine("ENGINE ERROR", "[GENERAL] " .. Output)
+                end
                 return
             end
 
@@ -432,6 +480,11 @@ if DEBUG_ENABLED then
 
                 AppendLine("ROBLOX " .. tostring(MessageType),
                     "[PLAYERS] " .. Output)
+            elseif MessageTypeName:find("error", 1, true)
+                or MessageTypeName:find("warning", 1, true) then
+
+                AppendLine("ROBLOX " .. tostring(MessageType),
+                    "[GENERAL] " .. Output)
             end
         end)
     end)
@@ -642,6 +695,9 @@ end
 
 -- Inspect state is deliberately separate from the other CoreGui visibility
 -- handling. During inspection the native RobloxGui root cannot remain disabled.
+-- Keep the platform UI intact during package download / cloning / module startup.
+-- It is disabled only after NewRobloxGui and all tracked modules start successfully.
+local NativeHideEnabled = false
 local NativeHideLogged = setmetatable({}, {__mode = "k"})
 local NativeInspectRequested = false
 local InspectWatchRunning = false
@@ -846,6 +902,10 @@ local function TryHideGuiObject(Object, Label)
 end
 
 HideNativeCoreUI = function()
+    if not NativeHideEnabled then
+        return
+    end
+
     local OurRoot = CoreGui:FindFirstChild("NewRobloxGui")
     local UseNativePlayerList = OurRoot and OurRoot:GetAttribute("UseNativePlayerList") == true
     local NativeRobloxGui = CoreGui:FindFirstChild("RobloxGui")
@@ -2209,29 +2269,8 @@ local function SetTreeArchivable(Root)
         end
     end
 end
-local function getExecutorEnvironment()
-    if type(getgenv) == "function" then
-        local ok, env = pcall(getgenv)
-        if ok and type(env) == "table" then
-            return env
-        end
-    end
-
-    return _G
-end
-
-local ExecutorEnvironment = getExecutorEnvironment()
-local OpiumHTTP = ExecutorEnvironment.http
-
-assert(
-    type(OpiumHTTP) == "table"
-        and type(OpiumHTTP.request) == "function",
-    "[YekuFollowBackend] Opiumware http.request is unavailable"
-)
-
-local function executorRequest(options)
-    return OpiumHTTP.request(options)
-end
+-- Removed a stale Opiumware-only http.request assertion here. The helper was
+-- not used anywhere in this loader and caused non-Opiumware executors to abort.
 local function RestoreSourceArchivable()
     for Object, Value in pairs(OriginalArchivable) do
         pcall(function()
@@ -3663,6 +3702,15 @@ local OverallSuccess =
     LoadingScriptSucceeded
     and StarterSucceeded
     and RecordedModuleFailures == 0
+
+if OverallSuccess then
+    NativeHideEnabled = true
+    KeepOurRoot()
+    Log("[GENERAL] Custom CoreScripts startup succeeded; native CoreGui hiding enabled.")
+else
+    NativeHideEnabled = false
+    Warn("[GENERAL] Custom CoreScripts startup did not fully succeed; native CoreGui is being preserved as a fallback.")
+end
 
 Log("OVERALL RESULT: "
     .. (
