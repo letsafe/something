@@ -674,22 +674,56 @@ local function FindChild(Parent, Name)
 end
 
 local function FindModuleRecursive(Root, Name)
-    -- Mobile executor compatibility: never use recursive Instance searches here.
-    -- Resolve only direct children; callers can supply the correct parent folder.
+    -- Handles BOTH common RBXMSuite launch shapes:
+    --   1) launch returns Main itself;
+    --   2) launch returns a container with Main somewhere below it.
+    -- Do not use FindFirstChild(Name, true), since some mobile executor
+    -- environments throw a Plugin-capability error for that overload.
     if not Root then
         return nil
     end
 
-    local Candidate = Root:FindFirstChild(Name)
-    if Candidate then
-        return Candidate
+    local Wanted = NormalizeName(Name)
+
+    local function Matches(Object)
+        local Success, ObjectName = pcall(function()
+            return Object.Name
+        end)
+        if not Success then
+            return false
+        end
+        ObjectName = tostring(ObjectName)
+        return ObjectName == Name or NormalizeName(ObjectName) == Wanted
     end
 
-    local Wanted = NormalizeName(Name)
-    if Wanted ~= Name then
-        Candidate = Root:FindFirstChild(Wanted)
-        if Candidate then
-            return Candidate
+    -- Critical fix: launch may return Workspace.Main as the root itself.
+    -- FindFirstChild("Main") on Main searches its children, not itself.
+    if Matches(Root) then
+        return Root
+    end
+
+    -- Manual, protected depth-first traversal works without Roblox's
+    -- recursive FindFirstChild overload and safely skips inaccessible nodes.
+    local Stack = {Root}
+    local Visited = {}
+
+    while #Stack > 0 do
+        local Current = table.remove(Stack)
+        if Current and not Visited[Current] then
+            Visited[Current] = true
+
+            local Ok, Children = pcall(function()
+                return Current:GetChildren()
+            end)
+
+            if Ok and type(Children) == "table" then
+                for _, Child in ipairs(Children) do
+                    if Matches(Child) then
+                        return Child
+                    end
+                    table.insert(Stack, Child)
+                end
+            end
         end
     end
 
@@ -986,7 +1020,7 @@ HideNativeCoreUI = function()
     local TopBarRoot = CoreGui:FindFirstChild("TopBarApp")
 
     if not TopBarRoot then
-        TopBarRoot = CoreGui:FindFirstChild("TopBarApp", true)
+        TopBarRoot = FindModuleRecursive(CoreGui, "TopBarApp")
     end
 
     if TopBarRoot then
@@ -2122,7 +2156,19 @@ for _, Root in ipairs(PackageRoots) do
     end
 end
 
-assert(MainScript, PREFIX .. " Main ModuleScript not found.")
+if not MainScript then
+    local RootReport = {}
+    for Index, Root in ipairs(PackageRoots) do
+        local Name, ClassName, Path = "<unreadable>", "<unreadable>", "<unreadable>"
+        pcall(function()
+            Name = Root.Name
+            ClassName = Root.ClassName
+            Path = Root:GetFullName()
+        end)
+        table.insert(RootReport, string.format("#%d %s <%s> [%s]", Index, tostring(Name), tostring(ClassName), tostring(Path)))
+    end
+    error(PREFIX .. " Main ModuleScript not found. Package roots returned by Suite.launch: " .. table.concat(RootReport, " | "))
+end
 
 local MainModules = FindChild(MainScript, "Modules")
 
