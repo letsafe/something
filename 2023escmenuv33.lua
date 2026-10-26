@@ -674,26 +674,20 @@ local function FindChild(Parent, Name)
 end
 
 local function FindModuleRecursive(Root, Name)
-    -- Do not enumerate descendants or inspect each Instance from executor
-    -- context. Some mobile executors expose a restricted Instance capability,
-    -- which can throw before the CoreScripts startup sequence completes.
+    -- Mobile executor compatibility: never use recursive Instance searches here.
+    -- Resolve only direct children; callers can supply the correct parent folder.
     if not Root then
         return nil
     end
 
-    local Wanted = NormalizeName(Name)
-
-    -- Exact recursive lookup is performed by Roblox's own Instance API rather
-    -- than manually traversing GetDescendants() and reading every child.
-    local Candidate = Root:FindFirstChild(Name, true)
+    local Candidate = Root:FindFirstChild(Name)
     if Candidate then
         return Candidate
     end
 
-    -- Support bundled names that include a .lua suffix, without enumerating
-    -- Instances. Most package modules use exact names, so fail safely otherwise.
+    local Wanted = NormalizeName(Name)
     if Wanted ~= Name then
-        Candidate = Root:FindFirstChild(Wanted, true)
+        Candidate = Root:FindFirstChild(Wanted)
         if Candidate then
             return Candidate
         end
@@ -2554,10 +2548,6 @@ local function TryRequireNamedModule(Root, Name)
     end
 
     local Candidate = FindModuleRecursive(Root, Name)
-
-    if not Candidate then
-        Candidate = Root:FindFirstChild(Name, true)
-    end
 
     if not Candidate then
         return nil
