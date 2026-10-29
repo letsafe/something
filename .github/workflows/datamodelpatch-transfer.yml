@@ -1,0 +1,41 @@
+
+name: Temporary DataModelPatch transfer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/datamodelpatch-transfer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  transfer:
+    name: Download, verify, and package DataModelPatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download release asset and verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          url="https://github.com/letsafe/something/releases/download/v1.0.0/DataModelPatch_decompiled.rbxmx"
+          file="DataModelPatch_decompiled.rbxmx"
+          expected="36a72ce2d3a77867c03fbca93e77024ef809e975b9574792b5d4175e5b7a1ad0"
+
+          curl --fail --location --silent --show-error --retry 3 --retry-delay 2 "$url" --output "$file"
+          printf '%s  %s\n' "$expected" "$file" | sha256sum --check -
+          printf 'Downloaded size: '
+          stat --format='%s bytes' "$file"
+
+      - name: Upload short-lived transfer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: datamodelpatch-decompiled-transfer
+          path: DataModelPatch_decompiled.rbxmx
+          if-no-files-found: error
+          retention-days: 1
