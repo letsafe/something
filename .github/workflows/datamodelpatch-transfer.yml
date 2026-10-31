@@ -1,4 +1,5 @@
-name: Temporary Release Asset Transfer
+
+name: Source File Byte Transfer
 
 on:
   push:
@@ -6,177 +7,151 @@ on:
       - main
     paths:
       - .github/workflows/datamodelpatch-transfer.yml
+
   workflow_dispatch:
     inputs:
       repository:
-        description: GitHub repository in owner/name format
+        description: GitHub repository (owner/name)
         required: true
         type: string
-        default: letsafe/something
-      release_tag:
-        description: Release tag to download from
+        default: telegramdesktop/tdesktop
+
+      ref:
+        description: Branch, tag, or commit SHA
         required: true
         type: string
-        default: v1.0.0
-      asset_names:
-        description: Exact release asset filenames, comma-separated
+        default: dev
+
+      paths:
+        description: |
+          Paths to retrieve, one per line.
+          Use . for the entire repository.
         required: true
         type: string
-        default: 2022LDESKTOP.rbxmx,2022LUI.rbxmx
+        default: .
 
 permissions:
   contents: read
 
 jobs:
   transfer:
-    name: Download and package selected release assets
+    name: Retrieve source bytes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
-      - name: Download selected release assets and verify SHA-256
+      - name: Validate request and install ZIP utility
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zip
+
+      - name: Clone repository with ALL submodules
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           INPUT_REPOSITORY: ${{ github.event.inputs.repository }}
-          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
-          INPUT_ASSET_NAMES: ${{ github.event.inputs.asset_names }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_PATHS: ${{ github.event.inputs.paths }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
-          repository="${INPUT_REPOSITORY:-letsafe/something}"
-          release_tag="${INPUT_RELEASE_TAG:-v1.0.0}"
-
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -n "${INPUT_ASSET_NAMES:-}" ]]; then
-            requested_names="$INPUT_ASSET_NAMES"
-          else
-            requested_names="2022LDESKTOP.rbxmx,2022LUI.rbxmx"
-          fi
+          repository="${INPUT_REPOSITORY:-telegramdesktop/tdesktop}"
+          ref="${INPUT_REF:-dev}"
+          requested_paths="${INPUT_PATHS:-.}"
 
           if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "::error::Invalid repository. Use owner/name."
+            echo "::error::Invalid repository name."
             exit 1
           fi
 
-          if [[ -z "$release_tag" ]]; then
-            echo "::error::Release tag cannot be empty."
+          if [[ -z "$ref" || -z "$requested_paths" ]]; then
+            echo "::error::Ref and paths cannot be empty."
             exit 1
           fi
-
-          if [[ -z "${requested_names//[[:space:],]/}" ]]; then
-            echo "::error::Enter at least one exact release asset filename."
-            exit 1
-          fi
-
-          encoded_tag="$(jq -rn --arg value "$release_tag" '$value | @uri')"
-          release_api="https://api.github.com/repos/${repository}/releases/tags/${encoded_tag}"
 
           echo "Repository: $repository"
-          echo "Release tag: $release_tag"
-          echo "Requested files: $requested_names"
+          echo "Ref: $ref"
 
-          release_json="$(curl --fail --location --silent --show-error \
-            --retry 3 --retry-delay 2 \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "$release_api")"
+          mkdir source
+          git -C source init
+          git -C source remote add origin \
+            "https://github.com/${repository}.git"
 
-          asset_count="$(jq '.assets | length' <<< "$release_json")"
-          if [[ "$asset_count" -eq 0 ]]; then
-            echo "::error::The selected release has no downloadable assets."
-            exit 1
-          fi
+          git -C source fetch --depth 1 origin "$ref"
+          git -C source checkout --detach FETCH_HEAD
 
-          mkdir -p release-assets
-          downloaded_count=0
-          declare -A seen_assets=()
+          echo "Initializing recursive submodules..."
 
-          echo '## Transferred release assets' >> "$GITHUB_STEP_SUMMARY"
-          echo '| File | Size | SHA-256 |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|---|---:|---|' >> "$GITHUB_STEP_SUMMARY"
+          git -C source submodule update \
+            --init --recursive --depth 1
 
-          IFS=',' read -r -a requested_array <<< "$requested_names"
+          echo "Submodules initialized:"
+          git -C source submodule status --recursive
 
-          for asset_name in "${requested_array[@]}"; do
-            asset_name="$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<< "$asset_name")"
-            [[ -z "$asset_name" ]] && continue
+          echo "## Source retrieval" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Repository: \`$repository\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ref: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Submodules: initialized recursively" >> "$GITHUB_STEP_SUMMARY"
 
-            if [[ "$asset_name" == "." || "$asset_name" == ".." || "$asset_name" == */* || "$asset_name" == *\\* ]]; then
-              echo "::error::Invalid asset filename: $asset_name"
+      - name: Package requested files
+        shell: bash
+        env:
+          INPUT_PATHS: ${{ github.event.inputs.paths }}
+        run: |
+          set -euo pipefail
+
+          requested_paths="${INPUT_PATHS:-.}"
+          mkdir -p transfer
+
+          cd source
+
+          mapfile -t paths <<< "$requested_paths"
+          selected=()
+
+          for path in "${paths[@]}"; do
+            path="$(echo "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+            [[ -z "$path" ]] && continue
+
+            if [[ "$path" == /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
+              echo "::error::Unsafe path: $path"
               exit 1
             fi
 
-            if [[ -n "${seen_assets[$asset_name]+x}" ]]; then
-              echo "Skipping duplicate request: $asset_name"
-              continue
-            fi
-            seen_assets["$asset_name"]=1
-
-            asset_json="$(jq -c --arg name "$asset_name" \
-              '[.assets[] | select(.name == $name)] | if length == 1 then .[0] else empty end' \
-              <<< "$release_json")"
-
-            if [[ -z "$asset_json" ]]; then
-              echo "::error::Exact asset name not found in ${repository}@${release_tag}: $asset_name"
-              echo "Available asset names:"
-              jq -r '.assets[].name' <<< "$release_json"
+            if [[ ! -e "$path" ]]; then
+              echo "::error::Path does not exist: $path"
               exit 1
             fi
 
-            download_url="$(jq -r '.browser_download_url // empty' <<< "$asset_json")"
-            expected_digest="$(jq -r '.digest // empty' <<< "$asset_json")"
-
-            if [[ "$download_url" != https://github.com/* ]]; then
-              echo "::error::GitHub returned an unexpected download URL for $asset_name"
-              exit 1
-            fi
-
-            output_path="release-assets/$asset_name"
-            echo "Downloading: $asset_name"
-
-            curl --fail --location --silent --show-error \
-              --retry 3 --retry-delay 2 \
-              "$download_url" --output "$output_path"
-
-            if [[ ! -s "$output_path" ]]; then
-              echo "::error::Downloaded file is empty: $asset_name"
-              exit 1
-            fi
-
-            size_bytes="$(stat --format='%s' "$output_path")"
-            sha256="$(sha256sum "$output_path" | awk '{print $1}')"
-
-            if [[ "$expected_digest" == sha256:* ]]; then
-              expected_sha256="${expected_digest#sha256:}"
-              if [[ "$sha256" != "$expected_sha256" ]]; then
-                echo "::error::SHA-256 mismatch for $asset_name"
-                exit 1
-              fi
-              echo "Verified GitHub SHA-256 digest for $asset_name"
-            else
-              echo "GitHub did not publish a SHA-256 digest for $asset_name; calculated digest locally."
-            fi
-
-            printf 'Downloaded size: %s bytes\nSHA-256: %s\n' "$size_bytes" "$sha256"
-            printf '| `%s` | %s bytes | `%s` |\n' "$asset_name" "$size_bytes" "$sha256" >> "$GITHUB_STEP_SUMMARY"
-            downloaded_count=$((downloaded_count + 1))
+            selected+=("$path")
+            echo "- \`$path\`" >> "$GITHUB_STEP_SUMMARY"
           done
 
-          if [[ "$downloaded_count" -eq 0 ]]; then
-            echo "::error::No release assets were downloaded."
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            echo "::error::No valid paths selected."
             exit 1
           fi
 
-          echo "Successfully downloaded $downloaded_count release asset(s)."
-          find release-assets -maxdepth 1 -type f -printf '%f (%s bytes)\n' | sort
+          zip -qr "$GITHUB_WORKSPACE/transfer/source-bytes.zip" \
+            "${selected[@]}" \
+            -x '*/.git/*' '*/.git' '.git/*' '.git'
 
-      - name: Upload short-lived transfer artifact
+          cd "$GITHUB_WORKSPACE"
+
+          echo "## Archive information" >> "$GITHUB_STEP_SUMMARY"
+          sha256sum transfer/source-bytes.zip \
+            | tee transfer/SHA256.txt
+
+          stat -c 'Archive size: %s bytes' \
+            transfer/source-bytes.zip
+
+      - name: Upload source byte artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-transfer-${{ github.run_id }}
-          path: release-assets/
+          name: source-bytes-${{ github.run_id }}
+          path: transfer/
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
