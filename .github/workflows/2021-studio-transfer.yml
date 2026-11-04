@@ -1,0 +1,127 @@
+
+name: 2021 Studio Source Transfer
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: GitHub repository containing 2021 Studio source
+        required: true
+        type: string
+
+      ref:
+        description: Branch, tag, or commit SHA
+        required: true
+        type: string
+        default: main
+
+      paths:
+        description: Paths to retrieve, one per line (use . for everything)
+        required: true
+        type: string
+        default: .
+
+permissions:
+  contents: read
+
+jobs:
+  transfer:
+    name: Package 2021 Studio source
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Install ZIP utility
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zip
+
+      - name: Validate and clone repository
+        shell: bash
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid repository."
+            exit 1
+          fi
+
+          mkdir source
+          git -C source init
+          git -C source remote add origin \
+            "https://github.com/${REPOSITORY}.git"
+
+          git -C source fetch --depth 1 origin "$REF"
+          git -C source checkout --detach FETCH_HEAD
+
+          git -C source submodule update \
+            --init --recursive --depth 1
+
+          git -C source rev-parse HEAD > source-commit.txt
+
+      - name: Package source
+        shell: bash
+        env:
+          INPUT_PATHS: ${{ inputs.paths }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p transfer
+          cd source
+
+          mapfile -t paths <<< "$INPUT_PATHS"
+          selected=()
+
+          for path in "${paths[@]}"; do
+            path="$(echo "$path" | xargs)"
+            [[ -z "$path" ]] && continue
+
+            if [[ "$path" == /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
+              echo "::error::Unsafe path: $path"
+              exit 1
+            fi
+
+            if [[ ! -e "$path" ]]; then
+              echo "::error::Missing path: $path"
+              exit 1
+            fi
+
+            selected+=("$path")
+          done
+
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            echo "::error::No source paths selected."
+            exit 1
+          fi
+
+          zip -qr "$GITHUB_WORKSPACE/transfer/2021-studio-source.zip" \
+            "${selected[@]}" \
+            -x '*/.git/*' '*/.git' '.git/*' '.git'
+
+          cd "$GITHUB_WORKSPACE"
+
+          cp source-commit.txt transfer/
+
+          cd transfer
+          sha256sum 2021-studio-source.zip > SHA256SUMS.txt
+
+          echo "Source archive:"
+          stat -c '%n — %s bytes' 2021-studio-source.zip
+
+          echo "SHA256:"
+          cat SHA256SUMS.txt
+
+          echo "File count:"
+          unzip -Z1 2021-studio-source.zip | wc -l
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2021-studio-source
+          path: transfer/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
