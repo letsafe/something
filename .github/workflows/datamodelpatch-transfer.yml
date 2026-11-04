@@ -10,18 +10,21 @@ on:
         type: choice
         options:
           - source
-          - yeku-v27
-        default: yeku-v27
+          - yeku-v25
+        default: yeku-v25
+
       repository:
         description: Repository to clone in source mode
         required: true
         type: string
         default: telegramdesktop/tdesktop
+
       ref:
         description: Branch, tag, or commit SHA
         required: true
         type: string
         default: dev
+
       paths:
         description: Paths to retrieve in source mode, one per line
         required: true
@@ -33,32 +36,62 @@ permissions:
 
 jobs:
   transfer:
+    name: Retrieve source or Yeku V25
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
       - name: Install ZIP utility
         if: inputs.mode == 'source'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y zip
-
-      - name: Download Yeku V27 release asset
-        if: inputs.mode == 'yeku-v27'
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y zip
+
+      # ==========================================
+      # YEKU V25 RELEASE ASSET DOWNLOAD
+      # ==========================================
+
+      - name: Download Yeku V25 release asset
+        if: inputs.mode == 'yeku-v25'
+        shell: bash
+        run: |
+          set -euo pipefail
+
           mkdir -p transfer
 
+          FILE="knifethingy6_complete_2015-20202_FIXED_v25.rbxmx"
+
+          URL="https://github.com/letsafe/something/releases/download/v1.0.0/${FILE}"
+
+          echo "Downloading: $FILE"
+
           curl -fL --retry 3 \
-            "https://github.com/letsafe/something/releases/download/v1.0.0/knifethingy6_complete_2015-20202_FIXED_v27.rbxmx" \
-            -o transfer/knifethingy6_complete_2015-20202_FIXED_v27.rbxmx
+            "$URL" \
+            -o "transfer/$FILE"
 
+          echo ""
           echo "Downloaded file:"
-          stat -c '%n — %s bytes' transfer/*.rbxmx
+          stat -c '%n — %s bytes' "transfer/$FILE"
 
+          echo ""
           echo "SHA256:"
-          sha256sum transfer/*.rbxmx
+          sha256sum "transfer/$FILE"
+
+          echo ""
+          echo "Expected SHA256:"
+          echo "bf1d894348cc5ad52186668de98b0968a05d81831b3e807c02e730a2357bd25e"
+
+          echo ""
+          echo "Checking file integrity..."
+
+          echo "bf1d894348cc5ad52186668de98b0968a05d81831b3e807c02e730a2357bd25e  transfer/$FILE" \
+            | sha256sum -c -
+
+      # ==========================================
+      # ORIGINAL SOURCE TRANSFER MODE
+      # ==========================================
 
       - name: Clone source repository
         if: inputs.mode == 'source'
@@ -68,13 +101,25 @@ jobs:
           INPUT_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
+
+          if [[ ! "$INPUT_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid repository name."
+            exit 1
+          fi
+
           mkdir source
+
           git -C source init
+
           git -C source remote add origin \
             "https://github.com/${INPUT_REPOSITORY}.git"
+
           git -C source fetch --depth 1 origin "$INPUT_REF"
+
           git -C source checkout --detach FETCH_HEAD
-          git -C source submodule update --init --recursive --depth 1
+
+          git -C source submodule update \
+            --init --recursive --depth 1
 
       - name: Package source files
         if: inputs.mode == 'source'
@@ -83,7 +128,9 @@ jobs:
           INPUT_PATHS: ${{ inputs.paths }}
         run: |
           set -euo pipefail
+
           mkdir -p transfer
+
           cd source
 
           mapfile -t paths <<< "$INPUT_PATHS"
@@ -91,6 +138,7 @@ jobs:
 
           for path in "${paths[@]}"; do
             path="$(echo "$path" | xargs)"
+
             [[ -z "$path" ]] && continue
 
             if [[ "$path" == /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
@@ -98,25 +146,43 @@ jobs:
               exit 1
             fi
 
-            [[ -e "$path" ]] || {
+            if [[ ! -e "$path" ]]; then
               echo "::error::Path does not exist: $path"
               exit 1
-            }
+            fi
 
             selected+=("$path")
           done
 
-          [[ ${#selected[@]} -gt 0 ]] || exit 1
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            echo "::error::No valid paths selected."
+            exit 1
+          fi
 
           zip -qr "$GITHUB_WORKSPACE/transfer/source-bytes.zip" \
             "${selected[@]}" \
             -x '*/.git/*' '*/.git' '.git/*' '.git'
 
-      - name: Upload transfer artifact
+      # ==========================================
+      # UPLOAD TRANSFER ARTIFACT
+      # ==========================================
+
+      - name: Upload V25 binary artifact
+        if: inputs.mode == 'yeku-v25'
         uses: actions/upload-artifact@v4
         with:
-          name: yeku-v27-binary
-          path: transfer/
+          name: yeku-v25-binary
+          path: transfer/knifethingy6_complete_2015-20202_FIXED_v25.rbxmx
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload source artifact
+        if: inputs.mode == 'source'
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-bytes
+          path: transfer/source-bytes.zip
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
