@@ -2,30 +2,28 @@
 name: Source File Byte Transfer
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/datamodelpatch-transfer.yml
-
   workflow_dispatch:
     inputs:
+      mode:
+        description: What to transfer
+        required: true
+        type: choice
+        options:
+          - source
+          - yeku-v27
+        default: yeku-v27
       repository:
-        description: GitHub repository (owner/name)
+        description: Repository to clone in source mode
         required: true
         type: string
         default: telegramdesktop/tdesktop
-
       ref:
         description: Branch, tag, or commit SHA
         required: true
         type: string
         default: dev
-
       paths:
-        description: |
-          Paths to retrieve, one per line.
-          Use . for the entire repository.
+        description: Paths to retrieve in source mode, one per line
         required: true
         type: string
         default: .
@@ -35,84 +33,64 @@ permissions:
 
 jobs:
   transfer:
-    name: Retrieve source bytes
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      - name: Validate request and install ZIP utility
-        shell: bash
+      - name: Install ZIP utility
+        if: inputs.mode == 'source'
         run: |
-          set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y zip
 
-      - name: Clone repository with ALL submodules
+      - name: Download Yeku V27 release asset
+        if: inputs.mode == 'yeku-v27'
         shell: bash
-        env:
-          INPUT_REPOSITORY: ${{ github.event.inputs.repository }}
-          INPUT_REF: ${{ github.event.inputs.ref }}
-          INPUT_PATHS: ${{ github.event.inputs.paths }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
+          mkdir -p transfer
 
-          repository="${INPUT_REPOSITORY:-telegramdesktop/tdesktop}"
-          ref="${INPUT_REF:-dev}"
-          requested_paths="${INPUT_PATHS:-.}"
+          curl -fL --retry 3 \
+            "https://github.com/letsafe/something/releases/download/v1.0.0/knifethingy6_complete_2015-20202_FIXED_v27.rbxmx" \
+            -o transfer/knifethingy6_complete_2015-20202_FIXED_v27.rbxmx
 
-          if [[ ! "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "::error::Invalid repository name."
-            exit 1
-          fi
+          echo "Downloaded file:"
+          stat -c '%n — %s bytes' transfer/*.rbxmx
 
-          if [[ -z "$ref" || -z "$requested_paths" ]]; then
-            echo "::error::Ref and paths cannot be empty."
-            exit 1
-          fi
+          echo "SHA256:"
+          sha256sum transfer/*.rbxmx
 
-          echo "Repository: $repository"
-          echo "Ref: $ref"
-
+      - name: Clone source repository
+        if: inputs.mode == 'source'
+        shell: bash
+        env:
+          INPUT_REPOSITORY: ${{ inputs.repository }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
           mkdir source
           git -C source init
           git -C source remote add origin \
-            "https://github.com/${repository}.git"
-
-          git -C source fetch --depth 1 origin "$ref"
+            "https://github.com/${INPUT_REPOSITORY}.git"
+          git -C source fetch --depth 1 origin "$INPUT_REF"
           git -C source checkout --detach FETCH_HEAD
+          git -C source submodule update --init --recursive --depth 1
 
-          echo "Initializing recursive submodules..."
-
-          git -C source submodule update \
-            --init --recursive --depth 1
-
-          echo "Submodules initialized:"
-          git -C source submodule status --recursive
-
-          echo "## Source retrieval" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Repository: \`$repository\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Ref: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Submodules: initialized recursively" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Package requested files
+      - name: Package source files
+        if: inputs.mode == 'source'
         shell: bash
         env:
-          INPUT_PATHS: ${{ github.event.inputs.paths }}
+          INPUT_PATHS: ${{ inputs.paths }}
         run: |
           set -euo pipefail
-
-          requested_paths="${INPUT_PATHS:-.}"
           mkdir -p transfer
-
           cd source
 
-          mapfile -t paths <<< "$requested_paths"
+          mapfile -t paths <<< "$INPUT_PATHS"
           selected=()
 
           for path in "${paths[@]}"; do
-            path="$(echo "$path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-
+            path="$(echo "$path" | xargs)"
             [[ -z "$path" ]] && continue
 
             if [[ "$path" == /* || "$path" =~ (^|/)\.\.(/|$) ]]; then
@@ -120,37 +98,24 @@ jobs:
               exit 1
             fi
 
-            if [[ ! -e "$path" ]]; then
+            [[ -e "$path" ]] || {
               echo "::error::Path does not exist: $path"
               exit 1
-            fi
+            }
 
             selected+=("$path")
-            echo "- \`$path\`" >> "$GITHUB_STEP_SUMMARY"
           done
 
-          if [[ ${#selected[@]} -eq 0 ]]; then
-            echo "::error::No valid paths selected."
-            exit 1
-          fi
+          [[ ${#selected[@]} -gt 0 ]] || exit 1
 
           zip -qr "$GITHUB_WORKSPACE/transfer/source-bytes.zip" \
             "${selected[@]}" \
             -x '*/.git/*' '*/.git' '.git/*' '.git'
 
-          cd "$GITHUB_WORKSPACE"
-
-          echo "## Archive information" >> "$GITHUB_STEP_SUMMARY"
-          sha256sum transfer/source-bytes.zip \
-            | tee transfer/SHA256.txt
-
-          stat -c 'Archive size: %s bytes' \
-            transfer/source-bytes.zip
-
-      - name: Upload source byte artifact
+      - name: Upload transfer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: source-bytes-${{ github.run_id }}
+          name: yeku-v27-binary
           path: transfer/
           if-no-files-found: error
           retention-days: 1
