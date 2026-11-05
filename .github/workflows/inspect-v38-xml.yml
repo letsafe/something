@@ -1,0 +1,90 @@
+
+name: Inspect V38 XML for ChatGPT
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  expose-xml-in-readable-chunks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download and verify V38
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          URL="https://github.com/letsafe/something/releases/download/v1.0.0/knifethingy6_complete_2015-20202_FIXED_v38.rbxmx"
+
+          curl -fL --retry 3 "$URL" -o v38.rbxmx
+
+          echo "76a23505a1d10cfcee0d9d41fa33e929e0a8d08f2ce1fde200c5f3cc47451357  v38.rbxmx" | sha256sum -c -
+
+          test "$(stat -c%s v38.rbxmx)" -eq 9086796
+
+      - name: Split XML into readable chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          data = Path("v38.rbxmx").read_bytes()
+          text = data.decode("utf-8")
+
+          output = Path("v38-inspection")
+          output.mkdir()
+
+          chunk_size = 500000
+          chunks = [
+              text[i:i + chunk_size]
+              for i in range(0, len(text), chunk_size)
+          ]
+
+          for index, chunk in enumerate(chunks, 1):
+              path = output / f"part-{index:02d}.xml.txt"
+              path.write_text(chunk, encoding="utf-8")
+
+          manifest = (
+              f"Original bytes: {len(data)}\n"
+              f"Original SHA256: {hashlib.sha256(data).hexdigest()}\n"
+              f"UTF-8 characters: {len(text)}\n"
+              f"Chunk count: {len(chunks)}\n"
+              f"Chunk size: {chunk_size} characters\n"
+          )
+
+          (output / "MANIFEST.txt").write_text(
+              manifest, encoding="utf-8"
+          )
+
+          print(manifest)
+          PY
+
+      - name: Publish readable chunks on separate branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="v38-inspection-${GITHUB_RUN_ID}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git switch -c "$BRANCH"
+          git add v38-inspection/
+          git commit -m "Publish verified V38 XML in readable chunks"
+          git push origin "$BRANCH"
+
+          echo "Inspection branch: $BRANCH" >> "$GITHUB_STEP_SUMMARY"
