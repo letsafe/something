@@ -1,0 +1,5 @@
+Original bytes: 9086796
+Original SHA256: 76a23505a1d10cfcee0d9d41fa33e929e0a8d08f2ce1fde200c5f3cc47451357
+UTF-8 characters: 9074598
+Chunk count: 19
+Chunk size: 500000 characters

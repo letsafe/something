@@ -1,0 +1,2834 @@
+iveBubbleConnection = connectSignal(config:GetPropertyChangedSignal("Enabled"), function()
+			if nativeBubbleConfiguration == config and config.Enabled then
+				pcall(function() config.Enabled = false end)
+			end
+		end)
+	end
+	pcall(function() config.Enabled = false end)
+end
+
+local function addMessageConnection(signal, callback)
+	local connection = connectSignal(signal, callback)
+	if connection then table.insert(messageConnections, connection) end
+	return connection
+end
+
+function module.Initialize(NewChatBackend)
+	if initialized then return true end
+	if not ensureBubbleScreenGui() then return false end
+	loadBundledChatSettings()
+	initialized = true
+	local function updateBubbleCoreGuiPermission(changedType, changedEnabled)
+		local chatOK, chatEnabled = pcall(function() return StarterGui:GetCoreGuiEnabled(Enum.CoreGuiType.Chat) end)
+		if chatOK then bubbleChatCoreGuiAllowed = chatEnabled ~= false end
+		if changedType == Enum.CoreGuiType.Chat then bubbleChatCoreGuiAllowed = changedEnabled == true end
+		if changedType == Enum.CoreGuiType.All then bubbleChatAllAllowed = changedEnabled == true end
+		bubbleGuiAllowed = bubbleChatCoreGuiAllowed and bubbleChatAllAllowed
+		local allowed = bubbleGuiAllowed
+		if BubbleChatScreenGui then BubbleChatScreenGui.Enabled = allowed end
+		if not allowed then
+			for origin, state in pairs(billboardByOrigin) do
+				if state.BillboardGui then pcall(function() state.BillboardGui:Destroy() end) end
+				billboardByOrigin[origin] = nil
+			end
+		end
+	end
+	updateBubbleCoreGuiPermission()
+	local coreGuiSignalOK, coreGuiSignal = pcall(function() return StarterGui.CoreGuiChangedSignal end)
+	if coreGuiSignalOK and coreGuiSignal then
+		table.insert(messageConnections, coreGuiSignal:Connect(function(coreGuiType, enabled)
+			if coreGuiType == Enum.CoreGuiType.Chat or coreGuiType == Enum.CoreGuiType.All then
+				updateBubbleCoreGuiPermission(coreGuiType, enabled)
+			end
+		end))
+	end
+	task.spawn(function()
+		while initialized do
+			updateBubbleCoreGuiPermission()
+			task.wait(0.2)
+		end
+	end)
+
+	-- Use the 2015/2016 large-text dialog frontend and narrow-tail dimensions.
+	if not bubbleTemplates[BubbleColor.WHITE] then
+		bubbleTemplates[BubbleColor.WHITE] = createBubbleWithTail(BubbleColor.WHITE)
+		bubbleTemplates[BubbleColor.BLUE] = createBubbleWithTail(BubbleColor.BLUE)
+		bubbleTemplates[BubbleColor.RED] = createBubbleWithTail(BubbleColor.RED)
+		bubbleTemplates[BubbleColor.GREEN] = createBubbleWithTail(BubbleColor.GREEN)
+		scalingTemplates[BubbleColor.WHITE] = createScaledBubbleWithTail(
+			BubbleColor.WHITE, 0.5, UDim2.new(-0.5, 0, 0, 0)
+		)
+	end
+
+	-- Modern native bubbles are suppressed; this custom sprite renderer owns the visuals.
+	disableNativeBubbles()
+	nativeChildAddedConnection = connectSignal(TextChatService.ChildAdded, function(child)
+		if child.Name == "BubbleChatConfiguration" then task.defer(disableNativeBubbles) end
+	end)
+
+	local bubbleDisplayedOK, bubbleDisplayedSignal = pcall(function()
+		return TextChatService.BubbleDisplayed
+	end)
+	if bubbleDisplayedOK and bubbleDisplayedSignal then
+		addMessageConnection(bubbleDisplayedSignal, onTextChatBubbleDisplayed)
+	else
+		warn("[LegacyBubbleChat] TextChatService.BubbleDisplayed is unavailable; DisplayBubble NPC bubbles cannot be intercepted.")
+	end
+
+	pcall(function()
+		textChatServiceActive = TextChatService.ChatVersion == Enum.ChatVersion.TextChatService
+	end)
+	-- Connect only to the transport that is actually active. NewChatBackend
+	-- exposes a signal in both modes, but it only fires for TextChatService.
+	-- Treating the signal's existence as a connection caused LegacyChatService
+	-- messages to appear in history without producing chat bubbles.
+	local backendConnected = false
+	if textChatServiceActive then
+		if NewChatBackend and NewChatBackend.IncomingMessage then
+			backendConnected = addMessageConnection(NewChatBackend.IncomingMessage, onTextChatMessage) ~= nil
+		end
+		if not backendConnected then
+			backendConnected = addMessageConnection(TextChatService.MessageReceived, onTextChatMessage) ~= nil
+		end
+	else
+		local connectedFolders = setmetatable({}, {__mode = "k"})
+		local function connectLegacyFolder(events)
+			if not events or connectedFolders[events] then return end
+			connectedFolders[events] = true
+			local connectedRemotes = {}
+			local function connectRemote(remote)
+				if not remote or not remote:IsA("RemoteEvent") or connectedRemotes[remote] then return end
+				if remote:GetAttribute("YekuClientPlaceholder") == true then return end
+				if remote.Name == "OnNewMessage" then
+					connectedRemotes[remote] = true
+					addMessageConnection(remote.OnClientEvent, onUnfilteredLegacyMessage)
+				elseif remote.Name == "OnMessageDoneFiltering" then
+					connectedRemotes[remote] = true
+					addMessageConnection(remote.OnClientEvent, onFilteredLegacyMessage)
+				end
+			end
+			connectRemote(events:FindFirstChild("OnNewMessage"))
+			connectRemote(events:FindFirstChild("OnMessageDoneFiltering"))
+			addMessageConnection(events.ChildAdded, connectRemote)
+		end
+		local events = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+			or ReplicatedStorage:WaitForChild("DefaultChatSystemChatEvents", 10)
+		if events then connectLegacyFolder(events) end
+		addMessageConnection(ReplicatedStorage.ChildAdded, function(child)
+			if child.Name == "DefaultChatSystemChatEvents" then connectLegacyFolder(child) end
+		end)
+	end
+
+	-- Player.Chatted fallback covers clients/transports that do not surface a
+	-- successful TextChatMessage or a legacy message RemoteEvent to this module.
+	local watchedPlayers = setmetatable({}, {__mode = "k"})
+	local function watchPlayerChat(player)
+		if not player or watchedPlayers[player] then return end
+		watchedPlayers[player] = true
+		local ok, signal = pcall(function() return player.Chatted end)
+		if ok and signal then
+			addMessageConnection(signal, function(message)
+				renderPlayerMessageOnce(player, message, BubbleColor.WHITE)
+			end)
+		end
+	end
+	for _, player in ipairs(Players:GetPlayers()) do watchPlayerChat(player) end
+	addMessageConnection(Players.PlayerAdded, watchPlayerChat)
+
+	-- Chat:Chat()/NPC/game-generated bubbles are independent of player-chat mode.
+	local chattedOK, chattedSignal = pcall(function() return ChatService.Chatted end)
+	if chattedOK and chattedSignal then addMessageConnection(chattedSignal, onGameChatMessage) end
+
+	local function watchCamera(camera)
+		if camera then
+			cameraConnection = connectSignal(camera:GetPropertyChangedSignal("CFrame"), refreshAllBillboards)
+		end
+	end
+	watchCamera(Workspace.CurrentCamera)
+	workspaceCameraConnection = connectSignal(Workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+		if cameraConnection then pcall(function() cameraConnection:Disconnect() end) end
+		cameraConnection = nil
+		watchCamera(Workspace.CurrentCamera)
+		refreshAllBillboards()
+	end)
+
+	addMessageConnection(Players.PlayerRemoving, function(player)
+		local character = player.Character
+		local key = character and getOriginKey(character)
+		local state = key and billboardByOrigin[key]
+		if state then
+			if state.BillboardGui then pcall(function() state.BillboardGui:Destroy() end) end
+			billboardByOrigin[key] = nil
+		end
+	end)
+
+	task.spawn(function()
+		while initialized do
+			task.wait(0.25)
+			refreshAllBillboards()
+		end
+	end)
+
+	print("[LegacyBubbleChat] 2015/2016 large-text frontend initialized; backend="
+		.. (textChatServiceActive and "TextChatService.MessageReceived" or "legacy chat remotes"))
+	return true
+end
+
+function module.Disconnect()
+	initialized = false
+	for _, connection in ipairs(messageConnections) do
+		if connection then pcall(function() connection:Disconnect() end) end
+	end
+	table.clear(messageConnections)
+
+	if cameraConnection then pcall(function() cameraConnection:Disconnect() end) end
+	if workspaceCameraConnection then pcall(function() workspaceCameraConnection:Disconnect() end) end
+	if nativeBubbleConnection then pcall(function() nativeBubbleConnection:Disconnect() end) end
+	if nativeChildAddedConnection then pcall(function() nativeChildAddedConnection:Disconnect() end) end
+	cameraConnection = nil
+	workspaceCameraConnection = nil
+	nativeBubbleConnection = nil
+	nativeChildAddedConnection = nil
+	nativeBubbleConfiguration = nil
+
+	for origin, state in pairs(billboardByOrigin) do
+		if state.BillboardGui then pcall(function() state.BillboardGui:Destroy() end) end
+		billboardByOrigin[origin] = nil
+	end
+	if BubbleChatScreenGui and BubbleChatScreenGui.Parent then
+		for _, child in ipairs(BubbleChatScreenGui:GetChildren()) do
+			if child:IsA("BillboardGui") and child:GetAttribute("YekuLegacyBubble") == true then
+				pcall(function() child:Destroy() end)
+			end
+		end
+	end
+end
+
+return module
+</ProtectedString>
+                                <int64 name="SourceAssetId">-534</int64>
+                                <BinaryString name="Tags" />
+                            </Properties>
+                        </Item>
+                    </Item>
+                    <Item class="Folder" referent="RBX652">
+                        <Properties>
+                            <BinaryString name="AttributesSerialize" />
+                            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                            <bool name="DefinesCapabilities">false</bool>
+                            <Color3 name="IconTint">
+                                <R>0</R>
+                                <G>0</G>
+                                <B>0</B>
+                            </Color3>
+                            <string name="Name">Libraries</string>
+                            <BinaryString name="SerializedOverrides" />
+                            <int64 name="SourceAssetId">-114</int64>
+                            <BinaryString name="Tags" />
+                        </Properties>
+                    </Item>
+                    <Item class="Folder" referent="RBX653">
+                        <Properties>
+                            <BinaryString name="AttributesSerialize" />
+                            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                            <bool name="DefinesCapabilities">false</bool>
+                            <Color3 name="IconTint">
+                                <R>0</R>
+                                <G>0</G>
+                                <B>0</B>
+                            </Color3>
+                            <string name="Name">ServerCoreScripts</string>
+                            <BinaryString name="SerializedOverrides" />
+                            <int64 name="SourceAssetId">-115</int64>
+                            <BinaryString name="Tags" />
+                        </Properties>
+                    </Item>
+                    <Item class="ModuleScript" referent="RBX654">
+                        <Properties>
+                            <BinaryString name="AttributesSerialize" />
+                            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                            <bool name="DefinesCapabilities">false</bool>
+                            <ContentId name="LinkedSource">
+                                <null />
+                            </ContentId>
+                            <string name="Name">StarterScript</string>
+                            <string name="ScriptGuid">{2EB98C72-A8AD-41A0-A17C-6D7FD5653FBB}</string>
+                            <BinaryString name="SerializedOverrides" />
+                            <ProtectedString name="Source">--[[
+    CoreScriptsRoot/StarterScript.lua
+
+    Historical Roblox CoreScripts startup coordinator.
+
+    Runtime:
+        CoreGui.NewRobloxGui
+
+    Expected hierarchy:
+        NewRobloxGui (ScreenGui)
+        ├── CoreScripts
+        ├── Libraries
+        ├── Modules
+        ├── Sounds
+        ├── LoadingScript
+        └── StarterScript
+
+    Responsibilities:
+        - Require historical ModuleScript entry points.
+        - Preserve the historical startup order.
+        - Isolate errors so one failed module does not abort startup.
+        - Initialize touch-specific and VR-specific components.
+
+    This script does NOT:
+        - Copy, clone, move, or destroy payload resources.
+        - Create or replace NewRobloxGui.
+        - Use ScriptContext:AddCoreScriptLocal.
+        - Use executor-only APIs.
+        - Force-enable or force-disable native CoreGui.
+
+    The executor/bootstrap is responsible for installing the
+    payload and requiring this module.
+]]
+
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local VRService = game:GetService("VRService")
+local RunService = game:GetService("RunService")
+
+-- ============================================================
+-- ENVIRONMENT
+-- ============================================================
+
+assert(
+	RunService:IsClient(),
+	"[StarterScript] This module must run on the client."
+)
+
+local LocalPlayer = Players.LocalPlayer
+
+assert(
+	LocalPlayer,
+	"[StarterScript] Players.LocalPlayer is unavailable."
+)
+
+-- The executor must create/install this GUI before requiring
+-- StarterScript.
+local RobloxGui = CoreGui:WaitForChild("NewRobloxGui", 15)
+
+assert(
+	RobloxGui,
+	"[StarterScript] CoreGui.NewRobloxGui was not found."
+)
+
+assert(
+	RobloxGui:IsA("ScreenGui"),
+	"[StarterScript] NewRobloxGui must be a ScreenGui. "
+		.. "Do not rename a Folder or ModuleScript to NewRobloxGui."
+)
+
+-- This module should itself be installed directly beneath the
+-- runtime GUI root so every historical path remains predictable.
+assert(
+	script.Parent == RobloxGui,
+	"[StarterScript] StarterScript must be a direct child of "
+		.. "CoreGui.NewRobloxGui. Install the contents of "
+		.. "CoreScriptsRoot under NewRobloxGui without an extra "
+		.. "CoreScriptsRoot wrapper."
+)
+
+-- ============================================================
+-- HISTORICAL RESOURCE ROOTS
+-- These already exist. Never copy them from another location.
+-- ============================================================
+
+local CoreScripts = RobloxGui:FindFirstChild("CoreScripts")
+local Modules = RobloxGui:FindFirstChild("Modules")
+local Libraries = RobloxGui:FindFirstChild("Libraries")
+
+assert(
+	CoreScripts and CoreScripts:IsA("Folder"),
+	"[StarterScript] NewRobloxGui.CoreScripts is missing."
+)
+
+assert(
+	Modules and Modules:IsA("Folder"),
+	"[StarterScript] NewRobloxGui.Modules is missing."
+)
+
+if not Libraries then
+	warn("[StarterScript] Libraries folder is missing.")
+end
+
+-- ============================================================
+-- DIAGNOSTICS
+-- ============================================================
+
+local function log(message)
+	print("[StarterScript] " .. tostring(message))
+end
+
+local function warnScript(message)
+	warn("[StarterScript] " .. tostring(message))
+end
+
+local function traceback(message)
+	if debug and debug.traceback then
+		return debug.traceback(tostring(message), 2)
+	end
+
+	return tostring(message)
+end
+
+-- ============================================================
+-- SOUNDS
+-- Preserve the historical Sounds folder convention.
+-- This creates the folder only if it is absent. It copies nothing.
+-- ============================================================
+
+local soundFolder = RobloxGui:FindFirstChild("Sounds")
+
+if not soundFolder then
+	soundFolder = Instance.new("Folder")
+	soundFolder.Name = "Sounds"
+	soundFolder.Parent = RobloxGui
+elseif not soundFolder:IsA("Folder") then
+	warnScript("Sounds exists but is not a Folder.")
+end
+
+-- ============================================================
+-- PATH RESOLUTION
+-- Supports imported instance names with or without ".lua".
+-- ============================================================
+
+local function findPath(root, relativePath)
+	if not root then
+		return nil
+	end
+
+	local current = root
+
+	for segment in string.gmatch(relativePath, "[^/]+") do
+		local child = current:FindFirstChild(segment)
+
+		if not child then
+			child = current:FindFirstChild(segment .. ".lua")
+		end
+
+		if not child then
+			local baseName = segment:gsub("%.lua$", "")
+
+			for _, candidate in ipairs(current:GetChildren()) do
+				local candidateName =
+					candidate.Name:gsub("%.lua$", "")
+
+				if candidateName == baseName then
+					child = candidate
+					break
+				end
+			end
+		end
+
+		if not child then
+			return nil
+		end
+
+		current = child
+	end
+
+	return current
+end
+
+-- ============================================================
+-- SAFE REQUIRE
+-- Only ModuleScripts can be required.
+-- A nil module return is valid if require itself succeeds.
+-- ============================================================
+
+local function safeRequire(moduleScript)
+	if not moduleScript then
+		return false, "ModuleScript was not found."
+	end
+
+	if not moduleScript:IsA("ModuleScript") then
+		local message = string.format(
+			"Expected ModuleScript, got %s: %s",
+			moduleScript.ClassName,
+			moduleScript:GetFullName()
+		)
+
+		warnScript(message)
+		return false, message
+	end
+
+	local success, result = xpcall(function()
+		return require(moduleScript)
+	end, traceback)
+
+	if not success then
+		warnScript(
+			"Failed to require "
+				.. moduleScript:GetFullName()
+				.. ":\n"
+				.. tostring(result)
+		)
+
+		return false, result
+	end
+
+	return true, result
+end
+
+local function safeRequirePath(root, relativePath)
+	local target = findPath(root, relativePath)
+
+	if not target then
+		warnScript("Missing module: " .. relativePath)
+		return false
+	end
+
+	local success = safeRequire(target)
+
+	if success then
+		log("Initialized " .. relativePath)
+	end
+
+	return success
+end
+
+-- ============================================================
+-- CORESCRIPT ENTRY POINTS
+--
+-- Unlike AddCoreScriptLocal, this directly requires a
+-- ModuleScript already installed in the historical tree.
+--
+-- LocalScripts cannot be started with require(). If an entry
+-- point is a LocalScript, the bootstrap/execution host must
+-- handle its lifecycle; this function will not clone it.
+-- ============================================================
+
+local function startCoreScript(relativePath)
+	local entry = findPath(CoreScripts, relativePath)
+
+	if not entry then
+		warnScript(
+			"CoreScript entry point missing: CoreScripts/"
+				.. relativePath
+		)
+
+		return false
+	end
+
+	if entry:IsA("LocalScript") then
+		warnScript(
+			"Entry point CoreScripts/"
+				.. relativePath
+				.. " is a LocalScript, not a ModuleScript. "
+				.. "It cannot be started with require(). "
+				.. "Its lifecycle must be handled by the bootstrap."
+		)
+
+		return false
+	end
+
+	if not entry:IsA("ModuleScript") then
+		warnScript(
+			"Unsupported entry point type for CoreScripts/"
+				.. relativePath
+				.. ": "
+				.. entry.ClassName
+		)
+
+		return false
+	end
+
+	local success = safeRequire(entry)
+
+	if success then
+		log("Started CoreScripts/" .. relativePath)
+	end
+
+	return success
+end
+
+-- ============================================================
+-- MAIN STARTUP ORDER
+-- Kept aligned with the historical StarterScript.
+-- ============================================================
+
+log("Starting historical CoreScripts.")
+
+-- Topbar
+startCoreScript("Topbar")
+
+-- Dialogs' Lua component
+startCoreScript("MainBotChatScript2")
+
+-- In-game notifications
+startCoreScript("NotificationScript2")
+
+-- Performance stats
+startCoreScript("PerformanceStatsManagerScript")
+
+
+
+-- Purchase prompts
+startCoreScript("PurchasePromptScript2")
+
+-- Block and friend prompts
+startCoreScript("BlockPlayerPrompt")
+startCoreScript("FriendPlayerPrompt")
+
+-- Avatar context menu
+startCoreScript("AvatarContextMenu")
+
+
+-- Vehicle HUD
+startCoreScript("VehicleHud")
+
+-- Gamepad menu
+startCoreScript("GamepadMenu")
+
+-- ============================================================
+-- TOUCH CONTROLS
+-- ============================================================
+
+if UserInputService.TouchEnabled then
+	startCoreScript("ContextActionTouch")
+
+	task.spawn(function()
+		local controlFrame = RobloxGui:WaitForChild(
+			"ControlFrame",
+			10
+		)
+
+		if not controlFrame then
+			warnScript("ControlFrame was not found.")
+			return
+		end
+
+		local bottomLeft = controlFrame:WaitForChild(
+			"BottomLeftControl",
+			10
+		)
+
+		if not bottomLeft then
+			warnScript("BottomLeftControl was not found.")
+			return
+		end
+
+		if bottomLeft:IsA("GuiObject") then
+			bottomLeft.Visible = false
+		end
+	end)
+end
+
+-- ============================================================
+-- VR
+-- ============================================================
+
+local vrInitialized = false
+local vrConnection = nil
+
+local function initializeVR()
+	if not VRService.VREnabled or vrInitialized then
+		return
+	end
+
+	vrInitialized = true
+
+	safeRequirePath(Modules, "VR/VirtualKeyboard")
+	safeRequirePath(Modules, "VR/UserGui")
+
+	log("VR modules initialized.")
+end
+
+local vrSuccess, vrError = xpcall(function()
+	initializeVR()
+
+	vrConnection = VRService
+		:GetPropertyChangedSignal("VREnabled")
+		:Connect(function()
+			if not VRService.VREnabled then
+				return
+			end
+
+			local success, err = xpcall(
+				initializeVR,
+				traceback
+			)
+
+			if not success then
+				warnScript(
+					"VR initialization failed: " .. tostring(err)
+				)
+			end
+		end)
+end, traceback)
+
+if not vrSuccess then
+	warnScript(
+		"Could not initialize VR monitoring: "
+			.. tostring(vrError)
+	)
+end
+
+-- ============================================================
+-- RETURN
+-- ============================================================
+
+log("Startup sequence completed.")
+
+return {
+	RobloxGui = RobloxGui,
+	Modules = Modules,
+	Libraries = Libraries,
+
+	Disconnect = function()
+		if vrConnection then
+			vrConnection:Disconnect()
+			vrConnection = nil
+		end
+	end,
+}</ProtectedString>
+                            <int64 name="SourceAssetId">-535</int64>
+                            <BinaryString name="Tags" />
+                        </Properties>
+                    </Item>
+                    <Item class="ModuleScript" referent="RBX655">
+                        <Properties>
+                            <BinaryString name="AttributesSerialize" />
+                            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                            <bool name="DefinesCapabilities">false</bool>
+                            <ContentId name="LinkedSource">
+                                <null />
+                            </ContentId>
+                            <string name="Name">LoadingScript</string>
+                            <string name="ScriptGuid">{C76E7E82-DE79-443D-9512-A2313BC322D7}</string>
+                            <BinaryString name="SerializedOverrides" />
+                            <ProtectedString name="Source">--[[
+    Filename: LoadingScript.lua
+
+    Classic Roblox loading screen recreation, based on the
+    2014 ROBLOX loading screen by ArceusInator &amp; Ben Tkacheff.
+
+    Adapted for the NewRobloxGui historical CoreScriptsRoot loader.
+
+    Retained:
+        - Dark gray background with tiled loading texture
+        - Original loadingCircle.png spinner
+        - Animated Loading... text
+        - Place name and creator information
+        - Legacy bottom-left information layout
+        - Delayed close-button fade-in
+        - UI message display
+        - Error banner that survives loading-screen removal
+        - Graceful fade-out
+        - Ordinary client-side execution
+        - LoadingScreen:Stop() module interface
+
+    Usage:
+        local LoadingScreen = require(LoadingScript)
+
+        -- Initialize the remaining CoreScripts.
+
+        LoadingScreen:Stop()
+
+    Optional:
+        LoadingScreen:SetMessage("Loading interface...")
+        LoadingScreen:SetError("An error occurred.")
+
+    Run from a client-side context.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local MarketplaceService = game:GetService("MarketplaceService")
+local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local TweenService = game:GetService("TweenService")
+
+local LoadingScreen = {}
+
+-- ============================================================
+-- CONSTANTS
+-- ============================================================
+
+local COLORS = {
+	BLACK = Color3.new(0, 0, 0),
+	BACKGROUND_COLOR = Color3.fromRGB(45, 45, 45),
+	WHITE = Color3.new(1, 1, 1),
+	ERROR = Color3.fromRGB(253, 68, 72),
+}
+
+local BACKGROUND_TEXTURE =
+	"rbxasset://textures/loading/darkLoadingTexture.png"
+
+local SPINNER_IMAGE =
+	"rbxasset://textures/loading/loadingCircle.png"
+
+local CLOSE_BUTTON_IMAGE =
+	"rbxasset://textures/loading/cancelButton.png"
+
+local CREATOR_ICON_IMAGE =
+	"rbxasset://textures/ui/Shell/Icons/RobloxIcon32.png"
+
+local ERROR_ICON_IMAGE =
+	"rbxasset://textures/ui/ErrorIconSmall.png"
+
+local BACKGROUND_TEXTURE_SIZE = Vector2.new(512, 512)
+
+local MINIMUM_DISPLAY_TIME = 0.75
+local CLOSE_BUTTON_DELAY = 5
+local FADE_RATE = 1.8
+local SPINNER_ROTATION_TIME = 2
+local LOADING_DOT_INTERVAL = 0.2
+local PLACE_INFO_TIMEOUT = 15
+
+local PLACE_ID = game.PlaceId
+
+-- ============================================================
+-- SERVICES AND PLATFORM DETECTION
+-- ============================================================
+
+local isTenFootInterface = false
+
+pcall(function()
+	isTenFootInterface = GuiService:IsTenFootInterface()
+end)
+
+local platform = UserInputService:GetPlatform()
+
+local function getViewportSize()
+	local camera = workspace.CurrentCamera
+
+	if camera then
+		local ok, size = pcall(function()
+			return camera.ViewportSize
+		end)
+
+		if ok and size and size.X &gt; 0 and size.Y &gt; 0 then
+			return size
+		end
+	end
+
+	return Vector2.new(1280, 720)
+end
+
+local function detectMobile()
+	local viewport = getViewportSize()
+
+	return UserInputService.TouchEnabled == true
+		and UserInputService.MouseEnabled == false
+		and viewport.Y &lt;= 500
+end
+
+local isMobile = detectMobile()
+
+-- ============================================================
+-- STATE
+-- ============================================================
+
+local startedAt = os.clock()
+
+local screenGui = nil
+local blackFrame = nil
+
+local closeButton = nil
+local graphicsFrame = nil
+local loadingImage = nil
+local loadingText = nil
+
+local uiMessageFrame = nil
+local uiMessage = nil
+
+local infoFrame = nil
+local placeLabel = nil
+local creatorLabel = nil
+local creatorIcon = nil
+local byLabel = nil
+
+local backgroundTextureFrame = nil
+local errorFrame = nil
+local errorText = nil
+local errorImage = nil
+
+local renderConnection = nil
+local cameraConnection = nil
+local viewportConnection = nil
+
+local gameAssetInfo = nil
+
+local stopping = false
+local stopped = false
+local destroyedLoadingGui = false
+
+local backgroundImageTransparency = 0
+local lastBackgroundSize = Vector2.new(0, 0)
+
+local elapsedAnimationTime = 0
+local elapsedDotTime = 0
+local loadingDotCount = 0
+
+-- ============================================================
+-- DIAGNOSTICS
+-- ============================================================
+
+local function log(message)
+	print("[LoadingScript] " .. tostring(message))
+end
+
+local function warnLoading(message)
+	warn("[LoadingScript] " .. tostring(message))
+end
+
+-- ============================================================
+-- INSTANCE CREATION
+-- ============================================================
+
+local function create(className, properties, parent)
+	local object = Instance.new(className)
+
+	for property, value in pairs(properties or {}) do
+		local success, err = pcall(function()
+			object[property] = value
+		end)
+
+		if not success then
+			warnLoading(
+				"Could not set "
+					.. tostring(property)
+					.. " on "
+					.. tostring(className)
+					.. ": "
+					.. tostring(err)
+			)
+		end
+	end
+
+	object.Parent = parent
+
+	return object
+end
+
+local function setProperty(object, property, value)
+	if not object then
+		return false
+	end
+
+	return pcall(function()
+		object[property] = value
+	end)
+end
+
+-- ============================================================
+-- PLACE NAME AND CREATOR INFORMATION
+-- ============================================================
+
+local function extractGeneratedUsername(gameName)
+	if type(gameName) ~= "string" then
+		return nil
+	end
+
+	local username = string.match(
+		gameName,
+		"^([0-9a-fA-F]+)'s Place$"
+	)
+
+	if username and #username == 32 then
+		return username
+	end
+
+	return nil
+end
+
+local function getFilteredGameName(gameName, creatorName)
+	if type(gameName) ~= "string" then
+		return gameName
+	end
+
+	local temporaryUsername =
+		extractGeneratedUsername(gameName)
+
+	if temporaryUsername and type(creatorName) == "string" then
+		return string.gsub(
+			gameName,
+			temporaryUsername,
+			creatorName,
+			1
+		)
+	end
+
+	return gameName
+end
+
+local function shouldConvertXboxPlaceName()
+	if platform ~= Enum.Platform.XBoxOne then
+		return false
+	end
+
+	local success, value = pcall(function()
+		return settings():GetFFlag(
+			"ConvertMyPlaceNameInXboxApp"
+		)
+	end)
+
+	return success and value == true
+end
+
+local function getGameName()
+	if not gameAssetInfo then
+		return ""
+	end
+
+	local name = gameAssetInfo.Name
+
+	if type(name) ~= "string" then
+		return ""
+	end
+
+	if shouldConvertXboxPlaceName() then
+		return getFilteredGameName(
+			name,
+			getCreatorName()
+		)
+	end
+
+	return name
+end
+
+local function getCreatorName()
+	if not gameAssetInfo then
+		return ""
+	end
+
+	local creator = gameAssetInfo.Creator
+
+	if type(creator) ~= "table" then
+		return ""
+	end
+
+	if type(creator.Name) ~= "string" then
+		return ""
+	end
+
+	return creator.Name
+end
+
+local function loadPlaceInformation()
+	task.spawn(function()
+		local placeId = PLACE_ID
+		local timeoutAt = os.clock() + PLACE_INFO_TIMEOUT
+
+		while placeId &lt;= 0 and os.clock() &lt; timeoutAt do
+			if stopping or stopped then
+				return
+			end
+
+			task.wait(0.25)
+			placeId = game.PlaceId
+		end
+
+		if placeId &lt;= 0 then
+			return
+		end
+
+		local success, result = pcall(function()
+			return MarketplaceService:GetProductInfo(placeId)
+		end)
+
+		if not success then
+			warnLoading(
+				"Place metadata could not be loaded: "
+					.. tostring(result)
+			)
+
+			return
+		end
+
+		if type(result) ~= "table" then
+			return
+		end
+
+		gameAssetInfo = result
+
+		if stopping or stopped then
+			return
+		end
+
+		if placeLabel and placeLabel.Parent then
+			local name = getGameName()
+
+			if name ~= "" then
+				placeLabel.Text = name
+			end
+		end
+
+		if creatorLabel and creatorLabel.Parent then
+			local name = getCreatorName()
+
+			if name ~= "" then
+				if isTenFootInterface then
+					local showCreator = true
+
+					if platform == Enum.Platform.XBoxOne then
+						local ok, value = pcall(function()
+							return settings():GetFFlag(
+								"ShowDevNameInXboxApp"
+							)
+						end)
+
+						if ok then
+							showCreator = value == true
+						end
+					end
+
+					creatorLabel.Text =
+						showCreator and name or ""
+
+					if creatorIcon then
+						creatorIcon.Visible = showCreator
+					end
+
+					if byLabel then
+						byLabel.Visible = showCreator
+					end
+				else
+					creatorLabel.Text = "By " .. name
+				end
+			end
+		end
+	end)
+end
+
+-- ============================================================
+-- RESPONSIVE LAYOUT
+-- ============================================================
+
+local function updateLayout()
+	if not blackFrame or not blackFrame.Parent then
+		return
+	end
+
+	isMobile = detectMobile()
+
+	-- --------------------------------------------------------
+	-- Loading spinner and loading text
+	-- --------------------------------------------------------
+
+	if graphicsFrame then
+		graphicsFrame.Position = UDim2.new(
+			1,
+			isMobile and -75
+				or (isTenFootInterface and -245 or -225),
+			1,
+			isMobile and -75
+				or (isTenFootInterface and -185 or -165)
+		)
+
+		local size = isMobile and 70
+			or (isTenFootInterface and 140 or 120)
+
+		graphicsFrame.Size = UDim2.new(
+			0,
+			size,
+			0,
+			size
+		)
+	end
+
+	if loadingText then
+		loadingText.Size = UDim2.new(
+			1,
+			isMobile and -14 or -56,
+			1,
+			0
+		)
+
+		loadingText.Position = UDim2.new(
+			0,
+			isMobile and 12 or 28,
+			0,
+			0
+		)
+
+		loadingText.TextSize = isMobile and 12 or 18
+		loadingText.Visible = not isTenFootInterface
+	end
+
+	-- --------------------------------------------------------
+	-- Place information
+	-- --------------------------------------------------------
+
+	if infoFrame then
+		infoFrame.Position = UDim2.new(
+			0,
+			isMobile and 20 or 100,
+			1,
+			isMobile and -120 or -150
+		)
+
+		infoFrame.Size = UDim2.new(
+			0.4,
+			0,
+			0,
+			110
+		)
+	end
+
+	if placeLabel then
+		placeLabel.TextSize =
+			isTenFootInterface and 48 or 24
+	end
+
+	if creatorLabel then
+		creatorLabel.Position = UDim2.new(
+			0,
+			isTenFootInterface and 72 or 0,
+			0,
+			80
+		)
+
+		creatorLabel.TextSize =
+			isTenFootInterface and 36 or 18
+	end
+
+	-- --------------------------------------------------------
+	-- Centered UI message
+	-- --------------------------------------------------------
+
+	if uiMessageFrame then
+		uiMessageFrame.Position = UDim2.new(
+			0.25,
+			0,
+			1,
+			-120
+		)
+
+		uiMessageFrame.Size = UDim2.new(
+			0.5,
+			0,
+			0,
+			80
+		)
+	end
+end
+
+-- ============================================================
+-- BACKGROUND TEXTURE TILING
+-- ============================================================
+
+local function tileBackgroundTexture(frameToFill)
+	if not frameToFill or not frameToFill.Parent then
+		return
+	end
+
+	for _, child in ipairs(frameToFill:GetChildren()) do
+		child:Destroy()
+	end
+
+	if backgroundImageTransparency &gt;= 1 then
+		return
+	end
+
+	local absoluteSize = frameToFill.AbsoluteSize
+
+	if absoluteSize.X &lt;= 0 or absoluteSize.Y &lt;= 0 then
+		return
+	end
+
+	local columns = math.ceil(
+		absoluteSize.X / BACKGROUND_TEXTURE_SIZE.X
+	)
+
+	local rows = math.ceil(
+		absoluteSize.Y / BACKGROUND_TEXTURE_SIZE.Y
+	)
+
+	for x = 0, columns do
+		for y = 0, rows do
+			create("ImageLabel", {
+				Name = "BackgroundTextureImage",
+
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+
+				Image = BACKGROUND_TEXTURE,
+				ImageTransparency = backgroundImageTransparency,
+
+				Position = UDim2.new(
+					0,
+					x * BACKGROUND_TEXTURE_SIZE.X,
+					0,
+					y * BACKGROUND_TEXTURE_SIZE.Y
+				),
+
+				Size = UDim2.new(
+					0,
+					BACKGROUND_TEXTURE_SIZE.X,
+					0,
+					BACKGROUND_TEXTURE_SIZE.Y
+				),
+
+				ZIndex = 1,
+			}, frameToFill)
+		end
+	end
+end
+
+-- ============================================================
+-- GUI CREATION
+-- ============================================================
+
+local function generateMain()
+	local localPlayer = Players.LocalPlayer
+
+	if not localPlayer then
+		warnLoading("Players.LocalPlayer is unavailable.")
+		return false
+	end
+
+	local playerGui = localPlayer:FindFirstChildOfClass(
+		"PlayerGui"
+	)
+
+	if not playerGui then
+		local success, result = pcall(function()
+			return localPlayer:WaitForChild(
+				"PlayerGui",
+				10
+			)
+		end)
+
+		if success then
+			playerGui = result
+		end
+	end
+
+	if not playerGui then
+		warnLoading("PlayerGui did not become available.")
+		return false
+	end
+
+	-- Remove an older instance owned by this loader.
+	local oldGui = playerGui:FindFirstChild(
+		"RobloxLoadingGui"
+	)
+
+	if oldGui then
+		oldGui:Destroy()
+	end
+
+	-- --------------------------------------------------------
+	-- ScreenGui
+	-- --------------------------------------------------------
+
+	screenGui = create("ScreenGui", {
+		Name = "RobloxLoadingGui",
+
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+
+		DisplayOrder = 10000,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+
+		Enabled = true,
+	}, playerGui)
+
+	-- --------------------------------------------------------
+	-- Main dark-gray background
+	-- --------------------------------------------------------
+
+	blackFrame = create("Frame", {
+		Name = "BlackFrame",
+
+		BackgroundColor3 = COLORS.BACKGROUND_COLOR,
+		BackgroundTransparency = 0,
+
+		BorderSizePixel = 0,
+
+		Size = UDim2.new(1, 0, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+
+		Active = true,
+		ZIndex = 1,
+	}, screenGui)
+
+	-- --------------------------------------------------------
+	-- Close button
+	-- --------------------------------------------------------
+
+	closeButton = create("ImageButton", {
+		Name = "CloseButton",
+
+		Image = CLOSE_BUTTON_IMAGE,
+		ImageTransparency = 1,
+
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+
+		Position = UDim2.new(1, -37, 0, 5),
+		Size = UDim2.new(0, 32, 0, 32),
+
+		Active = false,
+		AutoButtonColor = false,
+
+		ZIndex = 10,
+	}, blackFrame)
+
+	closeButton.MouseButton1Click:Connect(function()
+		if stopping or stopped then
+			return
+		end
+
+		-- Ordinary client scripts cannot invoke the original
+		-- CoreGui "Exit" verb, so this closes the custom loader.
+		LoadingScreen:Stop()
+	end)
+
+	-- --------------------------------------------------------
+	-- Loading spinner container
+	-- --------------------------------------------------------
+
+	graphicsFrame = create("Frame", {
+		Name = "GraphicsFrame",
+
+		BorderSizePixel = 0,
+		BackgroundTransparency = 1,
+
+		Position = UDim2.new(
+			1,
+			isMobile and -75
+				or (isTenFootInterface and -245 or -225),
+			1,
+			isMobile and -75
+				or (isTenFootInterface and -185 or -165)
+		),
+
+		Size = UDim2.new(
+			0,
+			isMobile and 70
+				or (isTenFootInterface and 140 or 120),
+			0,
+			isMobile and 70
+				or (isTenFootInterface and 140 or 120)
+		),
+
+		ZIndex = 2,
+	}, blackFrame)
+
+	loadingImage = create("ImageLabel", {
+		Name = "LoadingImage",
+
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+
+		Image = SPINNER_IMAGE,
+
+		Position = UDim2.new(0, 0, 0, 0),
+		Size = UDim2.new(1, 0, 1, 0),
+
+		Rotation = 0,
+		ZIndex = 2,
+	}, graphicsFrame)
+
+	loadingText = create("TextLabel", {
+		Name = "LoadingText",
+
+		BackgroundTransparency = 1,
+
+		Size = UDim2.new(
+			1,
+			isMobile and -14 or -56,
+			1,
+			0
+		),
+
+		Position = UDim2.new(
+			0,
+			isMobile and 12 or 28,
+			0,
+			0
+		),
+
+		Font = Enum.Font.SourceSans,
+		TextSize = isMobile and 12 or 18,
+
+		TextWrapped = true,
+
+		TextColor3 = COLORS.WHITE,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+
+		Text = "Loading...",
+		Visible = not isTenFootInterface,
+
+		ZIndex = 2,
+	}, graphicsFrame)
+
+	-- --------------------------------------------------------
+	-- Centered UI message
+	-- --------------------------------------------------------
+
+	uiMessageFrame = create("Frame", {
+		Name = "UiMessageFrame",
+
+		BackgroundTransparency = 1,
+
+		Position = UDim2.new(0.25, 0, 1, -120),
+		Size = UDim2.new(0.5, 0, 0, 80),
+
+		Visible = false,
+		ZIndex = 2,
+	}, blackFrame)
+
+	uiMessage = create("TextLabel", {
+		Name = "UiMessage",
+
+		BackgroundTransparency = 1,
+
+		Size = UDim2.new(1, 0, 1, 0),
+
+		Font = Enum.Font.SourceSansBold,
+		TextSize = 18,
+
+		TextWrapped = true,
+		TextColor3 = COLORS.WHITE,
+
+		Text = "",
+
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextYAlignment = Enum.TextYAlignment.Center,
+
+		ZIndex = 2,
+	}, uiMessageFrame)
+
+	-- --------------------------------------------------------
+	-- Place and creator information
+	-- --------------------------------------------------------
+
+	infoFrame = create("Frame", {
+		Name = "InfoFrame",
+
+		BackgroundTransparency = 1,
+
+		Position = UDim2.new(
+			0,
+			isMobile and 20 or 100,
+			1,
+			isMobile and -120 or -150
+		),
+
+		Size = UDim2.new(0.4, 0, 0, 110),
+
+		ZIndex = 2,
+	}, blackFrame)
+
+	placeLabel = create("TextLabel", {
+		Name = "PlaceLabel",
+
+		BackgroundTransparency = 1,
+
+		Size = UDim2.new(1, 0, 0, 80),
+		Position = UDim2.new(0, 0, 0, 0),
+
+		Font = Enum.Font.SourceSans,
+		TextSize = isTenFootInterface and 48 or 24,
+
+		TextWrapped = true,
+		TextScaled = true,
+
+		TextColor3 = COLORS.WHITE,
+		TextStrokeTransparency = 0,
+
+		Text = "",
+
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Bottom,
+
+		ZIndex = 2,
+	}, infoFrame)
+
+	-- The original console layout includes a "By" label and
+	-- the small Roblox creator icon.
+	if isTenFootInterface then
+		byLabel = create("TextLabel", {
+			Name = "ByLabel",
+
+			BackgroundTransparency = 1,
+
+			Size = UDim2.new(0, 36, 0, 30),
+			Position = UDim2.new(0, 0, 0, 80),
+
+			Font = Enum.Font.SourceSans,
+			TextSize = 30,
+			TextScaled = true,
+
+			TextColor3 = COLORS.WHITE,
+			TextStrokeTransparency = 0,
+
+			Text = "By",
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+
+			Visible = false,
+			ZIndex = 2,
+		}, infoFrame)
+
+		creatorIcon = create("ImageLabel", {
+			Name = "CreatorIcon",
+
+			BackgroundTransparency = 1,
+
+			Size = UDim2.new(0, 30, 0, 30),
+			Position = UDim2.new(0, 38, 0, 80),
+
+			Image = CREATOR_ICON_IMAGE,
+			ImageTransparency = 0,
+
+			Visible = false,
+			ZIndex = 2,
+		}, infoFrame)
+	end
+
+	creatorLabel = create("TextLabel", {
+		Name = "CreatorLabel",
+
+		BackgroundTransparency = 1,
+
+		Size = UDim2.new(1, 0, 0, 30),
+
+		Position = UDim2.new(
+			0,
+			isTenFootInterface and 72 or 0,
+			0,
+			80
+		),
+
+		Font = Enum.Font.SourceSans,
+		TextSize = isTenFootInterface and 36 or 18,
+
+		TextWrapped = true,
+		TextScaled = true,
+
+		TextColor3 = COLORS.WHITE,
+		TextStrokeTransparency = 0,
+
+		Text = "",
+
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+
+		ZIndex = 2,
+	}, infoFrame)
+
+	-- --------------------------------------------------------
+	-- Tiled loading background
+	-- --------------------------------------------------------
+
+	backgroundTextureFrame = create("Frame", {
+		Name = "BackgroundTextureFrame",
+
+		BorderSizePixel = 0,
+
+		Size = UDim2.new(1, 0, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+
+		ClipsDescendants = true,
+		BackgroundTransparency = 1,
+
+		ZIndex = 1,
+	}, blackFrame)
+
+	-- --------------------------------------------------------
+	-- Error display
+	--
+	-- The error frame remains after BlackFrame is destroyed,
+	-- matching the old loading script's error persistence.
+	-- --------------------------------------------------------
+
+	errorFrame = create("Frame", {
+		Name = "ErrorFrame",
+
+		BackgroundColor3 = COLORS.ERROR,
+		BackgroundTransparency = 0,
+
+		BorderSizePixel = 0,
+
+		Position = UDim2.new(0.25, 0, 0, 0),
+		Size = UDim2.new(0.5, 0, 0, 80),
+
+		Visible = false,
+
+		ZIndex = 8,
+	}, screenGui)
+
+	errorText = create("TextLabel", {
+		Name = "ErrorText",
+
+		BackgroundTransparency = 1,
+
+		Size = UDim2.new(1, 0, 1, 0),
+
+		Font = Enum.Font.SourceSansBold,
+		TextSize = 14,
+
+		TextWrapped = true,
+		TextColor3 = COLORS.WHITE,
+
+		Text = "",
+
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextYAlignment = Enum.TextYAlignment.Center,
+
+		ZIndex = 8,
+	}, errorFrame)
+
+	-- Initial screen sizing and background.
+	updateLayout()
+
+	lastBackgroundSize = backgroundTextureFrame.AbsoluteSize
+
+	tileBackgroundTexture(backgroundTextureFrame)
+
+	-- Use the ordinary client API after our GUI has been created.
+	local success, err = pcall(function()
+		ReplicatedFirst:RemoveDefaultLoadingScreen()
+	end)
+
+	if not success then
+		warnLoading(
+			"Could not remove the default loading screen: "
+				.. tostring(err)
+		)
+	end
+
+	return true
+end
+
+-- ============================================================
+-- UI MESSAGE API
+-- ============================================================
+
+function LoadingScreen:SetMessage(message)
+	if stopping or stopped then
+		return false
+	end
+
+	if not uiMessage or not uiMessage.Parent then
+		return false
+	end
+
+	message = tostring(message or "")
+
+	uiMessage.Text = message
+	uiMessageFrame.Visible = message ~= ""
+
+	return true
+end
+
+-- ============================================================
+-- ERROR DISPLAY API
+-- ============================================================
+
+function LoadingScreen:SetError(message)
+	message = tostring(message or "")
+
+	if not errorFrame or not errorFrame.Parent then
+		return false
+	end
+
+	if message == "" then
+		errorFrame.Visible = false
+		errorText.Text = ""
+
+		if errorImage then
+			errorImage:Destroy()
+			errorImage = nil
+		end
+
+		return true
+	end
+
+	errorText.Text = message
+
+	if isTenFootInterface then
+		errorFrame.Size = UDim2.new(1, 0, 0, 144)
+		errorFrame.Position = UDim2.new(0, 0, 0, 0)
+
+		errorFrame.BackgroundColor3 = COLORS.BLACK
+		errorFrame.BackgroundTransparency = 0.5
+
+		errorText.TextSize = 36
+		errorText.Position = UDim2.new(0.3, 0, 0, 0)
+		errorText.Size = UDim2.new(0.4, 0, 0, 144)
+
+		if not errorImage then
+			errorImage = create("ImageLabel", {
+				Name = "ErrorIcon",
+
+				Image = ERROR_ICON_IMAGE,
+
+				Size = UDim2.new(0, 96, 0, 79),
+				Position = UDim2.new(0.228125, 0, 0, 32),
+
+				BackgroundTransparency = 1,
+				ZIndex = 9,
+			}, errorFrame)
+		end
+	end
+
+	errorFrame.Visible = true
+
+	-- Errors in the original loading screen reveal the close icon
+	-- immediately instead of waiting for the usual five seconds.
+	if closeButton and closeButton.Parent then
+		closeButton.ImageTransparency = 0
+		closeButton.Active = true
+	end
+
+	return true
+end
+
+-- ============================================================
+-- RENDERING CLEANUP
+-- ============================================================
+
+local function disconnectRendering()
+	if renderConnection then
+		renderConnection:Disconnect()
+		renderConnection = nil
+	end
+
+	if viewportConnection then
+		viewportConnection:Disconnect()
+		viewportConnection = nil
+	end
+
+	if cameraConnection then
+		cameraConnection:Disconnect()
+		cameraConnection = nil
+	end
+end
+
+-- ============================================================
+-- FADE HELPERS
+-- ============================================================
+
+local function setObjectTransparency(object, transparency)
+	if not object or not object.Parent then
+		return
+	end
+
+	if object:IsA("TextLabel")
+		or object:IsA("TextButton")
+		or object:IsA("TextBox") then
+
+		setProperty(object, "TextTransparency", transparency)
+		setProperty(object, "TextStrokeTransparency", transparency)
+		setProperty(object, "BackgroundTransparency", transparency)
+
+	elseif object:IsA("ImageLabel")
+		or object:IsA("ImageButton") then
+
+		setProperty(object, "ImageTransparency", transparency)
+		setProperty(object, "BackgroundTransparency", transparency)
+
+	elseif object:IsA("Frame")
+		or object:IsA("ScrollingFrame") then
+
+		setProperty(object, "BackgroundTransparency", transparency)
+	end
+end
+
+local function fadeAndDestroyBlackFrame(frame)
+	if not frame or not frame.Parent then
+		stopped = true
+		return
+	end
+
+	task.spawn(function()
+		local descendants = frame:GetDescendants()
+
+		local transparency = 0
+		local lastUpdate = os.clock()
+
+		while transparency &lt; 1 do
+			if not frame or not frame.Parent then
+				break
+			end
+
+			local now = os.clock()
+			local deltaTime = now - lastUpdate
+
+			lastUpdate = now
+
+			transparency = math.min(
+				1,
+				transparency + FADE_RATE * deltaTime
+			)
+
+			frame.BackgroundTransparency = transparency
+
+			for _, object in ipairs(descendants) do
+				setObjectTransparency(
+					object,
+					transparency
+				)
+			end
+
+			backgroundImageTransparency = transparency
+
+			task.wait()
+		end
+
+		if frame and frame.Parent then
+			frame:Destroy()
+		end
+
+		blackFrame = nil
+		closeButton = nil
+		graphicsFrame = nil
+		loadingImage = nil
+		loadingText = nil
+		uiMessageFrame = nil
+		uiMessage = nil
+		infoFrame = nil
+		placeLabel = nil
+		creatorLabel = nil
+		creatorIcon = nil
+		byLabel = nil
+		backgroundTextureFrame = nil
+
+		destroyedLoadingGui = true
+		stopped = true
+
+		-- Keep the ScreenGui and ErrorFrame alive so a subsequent
+		-- loading or connection error can still be displayed.
+		log("Loading screen removed.")
+	end)
+end
+
+local function destroyLoadingElements(immediate)
+	if destroyedLoadingGui then
+		return
+	end
+
+	destroyedLoadingGui = true
+
+	disconnectRendering()
+
+	local frame = blackFrame
+
+	if not frame then
+		stopped = true
+		return
+	end
+
+	if immediate then
+		frame:Destroy()
+
+		blackFrame = nil
+		closeButton = nil
+		graphicsFrame = nil
+		loadingImage = nil
+		loadingText = nil
+		uiMessageFrame = nil
+		uiMessage = nil
+		infoFrame = nil
+		placeLabel = nil
+		creatorLabel = nil
+		creatorIcon = nil
+		byLabel = nil
+		backgroundTextureFrame = nil
+
+		stopped = true
+
+		log("Loading screen removed immediately.")
+		return
+	end
+
+	-- Reset the internal guard because fadeAndDestroyBlackFrame
+	-- handles the asynchronous destruction from this point.
+	destroyedLoadingGui = false
+
+	fadeAndDestroyBlackFrame(frame)
+end
+
+-- ============================================================
+-- STOP API
+-- ============================================================
+
+function LoadingScreen:Stop(immediate)
+	if stopping or stopped then
+		return
+	end
+
+	stopping = true
+
+	task.spawn(function()
+		-- Avoid a brief flash if the loader is stopped almost
+		-- immediately after it appears.
+		if not immediate then
+			local elapsed = os.clock() - startedAt
+			local remaining = MINIMUM_DISPLAY_TIME - elapsed
+
+			if remaining &gt; 0 then
+				task.wait(remaining)
+			end
+		end
+
+		destroyLoadingElements(immediate == true)
+	end)
+end
+
+function LoadingScreen:GetGui()
+	return screenGui
+end
+
+function LoadingScreen:IsStopped()
+	return stopped
+end
+
+-- ============================================================
+-- MAIN INITIALIZATION
+-- ============================================================
+
+if not RunService:IsClient() then
+	warnLoading(
+		"This module requires a client-side execution context."
+	)
+
+	stopped = true
+
+	return LoadingScreen
+end
+
+local generatedSuccessfully = generateMain()
+
+if not generatedSuccessfully then
+	stopped = true
+
+	return LoadingScreen
+end
+
+-- Retrieve the game name and creator asynchronously so that
+-- network metadata never blocks the first frame of the loader.
+loadPlaceInformation()
+
+-- ============================================================
+-- SPINNER, TEXT, TEXTURE AND CLOSE BUTTON ANIMATION
+-- ============================================================
+
+renderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+	if not blackFrame or not blackFrame.Parent then
+		return
+	end
+
+	-- Rotate the original Roblox loading circle.
+	if loadingImage and loadingImage.Parent then
+		elapsedAnimationTime += deltaTime
+
+		loadingImage.Rotation =
+			(elapsedAnimationTime * 360
+				/ SPINNER_ROTATION_TIME) % 360
+	end
+
+	-- Animate "Loading", "Loading.", "Loading..", "Loading..."
+	if loadingText and loadingText.Parent then
+		elapsedDotTime += deltaTime
+
+		if elapsedDotTime &gt;= LOADING_DOT_INTERVAL then
+			elapsedDotTime = elapsedDotTime
+				% LOADING_DOT_INTERVAL
+
+			loadingDotCount = (loadingDotCount + 1) % 4
+
+			loadingText.Text =
+				"Loading" .. string.rep(".", loadingDotCount)
+		end
+	end
+
+	-- Recreate tiled background images when the viewport changes.
+	if backgroundTextureFrame
+		and backgroundTextureFrame.Parent then
+
+		local size = backgroundTextureFrame.AbsoluteSize
+
+		if size ~= lastBackgroundSize then
+			lastBackgroundSize = size
+
+			tileBackgroundTexture(
+				backgroundTextureFrame
+			)
+		end
+	end
+
+	-- The classic close icon fades in after five seconds.
+	if closeButton and closeButton.Parent then
+		local elapsed = os.clock() - startedAt
+
+		if elapsed &gt;= CLOSE_BUTTON_DELAY
+			and closeButton.ImageTransparency &gt; 0 then
+
+			closeButton.ImageTransparency = math.max(
+				0,
+				closeButton.ImageTransparency
+				- deltaTime * FADE_RATE
+			)
+
+			if closeButton.ImageTransparency &lt;= 0 then
+				closeButton.Active = true
+			end
+		end
+	end
+end)
+
+-- ============================================================
+-- VIEWPORT AND CAMERA CHANGES
+-- ============================================================
+
+local function onViewportChanged()
+	if not blackFrame or not blackFrame.Parent then
+		return
+	end
+
+	updateLayout()
+
+	if backgroundTextureFrame then
+		lastBackgroundSize =
+			backgroundTextureFrame.AbsoluteSize
+
+		tileBackgroundTexture(
+			backgroundTextureFrame
+		)
+	end
+end
+
+local function connectCamera(camera)
+	if viewportConnection then
+		viewportConnection:Disconnect()
+		viewportConnection = nil
+	end
+
+	if camera then
+		viewportConnection =
+			camera:GetPropertyChangedSignal("ViewportSize")
+			:Connect(onViewportChanged)
+	end
+
+	onViewportChanged()
+end
+
+cameraConnection =
+	workspace:GetPropertyChangedSignal("CurrentCamera")
+	:Connect(function()
+		connectCamera(workspace.CurrentCamera)
+	end)
+
+connectCamera(workspace.CurrentCamera)
+
+-- ============================================================
+-- STARTUP FAILSAFE
+-- ============================================================
+
+task.delay(60, function()
+	if not stopping and not stopped then
+		warnLoading(
+			"The loading screen has been visible for 60 seconds. "
+				.. "Call LoadingScreen:Stop() when initialization "
+				.. "finishes; removing it automatically as a failsafe."
+		)
+
+		LoadingScreen:Stop()
+	end
+end)
+
+log("Classic loading screen created.")
+
+return LoadingScreen</ProtectedString>
+                            <int64 name="SourceAssetId">-536</int64>
+                            <BinaryString name="Tags" />
+                        </Properties>
+                    </Item>
+                    <Item class="ModuleScript" referent="RBX656">
+                        <Properties>
+                            <BinaryString name="AttributesSerialize" />
+                            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                            <bool name="DefinesCapabilities">false</bool>
+                            <ContentId name="LinkedSource">
+                                <null />
+                            </ContentId>
+                            <string name="Name">MergeSort</string>
+                            <string name="ScriptGuid">{1983DDE0-626C-4530-88B2-5026CE3C7D94}</string>
+                            <BinaryString name="SerializedOverrides" />
+                            <ProtectedString name="Source">--[[
+    MergeSort.lua
+    Historical CoreScripts utility
+
+    Bottom-up stable merge sort.
+
+    Usage:
+        local mergeSort = require(path.To.MergeSort)
+
+        local sorted = mergeSort(items, function(a, b)
+            return a &lt; b
+        end)
+
+    If no comparator is provided, elements are sorted in
+    ascending order using the &lt; operator.
+
+    The input table is not modified.
+]]
+
+local function bottomupmerge(comp, source, target, left, mid, right)
+	local i = left
+	local j = mid
+
+	for k = left, right do
+		if i &lt; mid and (j &gt; right or not comp(source[j], source[i])) then
+			target[k] = source[i]
+			i = i + 1
+		else
+			target[k] = source[j]
+			j = j + 1
+		end
+	end
+end
+
+local function mergesort(arr, comp)
+	assert(type(arr) == "table", "MergeSort expects an array table.")
+
+	if comp == nil then
+		comp = function(a, b)
+			return a &lt; b
+		end
+	end
+
+	assert(type(comp) == "function", "Comparator must be a function.")
+
+	local n = #arr
+	local source = {}
+	local target = {}
+
+	-- Copy the original array so sorting never changes its contents.
+	for i = 1, n do
+		source[i] = arr[i]
+	end
+
+	local width = 1
+
+	while width &lt; n do
+		for left = 1, n, width * 2 do
+			-- mid is the first index of the right half.
+			-- right is the final included index.
+			local mid = math.min(left + width, n + 1)
+			local right = math.min(left + width * 2 - 1, n)
+
+			bottomupmerge(
+				comp,
+				source,
+				target,
+				left,
+				mid,
+				right
+			)
+		end
+
+		source, target = target, source
+		width = width * 2
+	end
+
+	return source
+end
+
+-- Return the sorting function itself.
+-- Do NOT call mergesort(...) here: require() supplies no arguments.
+return mergesort</ProtectedString>
+                            <int64 name="SourceAssetId">-537</int64>
+                            <BinaryString name="Tags" />
+                        </Properties>
+                    </Item>
+                    <Item class="Script" referent="RBX657">
+                        <Properties>
+                            <BinaryString name="AttributesSerialize" />
+                            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                            <bool name="DefinesCapabilities">false</bool>
+                            <bool name="Disabled">false</bool>
+                            <ContentId name="LinkedSource">
+                                <null />
+                            </ContentId>
+                            <string name="Name">ServerStarterScript</string>
+                            <token name="RunContext">0</token>
+                            <string name="ScriptGuid">{E57382FB-2E08-490B-8FEB-3EAC11728538}</string>
+                            <BinaryString name="SerializedOverrides" />
+                            <ProtectedString name="Source">--[[
+    Filename: ServerStarterScript.lua
+    Version: 1.1.0
+    Description:
+        Patched historical CoreScripts server startup.
+
+    Requirements:
+        - Must execute in a server context.
+        - May be a ModuleScript required by a server Script.
+        - Server-side source must be accessible to the server.
+
+    Removed:
+        - ScriptContext:AddCoreScriptLocal
+        - Internal RobloxReplicatedStorage dependency
+        - Internal feature flag access
+        - Internal CoreGui.RobloxGui module dependencies
+        - Obsolete UserSettings feature checks
+]]
+
+local RunService = game:GetService("RunService")
+
+-- ============================================================
+-- ENVIRONMENT
+-- ============================================================
+
+if not RunService:IsServer() then
+	warn(
+		"[ServerStarterScript] Server-only initialization skipped. "
+			.. "This module must be required from a server context."
+	)
+
+	return {
+		Started = false,
+		Reason = "Not running on the server",
+	}
+end
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+-- ============================================================
+-- DIAGNOSTICS
+-- ============================================================
+
+local function log(message)
+	print("[ServerStarterScript] " .. tostring(message))
+end
+
+local function warnScript(message)
+	warn("[ServerStarterScript] " .. tostring(message))
+end
+
+local function traceback(message)
+	if debug and debug.traceback then
+		return debug.traceback(tostring(message), 2)
+	end
+
+	return tostring(message)
+end
+
+-- ============================================================
+-- CREATE OR FIND A SHARED REMOTE
+--
+-- Standard RemoteEvents and RemoteFunctions are placed in
+-- ReplicatedStorage so the server and clients can access them.
+-- ============================================================
+
+local function getOrCreateRemote(name, className)
+	local existing = ReplicatedStorage:FindFirstChild(name)
+
+	if existing then
+		if existing.ClassName ~= className then
+			warnScript(
+				"Cannot initialize "
+					.. name
+					.. ": expected "
+					.. className
+					.. ", found "
+					.. existing.ClassName
+			)
+
+			return nil
+		end
+
+		return existing
+	end
+
+	local remote = Instance.new(className)
+	remote.Name = name
+	remote.Parent = ReplicatedStorage
+
+	return remote
+end
+
+-- ============================================================
+-- REMOTE EVENTS
+-- ============================================================
+
+local RemoteEvent_SetDialogInUse =
+	getOrCreateRemote("SetDialogInUse", "RemoteEvent")
+
+local RemoteFunction_GetServerVersion =
+	getOrCreateRemote("GetServerVersion", "RemoteFunction")
+
+-- ============================================================
+-- DIALOG COMPATIBILITY
+-- ============================================================
+
+-- Modern Roblox manages Dialog usage itself. The old
+-- Dialog:SetPlayerIsUsing API is no longer available through
+-- the documented Dialog API.
+--
+-- Retain the historical RemoteEvent name for compatibility,
+-- but only invoke the legacy method when it actually exists.
+-- Otherwise, report the limitation instead of crashing.
+
+local playerDialogMap = {}
+local warnedLegacyDialogAPI = false
+
+local function setDialogInUse(player, dialog, value, waitTime)
+	-- RemoteEvent supplies the real requesting Player.
+	if typeof(player) ~= "Instance"
+		or not player:IsA("Player")
+		or player.Parent ~= Players then
+		return
+	end
+
+	if typeof(dialog) ~= "Instance"
+		or not dialog:IsA("Dialog") then
+		return
+	end
+
+	-- The requested dialog must belong to the server's world.
+	if not dialog:IsDescendantOf(Workspace) then
+		return
+	end
+
+	if type(value) ~= "boolean" then
+		return
+	end
+
+	if waitTime ~= nil then
+		if type(waitTime) ~= "number"
+			or waitTime ~= waitTime
+			or math.abs(waitTime) == math.huge then
+			return
+		end
+	else
+		waitTime = 0
+	end
+
+	-- Avoid unbounded client-requested delays.
+	waitTime = math.clamp(waitTime, 0, 5)
+
+	local function apply()
+		-- Revalidate everything after a possible delay.
+		if player.Parent ~= Players then
+			return
+		end
+
+		if not dialog:IsDescendantOf(Workspace) then
+			return
+		end
+
+		local success, err = pcall(function()
+			dialog:SetPlayerIsUsing(player, value)
+		end)
+
+		if success then
+			playerDialogMap[player] = value and dialog or nil
+			return
+		end
+
+		if not warnedLegacyDialogAPI then
+			warnedLegacyDialogAPI = true
+
+			warnScript(
+				"The historical Dialog:SetPlayerIsUsing API "
+					.. "is unavailable. Dialog usage is managed by "
+					.. "the modern Roblox engine; legacy usage requests "
+					.. "cannot change its read-only InUse state. "
+					.. "First error: "
+					.. tostring(err)
+			)
+		end
+	end
+
+	if waitTime &gt; 0 then
+		task.delay(waitTime, apply)
+	else
+		apply()
+	end
+end
+
+if RemoteEvent_SetDialogInUse then
+	RemoteEvent_SetDialogInUse.OnServerEvent:Connect(
+		setDialogInUse
+	)
+end
+
+-- ============================================================
+-- SERVER VERSION
+-- ============================================================
+
+local function getServerVersion()
+	if RunService:IsStudio() then
+		return "ROBLOX Studio"
+	end
+
+	local success, rawVersion = pcall(function()
+		return version()
+	end)
+
+	if success
+		and type(rawVersion) == "string"
+		and rawVersion ~= "" then
+		return rawVersion
+	end
+
+	return "UNKNOWN_SERVER"
+end
+
+if RemoteFunction_GetServerVersion then
+	RemoteFunction_GetServerVersion.OnServerInvoke = function(_player)
+		return getServerVersion()
+	end
+end
+
+-- ============================================================
+-- PLAYER CLEANUP
+-- ============================================================
+
+Players.PlayerRemoving:Connect(function(player)
+	local dialog = playerDialogMap[player]
+
+	if dialog then
+		pcall(function()
+			dialog:SetPlayerIsUsing(player, false)
+		end)
+
+		playerDialogMap[player] = nil
+	end
+end)
+
+-- ============================================================
+-- HISTORICAL SERVER CORESCRIPT
+-- ============================================================
+
+-- The original implementation used the internal
+-- ScriptContext:AddCoreScriptLocal API to launch ServerSocialScript.
+-- That API isn't available for normal scripts.
+--
+-- If ServerSocialScript has already been installed as a normal
+-- server Script in the server's runtime hierarchy, let the
+-- engine execute it naturally.
+--
+-- If it is a ModuleScript, it can be explicitly required here.
+
+local function startServerSocialModule()
+	local root = script.Parent
+	local serverCoreScripts = root:FindFirstChild("ServerCoreScripts")
+
+	if not serverCoreScripts then
+		warnScript(
+			"ServerCoreScripts folder not found beside "
+				.. "ServerStarterScript. ServerSocialScript was not "
+				.. "explicitly initialized."
+		)
+
+		return
+	end
+
+	local socialScript =
+		serverCoreScripts:FindFirstChild("ServerSocialScript")
+
+	if not socialScript then
+		warnScript("ServerSocialScript was not found.")
+		return
+	end
+
+	if socialScript:IsA("ModuleScript") then
+		local success, err = xpcall(function()
+			require(socialScript)
+		end, traceback)
+
+		if not success then
+			warnScript(
+				"ServerSocialScript failed: " .. tostring(err)
+			)
+		else
+			log("ServerSocialScript module initialized.")
+		end
+
+	elseif socialScript:IsA("Script") then
+		-- Don't clone or re-execute an ordinary Script.
+		-- Its parent and RunContext determine its lifecycle.
+		log(
+			"ServerSocialScript is a Script. "
+				.. "Its execution is managed by Roblox."
+		)
+
+	else
+		warnScript(
+			"Unsupported ServerSocialScript type: "
+				.. socialScript.ClassName
+		)
+	end
+end
+
+startServerSocialModule()
+
+-- ============================================================
+-- REMOVED INTERNAL INSTALLERS
+-- ============================================================
+
+-- The original chat installers, FreeCameraInstaller, and
+-- SoundDispatcherInstaller depended on internal CoreGui modules
+-- or feature flags. They are intentionally not loaded here.
+--
+-- They require separate, supported implementations if their
+-- functionality is needed in our modern environment.
+
+log("Server startup initialization completed.")
+
+return {
+	Started = true,
+
+	SetDialogInUse = RemoteEvent_SetDialogInUse,
+	GetServerVersion = RemoteFunction_GetServerVersion,
+}</ProtectedString>
+                            <int64 name="SourceAssetId">-6</int64>
+                            <BinaryString name="Tags" />
+                        </Properties>
+                    </Item>
+                </Item>
+            </Item>
+        </Item>
+        <Item class="ModuleScript" referent="RBX658">
+            <Properties>
+                <BinaryString name="AttributesSerialize" />
+                <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+                <bool name="DefinesCapabilities">false</bool>
+                <ContentId name="LinkedSource">
+                    <null />
+                </ContentId>
+                <string name="Name">Mainload</string>
+                <string name="ScriptGuid">{AD6227E6-3AAB-4F52-B8F7-358973352E85}</string>
+                <BinaryString name="SerializedOverrides" />
+                <ProtectedString name="Source">-- Mainload
+-- Child ModuleScript of Main. Applies the selected era's visual baseline.
+
+local Lighting = game:GetService("Lighting")
+local MaterialService = game:GetService("MaterialService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local ERA_PROFILES = {
+    [2015] = { Technology = "Voxel", PrioritizeLightingQuality = false, GlobalShadows = true, ShadowSoftness = 0.08 },
+    [2016] = { Technology = "Voxel", PrioritizeLightingQuality = false, GlobalShadows = true, ShadowSoftness = 0.08 },
+    [2017] = { Technology = "Voxel", PrioritizeLightingQuality = false, GlobalShadows = true, ShadowSoftness = 0.12 },
+    [2018] = { Technology = "Voxel", PrioritizeLightingQuality = false, GlobalShadows = true, ShadowSoftness = 0.15 },
+    [2019] = { Technology = "Voxel", PrioritizeLightingQuality = false, GlobalShadows = true, ShadowSoftness = 0.18 },
+    [2020] = { Technology = "Voxel", PrioritizeLightingQuality = false, GlobalShadows = true, ShadowSoftness = 0.20 },
+}
+
+local function getExecutorScope()
+	if type(getgenv) == "function" then
+		local ok, scope = pcall(getgenv)
+		if ok and type(scope) == "table" then return scope end
+	end
+	return _G
+end
+
+local function setEraProperty(instance, property, value)
+	local scope = getExecutorScope()
+	local setterNames = {"sethiddenproperty", "sethiddenprop", "set_hidden_property"}
+	for _, setterName in ipairs(setterNames) do
+		local setter = scope and scope[setterName]
+		if type(setter) ~= "function" then setter = _G[setterName] end
+		if type(setter) == "function" then
+			local ok = pcall(setter, instance, property, value)
+			if ok then return true, setterName end
+		end
+	end
+
+	local setscriptable = scope and scope.setscriptable
+	if type(setscriptable) ~= "function" then setscriptable = _G.setscriptable end
+	if type(setscriptable) == "function" then
+		local enabled = pcall(setscriptable, instance, property, true)
+		if enabled then
+			local ok = pcall(function() instance[property] = value end)
+			if ok then return true, "setscriptable" end
+		end
+	end
+
+	local ok, err = pcall(function() instance[property] = value end)
+	if ok then return true, "direct" end
+	return false, err
+end
+
+local function applyEraProfile(Year)
+	local profile = ERA_PROFILES[Year] or ERA_PROFILES[2019]
+	for property, value in pairs(profile) do
+		if property == "Technology" then
+			local enumOK, enumValue = pcall(function() return Enum.Technology[value] end)
+			if enumOK and enumValue then
+				local applied, result = setEraProperty(Lighting, "Technology", enumValue)
+				if not applied then warn("[Yeku Era] Technology is engine-controlled; Voxel fallback unavailable: " .. tostring(result)) end
+			end
+		elseif property == "LightingStyle" then
+			local enumOK, enumValue = pcall(function() return Enum.LightingStyle[value] end)
+			if enumOK and enumValue then pcall(function() Lighting.LightingStyle = enumValue end) end
+		else
+			pcall(function() Lighting[property] = value end)
+		end
+	end
+
+	-- Try common executor security bridges first, then ordinary assignment.
+	-- Roblox marks this property RobloxScriptSecurity, so not every executor
+	-- exposes a setter capable of changing it from an injected client script.
+	local materialsApplied, materialsMethod = setEraProperty(
+		MaterialService, "Use2022Materials", false
+	)
+	if not materialsApplied then
+		warn("[Yeku Era] This client/executor denied MaterialService.Use2022Materials; pre-2022 materials cannot be forced here: " .. tostring(materialsMethod))
+	else
+		print("[Yeku Era] Requested pre-2022 material pack via " .. tostring(materialsMethod))
+	end
+
+	-- Original Roblox 2013 arrow cursor (not the modern keyboard/mouse cursor).
+	local localPlayer = Players.LocalPlayer
+	if localPlayer then
+		pcall(function() UserInputService.MouseIconEnabled = true end)
+		local cursorApplied, cursorError = pcall(function()
+			localPlayer:GetMouse().Icon = "rbxasset://textures/ArrowCursor.png"
+		end)
+		if not cursorApplied then
+			warn("[Yeku Era] Could not set the legacy 2013 arrow cursor: " .. tostring(cursorError))
+		end
+	end
+end
+
+local atmosphereConnection
+local function applyRetroPostProcessing(Year)
+    -- Remove only features absent from the era baseline. Blur and DoF may be
+    -- intentional experience effects, so preserve them and all unnamed grading.
+    for _, effectName in ipairs({"YekuRetroColorCorrection", "YekuRetroColorGrading"}) do
+        local effect = Lighting:FindFirstChild(effectName)
+        if effect then pcall(function() effect:Destroy() end) end
+    end
+    for _, effect in ipairs(Lighting:GetChildren()) do
+        if effect:IsA("Atmosphere") then pcall(function() effect:Destroy() end) end
+    end
+    if not atmosphereConnection then
+        atmosphereConnection = Lighting.DescendantAdded:Connect(function(effect)
+            if effect:IsA("Atmosphere") then
+                task.defer(function() pcall(function() effect:Destroy() end) end)
+            end
+        end)
+    end
+end
+
+local function forceUsernameNameplates()
+	local connections = setmetatable({}, { __mode = "k" })
+	local function applyCharacter(player, character)
+		if not character then return end
+		local function bindHumanoid(humanoid)
+			if not humanoid or not humanoid:IsA("Humanoid") then return end
+			local function applyName()
+				if humanoid.Parent and player.Parent == Players then
+					pcall(function() humanoid.DisplayName = player.Name end)
+				end
+			end
+			applyName()
+			if not connections[humanoid] then
+				connections[humanoid] = humanoid:GetPropertyChangedSignal("DisplayName"):Connect(function()
+					if humanoid.DisplayName ~= player.Name then applyName() end
+				end)
+			end
+		end
+		local existing = character:FindFirstChildOfClass("Humanoid")
+		if existing then bindHumanoid(existing) end
+		character.ChildAdded:Connect(function(child)
+			if child:IsA("Humanoid") then bindHumanoid(child) end
+		end)
+	end
+	local function bindPlayer(player)
+		if player.Character then applyCharacter(player, player.Character) end
+		player.CharacterAdded:Connect(function(character) applyCharacter(player, character) end)
+		player:GetPropertyChangedSignal("Name"):Connect(function()
+			if player.Character then
+				local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+				if humanoid then pcall(function() humanoid.DisplayName = player.Name end) end
+			end
+		end)
+	end
+	for _, player in ipairs(Players:GetPlayers()) do bindPlayer(player) end
+	Players.PlayerAdded:Connect(bindPlayer)
+end
+
+local function apply2020NativePlayerListIcons()
+	-- The 2020+ PlayerList is engine-owned CoreGui. Ordinary RBXMX ModuleScripts
+	-- do not have the RobloxScriptSecurity permission needed to replace its
+	-- TextLabel/ImageLabel internals. Never scan, hide, clone, reparent or mutate
+	-- CoreGui.PlayerList here; doing so can break/crash the native roster.
+	warn("[Yeku V38] Native PlayerList icons are handled by the V38 loader; this RBXMX script does not mutate engine-owned CoreGui.")
+	return false, "deferred to the V38 loader"
+end
+
+
+local function Mainload(Year)
+	local Main = script.Parent
+	local YearName = tostring(Year)
+	local Modules = Main:WaitForChild("Modules")
+	local YearFolder = Modules:FindFirstChild(YearName)
+	assert(YearFolder, "Missing patched CoreScripts: Main.Modules." .. YearName)
+
+	applyEraProfile(Year)
+	applyRetroPostProcessing(Year)
+	forceUsernameNameplates()
+	if Year == 2020 then apply2020NativePlayerListIcons() end
+
+	-- Optional supplied profile attributes/effects override the baseline.
+	local LightingProfile = YearFolder:FindFirstChild("Lighting")
+	if not LightingProfile then
+		local LightingRoot = Main:FindFirstChild("Lighting")
+		if LightingRoot then LightingProfile = LightingRoot:FindFirstChild(YearName) end
+	end
+	if LightingProfile then
+		local LightingProperties = {
+			Ambient = true, Brightness = true, ClockTime = true,
+			ColorShift_Bottom = true, ColorShift_Top = true,
+			EnvironmentDiffuseScale = true, EnvironmentSpecularScale = true,
+			ExposureCompensation = true, FogColor = true, FogEnd = true,
+			FogStart = true, GeographicLatitude = true, GlobalShadows = true,
+			OutdoorAmbient = true, ShadowSoftness = true,
+		}
+		for Property, Value in pairs(LightingProfile:GetAttributes()) do
+			if LightingProperties[Property] then
+				pcall(function() Lighting[Property] = Value end)
+			end
+		end
+		for _, Asset in ipairs(LightingProfile:GetChildren()) do
+			if Asset:IsA("ValueBase") and LightingProperties[Asset.Name] then
+				pcall(function() Lighting[Asset.Name] = Asset.Value end)
+			else
+				local Existing = Lighting:FindFirstChild(Asset.Name)
+				if Existing and Existing.ClassName == Asset.ClassName then Existing:Destroy() end
+				local ok, clone = pcall(function() return Asset:Clone() end)
+				if ok and clone then clone.Parent = Lighting end
+			end
+		end
+	end
+	-- Re-apply V38 Atmosphere cleanup after year lighting assets are cloned.
+	applyRetroPostProcessing(Year)
+	return YearFolder
+end
+
+return Mainload
+</ProtectedString>
+                <int64 name="SourceAssetId">-538</int64>
+                <BinaryString name="Tags" />
+            </Properties>
+        </Item>
+    </Item>
+</roblox>
